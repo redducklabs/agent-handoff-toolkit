@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "record_type": "continuation",
+  "timestamp": "2026-09-06T12:00:00Z",
+  "active_scopes": [
+    {
+      "scope_id": "epic-toolkit",
+      "scope_kind": "epic",
+      "parent_scope_id": null,
+      "highest_authorized": true,
+      "remaining_work": true,
+      "remaining_code": true,
+      "remaining_code_detail": "The hook adapter and distribution work are not implemented.",
+      "status": "in-progress"
+    },
+    {
+      "scope_id": "core-cli",
+      "scope_kind": "phase",
+      "parent_scope_id": "epic-toolkit",
+      "highest_authorized": false,
+      "remaining_work": true,
+      "remaining_code": true,
+      "remaining_code_detail": "The command-line renderer remains to be implemented.",
+      "status": "in-progress"
+    }
+  ],
+  "next_session_gates": [],
+  "verification": [
+    {
+      "check": "python -m unittest discover -s tests -v",
+      "result": "pass",
+      "evidence": "All focused contract tests passed."
+    },
+    {
+      "check": "cross-platform hook exercise",
+      "result": "not-run",
+      "reason": "Host adapters are outside the completed scope."
+    }
+  ],
+  "exact_action": {
+    "action": "Implement the host payload normalizer.",
+    "target": "src/handoff_toolkit/hooks.py",
+    "constraints": "Keep the adapter independent of record policy.",
+    "completion_condition": "Claude and Codex payload fixtures pass."
+  },
+  "next_session_prompt": "Read the repository instructions, design, plan, and this continuation. Reconcile live branch, HEAD, index, untracked files, remote state, tracker hierarchy, and rollout state; preserve newer inherited state and report material conflicts. Then implement the host payload normalizer in src/handoff_toolkit/hooks.py without repeating completed work, keeping policy in the core, until the Claude and Codex payload fixtures pass.",
+  "sections": {
+    "Objective": "Deliver the remaining host adapters and distribution artifacts.",
+    "Authoritative references": "- `AGENTS.md`\n- `docs/contract.md`",
+    "User decisions": "The toolkit must support Claude Code and Codex.",
+    "Repository state": "Branch `feat/initial-toolkit` contains the validated core.",
+    "Completed work": "The schema and command-line surface are implemented.",
+    "Verification evidence": "- Unit tests: pass\n- Host exercise: not run",
+    "Incomplete work and risks": "Host payload normalization and distribution remain.",
+    "Exact next action": "Implement the host payload normalizer in `src/handoff_toolkit/hooks.py`.",
+    "External effects": "The public repository exists; no consumer repositories were changed.",
+    "Remaining code by active scope": "- `epic-toolkit`: yes — hooks and distribution remain.\n- `core-cli`: yes — command integration remains.",
+    "Next-session prompt": "Use the exact prompt stored in metadata."
+  }
+}

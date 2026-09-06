@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "record_type": "completion-audit",
+  "timestamp": "2026-09-06T15:00:00Z",
+  "active_scopes": [
+    {
+      "scope_id": "standalone-contract",
+      "scope_kind": "standalone",
+      "parent_scope_id": null,
+      "highest_authorized": true,
+      "remaining_work": false,
+      "remaining_code": false,
+      "remaining_code_detail": "No code remains within the authorized standalone outcome.",
+      "status": "complete"
+    }
+  ],
+  "completed_scope_id": "standalone-contract",
+  "verification": [
+    {
+      "check": "python -m unittest discover -s tests -v",
+      "result": "pass",
+      "evidence": "The standalone contract suite passed."
+    }
+  ],
+  "authorization_basis": "The user authorized the standalone contract outcome.",
+  "sections": {
+    "Completed objective": "Defined and verified schema version 1.",
+    "Authoritative references": "- `docs/contract.md`",
+    "User decisions": "Completion audits are evidence, not restart points.",
+    "Final repository state": "The contract is committed on the feature branch.",
+    "Completed work": "The schema, parser, and validator were completed.",
+    "Verification evidence": "- Unit tests: pass",
+    "Known risks or separately tracked follow-ups": "Host adapters are a separately authorized follow-up.",
+    "External effects": "No consumer repository was modified."
+  }
+}

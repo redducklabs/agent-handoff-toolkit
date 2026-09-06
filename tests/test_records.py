@@ -1,0 +1,280 @@
+from __future__ import annotations
+
+import copy
+import json
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from agent_handoff_toolkit import (  # noqa: E402
+    parse_markdown,
+    render_record,
+    render_tail,
+    validate_markdown,
+)
+
+FIXTURES = ROOT / "tests" / "fixtures"
+
+
+def load_fixture(name: str) -> dict[str, object]:
+    return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
+
+
+def issue_codes(text: str) -> set[str]:
+    return {issue.code for issue in validate_markdown(text)}
+
+
+class RecordValidationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.continuation = load_fixture("continuation.json")
+        self.audit = load_fixture("completion-audit.json")
+
+    def test_valid_record_dispatch(self) -> None:
+        self.assertEqual(validate_markdown(render_record(self.continuation)), [])
+        self.assertEqual(validate_markdown(render_record(self.audit)), [])
+
+    def test_rejects_unknown_record_type(self) -> None:
+        self.continuation["record_type"] = "summary"
+        with self.assertRaisesRegex(ValueError, "record-type"):
+            render_record(self.continuation)
+
+    def test_requires_exact_ordered_sections(self) -> None:
+        text = render_record(self.continuation)
+        text = text.replace(
+            "## Objective\n",
+            "## Extra\nUnexpected.\n\n## Objective\n",
+            1,
+        )
+        self.assertIn("section-shape", issue_codes(text))
+
+        text = render_record(self.continuation)
+        text = text.replace("## Objective", "## TEMP", 1)
+        text = text.replace("## User decisions", "## Objective", 1)
+        text = text.replace("## TEMP", "## User decisions", 1)
+        self.assertIn("section-shape", issue_codes(text))
+
+    def test_requires_one_rooted_acyclic_scope_chain(self) -> None:
+        data = copy.deepcopy(self.continuation)
+        data["active_scopes"][1]["parent_scope_id"] = "missing"
+        with self.assertRaisesRegex(ValueError, "scope-parent"):
+            render_record(data)
+
+        data = copy.deepcopy(self.continuation)
+        data["active_scopes"][0]["parent_scope_id"] = "core-cli"
+        with self.assertRaisesRegex(ValueError, "scope-root"):
+            render_record(data)
+
+        data = copy.deepcopy(self.continuation)
+        data["active_scopes"][1]["parent_scope_id"] = "core-cli"
+        with self.assertRaisesRegex(ValueError, "scope-cycle"):
+            render_record(data)
+
+        data = copy.deepcopy(self.continuation)
+        data["active_scopes"][1]["highest_authorized"] = True
+        with self.assertRaisesRegex(ValueError, "scope-highest"):
+            render_record(data)
+
+    def test_highest_scope_remaining_work_matches_record_type(self) -> None:
+        data = copy.deepcopy(self.continuation)
+        data["active_scopes"][0]["remaining_work"] = False
+        with self.assertRaisesRegex(ValueError, "scope-state"):
+            render_record(data)
+
+        data = copy.deepcopy(self.audit)
+        data["active_scopes"][0]["remaining_work"] = True
+        with self.assertRaisesRegex(ValueError, "scope-state"):
+            render_record(data)
+
+    def test_scope_kind_and_remaining_code_detail_are_validated(self) -> None:
+        data = copy.deepcopy(self.continuation)
+        data["active_scopes"][1]["scope_kind"] = "task"
+        with self.assertRaisesRegex(ValueError, "scope-kind"):
+            render_record(data)
+
+        data = copy.deepcopy(self.continuation)
+        data["active_scopes"][1]["remaining_code_detail"] = ""
+        with self.assertRaisesRegex(ValueError, "scope-field"):
+            render_record(data)
+
+    def test_verification_result_and_supporting_text_are_validated(self) -> None:
+        data = copy.deepcopy(self.continuation)
+        data["verification"][0]["result"] = "skipped"
+        with self.assertRaisesRegex(ValueError, "verification-result"):
+            render_record(data)
+
+        data = copy.deepcopy(self.continuation)
+        del data["verification"][0]["evidence"]
+        with self.assertRaisesRegex(ValueError, "verification-evidence"):
+            render_record(data)
+
+        data = copy.deepcopy(self.continuation)
+        del data["verification"][1]["reason"]
+        with self.assertRaisesRegex(ValueError, "verification-reason"):
+            render_record(data)
+
+    def test_continuation_requires_empty_gates_and_actionable_fields(self) -> None:
+        data = copy.deepcopy(self.continuation)
+        data["next_session_gates"] = ["Which branch?"]
+        with self.assertRaisesRegex(ValueError, "question-gate"):
+            render_record(data)
+
+        for field in ("action", "target", "constraints", "completion_condition"):
+            data = copy.deepcopy(self.continuation)
+            data["exact_action"][field] = ""
+            with (
+                self.subTest(field=field),
+                self.assertRaisesRegex(ValueError, "exact-action"),
+            ):
+                render_record(data)
+
+    def test_continuation_and_audit_fields_are_mutually_exclusive(self) -> None:
+        data = copy.deepcopy(self.audit)
+        data["next_session_prompt"] = "Restart from here."
+        with self.assertRaisesRegex(ValueError, "field-exclusion"):
+            render_record(data)
+
+        data = copy.deepcopy(self.continuation)
+        data["authorization_basis"] = "Completed."
+        with self.assertRaisesRegex(ValueError, "field-exclusion"):
+            render_record(data)
+
+        data = copy.deepcopy(self.continuation)
+        data["completed_scope_id"] = "core-cli"
+        with self.assertRaisesRegex(ValueError, "field-exclusion"):
+            render_record(data)
+
+    def test_audit_completed_scope_matches_highest_authorized_scope(self) -> None:
+        data = copy.deepcopy(self.audit)
+        data["completed_scope_id"] = "another-scope"
+        with self.assertRaisesRegex(ValueError, "completed-scope"):
+            render_record(data)
+
+
+class RecordRenderingTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.continuation = load_fixture("continuation.json")
+        self.audit = load_fixture("completion-audit.json")
+
+    def test_render_is_deterministic_and_round_trips(self) -> None:
+        first = render_record(self.continuation)
+        second = render_record(copy.deepcopy(self.continuation))
+        self.assertEqual(first, second)
+        self.assertEqual(parse_markdown(first), self.continuation)
+        self.assertIn("<!-- agent-handoff-metadata", first)
+
+    def test_render_uses_canonical_section_order_not_json_key_order(self) -> None:
+        self.continuation["sections"] = dict(
+            reversed(list(self.continuation["sections"].items()))
+        )
+        text = render_record(self.continuation)
+        headings = [
+            line.removeprefix("## ")
+            for line in text.splitlines()
+            if line.startswith("## ")
+        ]
+        self.assertEqual(headings[0], "Objective")
+        self.assertEqual(headings[-1], "Next-session prompt")
+
+    def test_audit_begins_with_sentinel(self) -> None:
+        text = render_record(self.audit)
+        self.assertTrue(
+            text.startswith(
+                "> Audit record — not a handoff. Do not use this file to start or continue a session."
+            )
+        )
+
+    def test_continuation_tail_has_exact_prompt_and_absolute_final_link(self) -> None:
+        text = render_record(self.continuation)
+        tail = render_tail(
+            r"C:\work spaces\handoffs\继续工作.md",
+            text,
+        )
+        prompt = self.continuation["next_session_prompt"]
+        self.assertEqual(
+            tail,
+            f"```text\n{prompt}\n```\n\n"
+            "[Continuation handoff](<C:/work spaces/handoffs/继续工作.md>)",
+        )
+        self.assertEqual(tail.rstrip().splitlines()[-1], tail.splitlines()[-1])
+
+    def test_posix_tail_and_audit_tail(self) -> None:
+        continuation_tail = render_tail(
+            "/tmp/work spaces/continuación.md",
+            render_record(self.continuation),
+        )
+        self.assertTrue(
+            continuation_tail.endswith(
+                "[Continuation handoff](</tmp/work spaces/continuación.md>)"
+            )
+        )
+
+        audit_tail = render_tail(
+            "/tmp/work spaces/audit.md",
+            render_record(self.audit),
+        )
+        self.assertEqual(
+            audit_tail,
+            "[Audit record (not a handoff)](</tmp/work spaces/audit.md>)",
+        )
+        self.assertNotIn("```", audit_tail)
+
+    def test_tail_selects_a_safe_fence_for_prompt_code_blocks(self) -> None:
+        self.continuation["next_session_prompt"] = (
+            "Inspect this example:\n```python\nprint('safe')\n```\nThen continue."
+        )
+        tail = render_tail("/tmp/handoff.md", render_record(self.continuation))
+        self.assertTrue(tail.startswith("````text\n"))
+        self.assertIn("\n````\n\n[Continuation handoff]", tail)
+
+
+class CommandLineTests(unittest.TestCase):
+    def run_cli(self, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, "-m", "agent_handoff_toolkit", *args],
+            cwd=ROOT,
+            env={**__import__("os").environ, "PYTHONPATH": str(ROOT / "src")},
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+
+    def test_validate_returns_nonzero_for_invalid_record(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "invalid.md"
+            path.write_text("# not a record\n", encoding="utf-8")
+            result = self.run_cli("validate", str(path))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("metadata-missing", result.stderr)
+
+    def test_render_validate_and_render_tail_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "record with spaces.md"
+            rendered = self.run_cli(
+                "render",
+                str(FIXTURES / "continuation.json"),
+                "--output",
+                str(output),
+            )
+            self.assertEqual(rendered.returncode, 0, rendered.stderr)
+            self.assertTrue(output.exists())
+
+            validated = self.run_cli("validate", str(output))
+            self.assertEqual(validated.returncode, 0, validated.stderr)
+            self.assertIn("valid:", validated.stdout)
+
+            tail = self.run_cli("render-tail", str(output))
+            self.assertEqual(tail.returncode, 0, tail.stderr)
+            self.assertEqual(
+                tail.stdout.rstrip().splitlines()[-1],
+                f"[Continuation handoff](<{output.resolve().as_posix()}>)",
+            )
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import subprocess
 import unittest
 from pathlib import Path, PurePosixPath
 
@@ -82,6 +83,25 @@ class DistributionTests(unittest.TestCase):
                 self.assertNotIn("..", target_path.parts)
                 self.assertNotIn(target, seen_targets)
                 seen_targets.add(target)
+
+    def test_managed_artifact_bytes_are_stable_across_git_checkouts(self) -> None:
+        sources = [artifact["source"] for artifact in load_manifest()["artifacts"]]
+
+        result = subprocess.run(
+            ["git", "check-attr", "eol", "--", *sources],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        attributes = {
+            line.split(": ", 2)[0]: line.split(": ", 2)[2]
+            for line in result.stdout.splitlines()
+        }
+        self.assertEqual(attributes, {source: "lf" for source in sources})
 
     def test_skill_has_byte_identical_dual_host_install_semantics(self) -> None:
         manifest = load_manifest()
