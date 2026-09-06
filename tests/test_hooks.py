@@ -93,7 +93,7 @@ class HostHookTests(unittest.TestCase):
             with self.subTest(platform=platform):
                 output = run_hook(platform, "session-start", "{}", ROOT)
                 context = hook_context(output)
-                self.assertIn("docs/contract.md", context)
+                self.assertIn("docs/agent-handoff/contract.md", context)
                 self.assertIn("continuation", context.lower())
                 self.assertEqual(
                     json.loads(output)["hookSpecificOutput"]["hookEventName"],
@@ -158,7 +158,7 @@ class HostHookTests(unittest.TestCase):
                 self.assertIn("Completion audit: this is not a handoff", context)
                 self.assertIn("must not contain a restart action", context)
 
-    def test_codex_patch_validates_each_added_or_updated_record_not_deletions(
+    def test_codex_mixed_patch_reminds_for_deletions_and_validates_authored_records(
         self,
     ) -> None:
         patch = """*** Begin Patch
@@ -172,13 +172,18 @@ class HostHookTests(unittest.TestCase):
 *** End Patch
 """
         raw = json.dumps({"tool_name": "apply_patch", "tool_input": {"command": patch}})
-        context = hook_context(run_hook("codex", "post-tool-use", raw, ROOT))
+        output = run_hook("codex", "post-tool-use", raw, ROOT)
+        self.assertTrue(output, "mixed record patches need an advisory reminder")
+        context = hook_context(output)
+        self.assertIn("Deleted: handoffs/obsolete.md", context)
         self.assertIn("Added: handoffs/new.md", context)
         self.assertIn("Updated: handoffs/current.md", context)
-        self.assertNotIn("obsolete.md", context)
+        self.assertIn("Ensure each deletion is intentional", context)
+        self.assertIn("every added, updated, or edited record", context)
+        self.assertIn("Do not validate deleted paths", context)
         self.assertNotIn("python -m", context)
 
-    def test_codex_delete_only_patch_is_silent(self) -> None:
+    def test_codex_delete_only_patch_emits_deletion_specific_reminder(self) -> None:
         raw = json.dumps(
             {
                 "tool_name": "apply_patch",
@@ -189,7 +194,31 @@ class HostHookTests(unittest.TestCase):
                 },
             }
         )
-        self.assertEqual(run_hook("codex", "post-tool-use", raw, ROOT), "")
+        output = run_hook("codex", "post-tool-use", raw, ROOT)
+        self.assertTrue(output, "deleted records must remain visible")
+        context = hook_context(output)
+        self.assertIn("Deleted: handoffs/obsolete.md", context)
+        self.assertIn("Ensure each deletion is intentional", context)
+        self.assertIn(
+            "still-authorized work retains a valid current continuation",
+            context,
+        )
+        self.assertNotIn("validate", context.lower())
+
+    def test_codex_delete_paths_are_all_included_and_safely_displayed(self) -> None:
+        patch = """*** Begin Patch
+*** Delete File: handoffs/old one.md
+*** Delete File: handoffs/tick`quote".md
+*** End Patch
+"""
+        raw = json.dumps({"tool_name": "apply_patch", "tool_input": {"command": patch}})
+        output = run_hook("codex", "post-tool-use", raw, ROOT)
+        self.assertTrue(output, "all deleted records must remain visible")
+        context = hook_context(output)
+        self.assertIn("Deleted: handoffs/old%20one.md", context)
+        self.assertIn("Deleted: handoffs/tick%60quote%22.md", context)
+        self.assertNotIn("old one.md", context)
+        self.assertNotIn('tick`quote".md', context)
 
     def test_codex_patch_parsing_is_bounded(self) -> None:
         oversized = (

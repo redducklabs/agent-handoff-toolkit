@@ -41,7 +41,7 @@ _MILESTONE_MESSAGES = {
 }
 
 _SESSION_START_REMINDER = (
-    "Read `docs/contract.md` before continuing. Inspect the repository's current "
+    "Read `docs/agent-handoff/contract.md` before continuing. Inspect the repository's current "
     "continuation, if one exists, reconcile it with live state, and do not repeat "
     "completed work."
 )
@@ -165,10 +165,10 @@ def _codex_changes(payload: dict[str, Any]) -> tuple[_RecordChange, ...]:
         operation = match.group(1)
         path = match.group(2).strip()
         change = _RecordChange(
-            "Added" if operation == "Add" else "Updated",
+            {"Add": "Added", "Update": "Updated", "Delete": "Deleted"}[operation],
             path,
         )
-        if operation != "Delete" and _is_handoff_path(path) and change not in changes:
+        if _is_handoff_path(path) and change not in changes:
             changes.append(change)
     return tuple(changes)
 
@@ -194,20 +194,41 @@ def _authoring_reminder(changes: tuple[_RecordChange, ...]) -> str:
     rendered_paths = "\n".join(
         f"- {change.operation}: {_display_path(change.path)}" for change in changes
     )
-    return (
-        "Record authoring reminder:\n"
-        f"{rendered_paths}\n\n"
-        "Determine the record type before finishing it. Continuation: resolve "
-        "every question that gates the next session's first action, record "
-        "remaining code at every active scope, and render the required response "
-        "tail. Completion audit: this is not a handoff and must not contain a "
-        "restart action, exact next action, or next-session prompt.\n\n"
-        "Re-read `docs/contract.md`, reconcile live state, and preserve failed or "
-        "not-run verification accurately. Run the explicit `validate` subcommand "
-        "separately for every added, updated, or edited record listed above; "
-        "the listed paths are percent-encoded for safe display, so use the actual "
+    authored = tuple(change for change in changes if change.operation != "Deleted")
+    deleted = tuple(change for change in changes if change.operation == "Deleted")
+    paragraphs = ["Record change reminder:\n" + rendered_paths]
+
+    if authored:
+        paragraphs.append(
+            "Determine the record type before finishing it. Continuation: resolve "
+            "every question that gates the next session's first action, record "
+            "remaining code at every active scope, and render the required response "
+            "tail. Completion audit: this is not a handoff and must not contain a "
+            "restart action, exact next action, or next-session prompt."
+        )
+    if deleted:
+        paragraphs.append(
+            "Ensure each deletion is intentional and that any still-authorized "
+            "work retains a valid current continuation."
+        )
+
+    paragraphs.append(
+        "Re-read `docs/agent-handoff/contract.md`, reconcile live state, and preserve failed or "
+        "not-run verification accurately."
+    )
+    if authored:
+        validation = (
+            "Run the explicit `validate` subcommand separately for every added, "
+            "updated, or edited record listed above."
+        )
+        if deleted:
+            validation += " Do not validate deleted paths."
+        paragraphs.append(validation)
+    paragraphs.append(
+        "The listed paths are percent-encoded for safe display; use the actual "
         "tool-call path with quoting appropriate to the current shell."
     )
+    return "\n\n".join(paragraphs)
 
 
 def _raw_input_is_bounded(raw: str) -> bool:
