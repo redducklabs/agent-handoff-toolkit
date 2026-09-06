@@ -6,8 +6,10 @@ import argparse
 import json
 from pathlib import Path
 import sys
+import tempfile
 from typing import Sequence
 
+from .hooks import observe_context, run_hook
 from .records import render_record, render_tail, validate_markdown
 
 
@@ -24,6 +26,23 @@ def _parser() -> argparse.ArgumentParser:
 
     tail = subparsers.add_parser("render-tail", help="render a final response tail")
     tail.add_argument("record", type=Path)
+
+    hook = subparsers.add_parser("hook", help="run a fail-open host hook")
+    hook.add_argument("--platform", choices=("claude", "codex"), required=True)
+    hook.add_argument("--event", required=True)
+
+    context = subparsers.add_parser(
+        "context-health", help="record an explicit context percentage"
+    )
+    context.add_argument("--percent", type=float, required=True)
+    context.add_argument("--session-id", required=True)
+    context.add_argument(
+        "--state-dir",
+        type=Path,
+        default=Path(tempfile.gettempdir())
+        / "agent-handoff-toolkit"
+        / "context-health",
+    )
     return parser
 
 
@@ -31,11 +50,45 @@ def _read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _repository_root(start: Path) -> Path:
+    resolved = start.resolve()
+    for candidate in (resolved, *resolved.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return resolved
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run one explicit, fail-closed command."""
+    """Run explicit fail-closed commands or the automatic fail-open hook."""
 
     args = _parser().parse_args(argv)
+
+    if args.command == "hook":
+        try:
+            output = run_hook(
+                args.platform,
+                args.event,
+                sys.stdin.read(),
+                _repository_root(Path.cwd()),
+            )
+            if output:
+                sys.stdout.write(output + "\n")
+                sys.stdout.flush()
+        except Exception:
+            return 0
+        return 0
+
     try:
+        if args.command == "context-health":
+            output = observe_context(
+                args.session_id,
+                args.percent,
+                args.state_dir,
+            )
+            if output:
+                print(output)
+            return 0
+
         if args.command == "validate":
             issues = validate_markdown(_read_text(args.record))
             if issues:
