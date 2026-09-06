@@ -43,4 +43,4 @@ Add one canonical `skills/agent-handoff/SKILL.md`, Claude and Codex hook fragmen
 
 ## Task 5: CI, documentation, review, and integration
 
-Run unit tests and byte-compilation locally. Add CI across Windows, Linux, and macOS on supported Python versions using current stable official actions. Perform independent requirements and code-quality reviews, resolve findings, scan tracked content for obvious secrets, push the feature branch, open a pull request, and monitor every check to green before requesting integration.
+Run unit tests and byte-compilation locally on Windows. Add CI on the organization's required `redducklabs-runners` fleet across supported Python versions using current stable official actions; the fleet label does not guarantee a particular operating-system matrix. Perform independent requirements and code-quality reviews, resolve findings, scan tracked content for obvious secrets, push the feature branch, open a pull request, and monitor every check to green before requesting integration.

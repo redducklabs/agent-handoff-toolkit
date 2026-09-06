@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }}
+    runs-on: redducklabs-runners
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - "3.11"
+          - "3.12"
+          - "3.13"
+          - "3.14"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install verification tools
+        run: python -m pip install --disable-pip-version-check build==1.6.0 ruff==0.16.6 setuptools==84.0.0
+
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Lint
+        run: python -m ruff check src tests distribution
+
+      - name: Check formatting
+        run: python -m ruff format --check src tests distribution
+
+      - name: Byte-compile
+        run: python -m compileall -q src tests distribution
+
+      - name: Build package
+        run: python -m build

@@ -270,9 +270,9 @@ class RecordRenderingTests(unittest.TestCase):
     ) -> None:
         self.continuation["sections"]["Verification evidence"] = "Everything passed."
         self.continuation["sections"]["Exact next action"] = "Do something else."
-        self.continuation["sections"][
-            "Remaining code by active scope"
-        ] = "Nothing remains."
+        self.continuation["sections"]["Remaining code by active scope"] = (
+            "Nothing remains."
+        )
         self.continuation["sections"]["Next-session prompt"] = "A different prompt."
 
         text = render_record(self.continuation)

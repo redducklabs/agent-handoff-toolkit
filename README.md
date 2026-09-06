@@ -20,7 +20,7 @@ The initial toolkit is under active development. Consumer repositories are not m
 
 See [the contract](docs/agent-handoff/contract.md) for the normative requirements.
 
-## Planned command surface
+## Command surface
 
 ```text
 handoff-toolkit validate <record.md>
@@ -42,7 +42,10 @@ Before enabling the distributed hooks, run `python --version` in the consumer re
 
 ```powershell
 python -m unittest discover -s tests -v
-python -m compileall -q src tests
+python -m compileall -q src tests distribution
+python -m ruff check src tests distribution
+python -m ruff format --check src tests distribution
+python -m build
 ```
 
 The package has no runtime dependencies outside the Python standard library.
@@ -55,6 +58,9 @@ Last checked: 2026-09-06.
 - CI Python versions: 3.11, 3.12, 3.13, 3.14
 - Latest stable Python checked: 3.14.7
 - GitHub Actions: `actions/checkout@v7`, `actions/setup-python@v7`
+- Build frontend: `build==1.6.0`
+- Build backend: `setuptools==84.0.0`
+- Linter and formatter: `ruff==0.16.6`
 
 Version sources are the official Python release index and the official GitHub Action repositories.
 
