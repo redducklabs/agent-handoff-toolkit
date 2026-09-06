@@ -1,11 +1,11 @@
 ---
 name: agent-handoff
-description: Use when pausing unfinished implementation work, completing an authorized epic or feature, or preparing durable context for another Claude Code or Codex session.
+description: Use when unfinished authorized work of any kind (including code, review, UAT, or decisions) must continue in another session, or when the highest authorized scope (including an epic, feature, rollout, or standalone outcome) is complete.
 ---
 
 # Agent Handoff
 
-Create a continuation only for unfinished authorized work. Create a completion audit when the highest authorized outcome is complete. The record must be executable from live state, not merely descriptive.
+Read `docs/agent-handoff/contract.md` before authoring a record. Create a continuation only for unfinished authorized work. Create a completion audit when the highest authorized outcome is complete. The record must be executable from live state, not merely descriptive.
 
 ## Gate: Choose the record type
 
@@ -34,7 +34,7 @@ Record snapshot timestamps and name the concrete first action after reconciliati
 Write the record, then run:
 
 ```text
-python -m agent_handoff_toolkit validate <record-path>
+python .agent-handoff-toolkit/runner.py validate <record-path>
 ```
 
 Fix every reported error before calling the record valid. Validation proves structure and internal consistency only. You remain responsible for checking factual accuracy, current hierarchy, verification evidence, and whether the action is correct. A skipped check is `not-run`, never `pass`.
@@ -44,7 +44,7 @@ Fix every reported error before calling the record valid. Validation proves stru
 Run:
 
 ```text
-python -m agent_handoff_toolkit render-tail <record-path>
+python .agent-handoff-toolkit/runner.py render-tail <record-path>
 ```
 
 Append the output verbatim. For a continuation it contains the stored prompt in a fenced copy/paste block and an absolute clickable link as the final line. For an audit it labels the link **Audit record (not a handoff)** and emits no restart prompt. Put nothing after the generated link.

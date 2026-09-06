@@ -18,7 +18,7 @@ The initial toolkit is under active development. Consumer repositories are not m
 - Verification results are classified as `pass`, `fail`, or `not-run`; skipped checks are never reported as passing.
 - A continuation response ends with the stored next-session prompt in a copy/paste block and an absolute clickable link as its final line.
 
-See [the contract](docs/contract.md) for the normative requirements.
+See [the contract](docs/agent-handoff/contract.md) for the normative requirements.
 
 ## Planned command surface
 

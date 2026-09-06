@@ -25,7 +25,7 @@
   "authorization_basis": "The user authorized the standalone contract outcome.",
   "sections": {
     "Completed objective": "Defined and verified schema version 1.",
-    "Authoritative references": "- `docs/contract.md`",
+    "Authoritative references": "- `docs/agent-handoff/contract.md`",
     "User decisions": "Completion audits are evidence, not restart points.",
     "Final repository state": "The contract is committed on the feature branch.",
     "Completed work": "The schema, parser, and validator were completed.",

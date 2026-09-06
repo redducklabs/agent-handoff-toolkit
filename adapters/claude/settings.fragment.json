@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python -m agent_handoff_toolkit hook --platform claude --event session-start"
+            "command": "python .agent-handoff-toolkit/runner.py hook --platform claude --event session-start"
           }
         ]
       }
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python -m agent_handoff_toolkit hook --platform claude --event post-tool-use"
+            "command": "python .agent-handoff-toolkit/runner.py hook --platform claude --event post-tool-use"
           }
         ]
       }

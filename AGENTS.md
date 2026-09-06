@@ -1,6 +1,6 @@
 # Repository instructions
 
-Read `docs/contract.md` before changing record behavior, templates, validation, rendering, hooks, or the handoff skill.
+Read `docs/agent-handoff/contract.md` before changing record behavior, templates, validation, rendering, hooks, or the handoff skill.
 
 - Preserve the continuation/completion-audit distinction.
 - Keep the core package independent of Claude Code, Codex, GitHub, and tracker APIs.

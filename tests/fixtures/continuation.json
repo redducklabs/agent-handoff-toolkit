@@ -46,7 +46,7 @@
   "next_session_prompt": "Read the repository instructions, design, plan, and this continuation. Reconcile live branch, HEAD, index, untracked files, remote state, tracker hierarchy, and rollout state; preserve newer inherited state and report material conflicts. Then implement the host payload normalizer in src/handoff_toolkit/hooks.py without repeating completed work, keeping policy in the core, until the Claude and Codex payload fixtures pass.",
   "sections": {
     "Objective": "Deliver the remaining host adapters and distribution artifacts.",
-    "Authoritative references": "- `AGENTS.md`\n- `docs/contract.md`",
+    "Authoritative references": "- `AGENTS.md`\n- `docs/agent-handoff/contract.md`",
     "User decisions": "The toolkit must support Claude Code and Codex.",
     "Repository state": "Branch `feat/initial-toolkit` contains the validated core.",
     "Completed work": "The schema and command-line surface are implemented.",

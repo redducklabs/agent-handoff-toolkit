@@ -53,7 +53,15 @@
 
 ## Verification evidence
 
-<For each check, record pass, fail, or not-run with evidence or a reason.>
+```json
+[
+  {
+    "check": "<command or check>",
+    "reason": "<why this check has not run>",
+    "result": "not-run"
+  }
+]
+```
 
 ## Known risks or separately tracked follow-ups
 

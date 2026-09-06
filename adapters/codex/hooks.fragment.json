@@ -5,8 +5,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python -m agent_handoff_toolkit hook --platform codex --event session-start",
-            "commandWindows": "python -m agent_handoff_toolkit hook --platform codex --event session-start"
+            "command": "python .agent-handoff-toolkit/runner.py hook --platform codex --event session-start",
+            "commandWindows": "python .agent-handoff-toolkit/runner.py hook --platform codex --event session-start"
           }
         ]
       }
@@ -17,8 +17,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python -m agent_handoff_toolkit hook --platform codex --event post-tool-use",
-            "commandWindows": "python -m agent_handoff_toolkit hook --platform codex --event post-tool-use"
+            "command": "python .agent-handoff-toolkit/runner.py hook --platform codex --event post-tool-use",
+            "commandWindows": "python .agent-handoff-toolkit/runner.py hook --platform codex --event post-tool-use"
           }
         ]
       }

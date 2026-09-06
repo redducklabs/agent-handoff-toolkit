@@ -57,7 +57,15 @@
 
 ## Verification evidence
 
-<For each check, record pass, fail, or not-run with evidence or a reason.>
+```json
+[
+  {
+    "check": "<command or check>",
+    "reason": "<why this check has not run>",
+    "result": "not-run"
+  }
+]
+```
 
 ## Incomplete work and risks
 
@@ -65,7 +73,14 @@
 
 ## Exact next action
 
-<Name the first executable action after live-state reconciliation, including target, constraints, and completion condition.>
+```json
+{
+  "action": "<immediately executable action>",
+  "completion_condition": "<observable condition that completes the action>",
+  "constraints": "<constraints that govern the action>",
+  "target": "<specific target>"
+}
+```
 
 ## External effects
 
@@ -73,10 +88,23 @@
 
 ## Remaining code by active scope
 
-<Answer remaining-code true or false for every active scope and explain each answer.>
+```json
+[
+  {
+    "highest_authorized": true,
+    "parent_scope_id": null,
+    "remaining_code": true,
+    "remaining_code_detail": "<explain why code does or does not remain>",
+    "remaining_work": true,
+    "scope_id": "<highest-authorized-scope-id>",
+    "scope_kind": "standalone",
+    "status": "in-progress"
+  }
+]
+```
 
 ## Next-session prompt
 
 ```text
-<Repeat the exact self-contained prompt stored in metadata.>
+<self-contained prompt that includes preflight reconciliation and the exact action>
 ```

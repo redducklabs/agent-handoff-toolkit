@@ -3,7 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
 import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path, PurePosixPath
 
@@ -43,6 +46,38 @@ REQUIRED_SKILL_GATES = {
     "Render the final response tail",
 }
 
+EXPECTED_INSTALL_TARGETS = {
+    "docs/agent-handoff/contract.md": {"docs/agent-handoff/contract.md"},
+    "skills/agent-handoff/SKILL.md": {
+        ".agents/skills/agent-handoff/SKILL.md",
+        ".claude/skills/agent-handoff/SKILL.md",
+    },
+    "templates/continuation.md": {"handoffs/templates/continuation.md"},
+    "templates/completion-audit.md": {"handoffs/templates/completion-audit.md"},
+    "adapters/claude/settings.fragment.json": {".claude/settings.json"},
+    "adapters/codex/hooks.fragment.json": {".codex/hooks.json"},
+    "distribution/runner.py": {".agent-handoff-toolkit/runner.py"},
+    "src/agent_handoff_toolkit/__init__.py": {
+        ".agent-handoff-toolkit/src/agent_handoff_toolkit/__init__.py"
+    },
+    "src/agent_handoff_toolkit/__main__.py": {
+        ".agent-handoff-toolkit/src/agent_handoff_toolkit/__main__.py"
+    },
+    "src/agent_handoff_toolkit/cli.py": {
+        ".agent-handoff-toolkit/src/agent_handoff_toolkit/cli.py"
+    },
+    "src/agent_handoff_toolkit/hooks.py": {
+        ".agent-handoff-toolkit/src/agent_handoff_toolkit/hooks.py"
+    },
+    "src/agent_handoff_toolkit/records.py": {
+        ".agent-handoff-toolkit/src/agent_handoff_toolkit/records.py"
+    },
+}
+
+METADATA_RE = re.compile(
+    r"<!-- agent-handoff-metadata\n(?P<metadata>.*?)\n-->", re.DOTALL
+)
+
 
 def load_manifest() -> dict[str, object]:
     return json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
@@ -50,6 +85,41 @@ def load_manifest() -> dict[str, object]:
 
 def level_two_headings(text: str) -> list[str]:
     return [line[3:].strip() for line in text.splitlines() if line.startswith("## ")]
+
+
+def template_metadata(text: str) -> tuple[dict[str, object], re.Match[str]]:
+    match = METADATA_RE.search(text)
+    if match is None:
+        raise AssertionError("template metadata marker is missing")
+    return json.loads(match.group("metadata")), match
+
+
+def install_copy_artifacts(consumer: Path) -> None:
+    for artifact in load_manifest()["artifacts"]:
+        if artifact["install"]["mode"] != "copy":
+            continue
+        source = ROOT / Path(*PurePosixPath(artifact["source"]).parts)
+        for raw_target in artifact["install"]["targets"]:
+            target = consumer / Path(*PurePosixPath(raw_target).parts)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, target)
+
+
+def run_installed_command(
+    command: str, consumer: Path, input_text: str = ""
+) -> subprocess.CompletedProcess[str]:
+    arguments = command.split()
+    if not arguments or arguments[0] != "python":
+        raise AssertionError(f"unsupported hook command: {command}")
+    return subprocess.run(
+        [sys.executable, *arguments[1:]],
+        cwd=consumer,
+        input=input_text,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
 
 
 class DistributionTests(unittest.TestCase):
@@ -103,6 +173,14 @@ class DistributionTests(unittest.TestCase):
         }
         self.assertEqual(attributes, {source: "lf" for source in sources})
 
+    def test_manifest_contains_the_complete_installed_layout(self) -> None:
+        actual = {
+            artifact["source"]: set(artifact["install"]["targets"])
+            for artifact in load_manifest()["artifacts"]
+        }
+
+        self.assertEqual(actual, EXPECTED_INSTALL_TARGETS)
+
     def test_skill_has_byte_identical_dual_host_install_semantics(self) -> None:
         manifest = load_manifest()
         skill = next(
@@ -132,7 +210,18 @@ class DistributionTests(unittest.TestCase):
             line.split(":", 1) for line in lines[1:frontmatter_end] if ":" in line
         )
         self.assertEqual(fields["name"].strip(), "agent-handoff")
-        self.assertTrue(fields["description"].strip().startswith("Use when "))
+        description = fields["description"].strip()
+        self.assertTrue(description.startswith("Use when "))
+        for trigger in (
+            "unfinished authorized work",
+            "review",
+            "UAT",
+            "decision",
+            "highest authorized scope",
+            "rollout",
+            "standalone",
+        ):
+            self.assertIn(trigger.lower(), description.lower())
         self.assertLessEqual(len("\n".join(lines[: frontmatter_end + 1])), 1024)
 
         gates = {
@@ -141,6 +230,7 @@ class DistributionTests(unittest.TestCase):
             if (match := re.fullmatch(r"## Gate: (.+)", line))
         }
         self.assertEqual(gates, REQUIRED_SKILL_GATES)
+        self.assertIn("docs/agent-handoff/contract.md", text)
 
     def test_templates_match_the_contract_section_shapes(self) -> None:
         continuation = (ROOT / "templates" / "continuation.md").read_text(
@@ -148,13 +238,74 @@ class DistributionTests(unittest.TestCase):
         )
         audit = (ROOT / "templates" / "completion-audit.md").read_text(encoding="utf-8")
 
-        self.assertTrue(continuation.startswith("<!-- agent-handoff-metadata\n"))
+        continuation_metadata, continuation_match = template_metadata(continuation)
+        self.assertEqual(
+            set(continuation_metadata),
+            {
+                "schema_version",
+                "record_type",
+                "timestamp",
+                "active_scopes",
+                "next_session_gates",
+                "verification",
+                "exact_action",
+                "next_session_prompt",
+            },
+        )
+        self.assertEqual(continuation_metadata["schema_version"], 1)
+        self.assertEqual(continuation_metadata["record_type"], "continuation")
+        self.assertEqual(continuation_metadata["next_session_gates"], [])
+        self.assertEqual(
+            set(continuation_metadata["exact_action"]),
+            {"action", "target", "constraints", "completion_condition"},
+        )
+        continuation_scope = continuation_metadata["active_scopes"][0]
+        self.assertIs(continuation_scope["highest_authorized"], True)
+        self.assertIs(continuation_scope["remaining_work"], True)
+        self.assertEqual(
+            continuation[continuation_match.end() :].lstrip().splitlines()[0],
+            "# Session continuation",
+        )
         self.assertEqual(level_two_headings(continuation), CONTINUATION_SECTIONS)
+        prompt_section = continuation.split("## Next-session prompt\n", 1)[1].strip()
+        prompt_match = re.fullmatch(
+            r"```text\n(?P<prompt>.*?)\n```", prompt_section, re.DOTALL
+        )
+        self.assertIsNotNone(prompt_match)
+        self.assertEqual(
+            prompt_match.group("prompt"), continuation_metadata["next_session_prompt"]
+        )
+
+        sentinel = (
+            "> Audit record — not a handoff. Do not use this file to start or "
+            "continue a session."
+        )
+        self.assertEqual(audit.splitlines()[0], sentinel)
         self.assertTrue(
-            audit.startswith(
-                "> Audit record — not a handoff. Do not use this file to start or "
-                "continue a session.\n\n<!-- agent-handoff-metadata\n"
-            )
+            audit.startswith(f"{sentinel}\n\n<!-- agent-handoff-metadata\n")
+        )
+        audit_metadata, audit_match = template_metadata(audit)
+        self.assertEqual(
+            set(audit_metadata),
+            {
+                "schema_version",
+                "record_type",
+                "timestamp",
+                "active_scopes",
+                "verification",
+                "completed_scope_id",
+                "authorization_basis",
+            },
+        )
+        self.assertEqual(audit_metadata["schema_version"], 1)
+        self.assertEqual(audit_metadata["record_type"], "completion-audit")
+        audit_scope = audit_metadata["active_scopes"][0]
+        self.assertIs(audit_scope["highest_authorized"], True)
+        self.assertIs(audit_scope["remaining_work"], False)
+        self.assertEqual(audit_metadata["completed_scope_id"], audit_scope["scope_id"])
+        self.assertEqual(
+            audit[audit_match.end() :].lstrip().splitlines()[0],
+            "# Completion audit",
         )
         self.assertEqual(level_two_headings(audit), AUDIT_SECTIONS)
         self.assertNotIn("## Exact next action", audit)
@@ -178,6 +329,11 @@ class DistributionTests(unittest.TestCase):
         ):
             self.assertEqual(set(fragment["hooks"]), {"SessionStart", "PostToolUse"})
             self.assertNotIn("Stop", fragment["hooks"])
+            if platform == "claude":
+                self.assertEqual(
+                    fragment["hooks"]["SessionStart"][0]["matcher"],
+                    "startup|resume|clear|compact",
+                )
             self.assertEqual(fragment["hooks"]["PostToolUse"][0]["matcher"], matcher)
             for host_event, cli_event in (
                 ("SessionStart", "session-start"),
@@ -187,9 +343,132 @@ class DistributionTests(unittest.TestCase):
                 self.assertEqual(hook["type"], "command")
                 self.assertEqual(
                     hook["command"],
-                    "python -m agent_handoff_toolkit hook "
+                    "python .agent-handoff-toolkit/runner.py hook "
                     f"--platform {platform} --event {cli_event}",
                 )
+                if platform == "codex":
+                    self.assertEqual(hook["commandWindows"], hook["command"])
+
+    def test_source_templates_validate_after_materializing_the_timestamp(self) -> None:
+        timestamp_placeholder = "<replace with ISO-8601 timestamp including timezone>"
+        with tempfile.TemporaryDirectory() as directory:
+            consumer = Path(directory)
+            install_copy_artifacts(consumer)
+            for name in ("continuation.md", "completion-audit.md"):
+                template = consumer / "handoffs" / "templates" / name
+                materialized = consumer / "handoffs" / name
+                materialized.write_text(
+                    template.read_text(encoding="utf-8").replace(
+                        timestamp_placeholder, "2026-09-06T12:00:00Z"
+                    ),
+                    encoding="utf-8",
+                    newline="\n",
+                )
+                result = run_installed_command(
+                    f"python .agent-handoff-toolkit/runner.py validate {materialized}",
+                    consumer,
+                )
+                with self.subTest(template=name):
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_installed_runner_executes_explicit_commands_without_an_ambient_package(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            consumer = Path(directory)
+            install_copy_artifacts(consumer)
+            fixture = ROOT / "tests" / "fixtures" / "continuation.json"
+            record = consumer / "handoffs" / "current.md"
+            record.parent.mkdir(parents=True, exist_ok=True)
+
+            rendered = run_installed_command(
+                "python .agent-handoff-toolkit/runner.py render "
+                f"{fixture} --output {record}",
+                consumer,
+            )
+            validated = run_installed_command(
+                f"python .agent-handoff-toolkit/runner.py validate {record}",
+                consumer,
+            )
+            tail = run_installed_command(
+                f"python .agent-handoff-toolkit/runner.py render-tail {record}",
+                consumer,
+            )
+            context_health = run_installed_command(
+                "python .agent-handoff-toolkit/runner.py context-health "
+                "--percent 61 --session-id distribution-test "
+                "--state-dir .agent-handoff-toolkit/context-state",
+                consumer,
+            )
+
+        self.assertEqual(rendered.returncode, 0, rendered.stderr)
+        self.assertEqual(validated.returncode, 0, validated.stderr)
+        self.assertIn("valid:", validated.stdout)
+        self.assertEqual(tail.returncode, 0, tail.stderr)
+        self.assertIn("[Continuation handoff]", tail.stdout)
+        self.assertEqual(context_health.returncode, 0, context_health.stderr)
+        self.assertIn("60%", context_health.stdout)
+
+    def test_hook_fragment_commands_execute_against_the_installed_layout(self) -> None:
+        payloads = {
+            "claude": json.dumps(
+                {
+                    "tool_name": "Write",
+                    "tool_input": {"file_path": "handoffs/current.md"},
+                }
+            ),
+            "codex": json.dumps(
+                {
+                    "tool_name": "apply_patch",
+                    "tool_input": {
+                        "command": "*** Begin Patch\n"
+                        "*** Update File: handoffs/current.md\n"
+                        "*** End Patch\n"
+                    },
+                }
+            ),
+        }
+        fragments = {
+            platform: json.loads(
+                (
+                    ROOT
+                    / "adapters"
+                    / platform
+                    / (
+                        "settings.fragment.json"
+                        if platform == "claude"
+                        else "hooks.fragment.json"
+                    )
+                ).read_text(encoding="utf-8")
+            )
+            for platform in ("claude", "codex")
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            consumer = Path(directory)
+            install_copy_artifacts(consumer)
+            for platform, fragment in fragments.items():
+                for event, raw in (
+                    ("SessionStart", "{}"),
+                    ("PostToolUse", payloads[platform]),
+                ):
+                    command = fragment["hooks"][event][0]["hooks"][0]["command"]
+                    result = run_installed_command(command, consumer, raw)
+                    with self.subTest(platform=platform, event=event):
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        output = json.loads(result.stdout)
+                        self.assertEqual(
+                            output["hookSpecificOutput"]["hookEventName"], event
+                        )
+                        self.assertIn(
+                            "docs/agent-handoff/contract.md",
+                            output["hookSpecificOutput"]["additionalContext"],
+                        )
+
+                malformed = run_installed_command(command, consumer, "{")
+                with self.subTest(platform=platform, event="malformed"):
+                    self.assertEqual(malformed.returncode, 0, malformed.stderr)
+                    self.assertEqual(malformed.stdout, "")
 
 
 if __name__ == "__main__":
