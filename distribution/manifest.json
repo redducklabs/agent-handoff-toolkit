@@ -1,0 +1,73 @@
+{
+  "manifest_version": 1,
+  "record_schema_version": 1,
+  "artifacts": [
+    {
+      "source": "docs/contract.md",
+      "sha256": "16f2b672ff5b4424fb3566ef6a9e105eeac5c27cd34f273188eb25d26be5345b",
+      "install": {
+        "mode": "copy",
+        "transform": "none",
+        "targets": [
+          "docs/agent-handoff/contract.md"
+        ]
+      }
+    },
+    {
+      "source": "skills/agent-handoff/SKILL.md",
+      "sha256": "f7f0e98abbdfd53fda028c8ab8f5c081cf5e28ed5d45df85465d9668527ce891",
+      "install": {
+        "mode": "copy",
+        "transform": "none",
+        "targets": [
+          ".agents/skills/agent-handoff/SKILL.md",
+          ".claude/skills/agent-handoff/SKILL.md"
+        ]
+      }
+    },
+    {
+      "source": "templates/continuation.md",
+      "sha256": "e1d9bb10dfdb88886bdd7fe6493e9de523ab701cdb31959198cf81a419faae82",
+      "install": {
+        "mode": "copy",
+        "transform": "none",
+        "targets": [
+          "handoffs/templates/continuation.md"
+        ]
+      }
+    },
+    {
+      "source": "templates/completion-audit.md",
+      "sha256": "f0d7532ad16afe1845745862bb8851fde948e8fd654bd6ad045d21e87669d6f6",
+      "install": {
+        "mode": "copy",
+        "transform": "none",
+        "targets": [
+          "handoffs/templates/completion-audit.md"
+        ]
+      }
+    },
+    {
+      "source": "adapters/claude/settings.fragment.json",
+      "sha256": "3583a99613abe5b21d8156d3d1f4e90bcef206fb3409409d62ecc290a18cda93",
+      "install": {
+        "mode": "merge-json",
+        "transform": "none",
+        "targets": [
+          ".claude/settings.json"
+        ]
+      }
+    },
+    {
+      "source": "adapters/codex/hooks.fragment.json",
+      "sha256": "324e34b4348ebd43fafc6dea10d04cc019898c0bc76fb572731ea3ceff95d40c",
+      "install": {
+        "mode": "merge-json",
+        "transform": "none",
+        "targets": [
+          ".codex/hooks.json"
+        ]
+      }
+    }
+  ]
+}

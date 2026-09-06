@@ -1,0 +1,27 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -m agent_handoff_toolkit hook --platform codex --event session-start",
+            "commandWindows": "python -m agent_handoff_toolkit hook --platform codex --event session-start"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "apply_patch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -m agent_handoff_toolkit hook --platform codex --event post-tool-use",
+            "commandWindows": "python -m agent_handoff_toolkit hook --platform codex --event post-tool-use"
+          }
+        ]
+      }
+    ]
+  }
+}
