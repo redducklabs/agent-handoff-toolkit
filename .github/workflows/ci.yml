@@ -17,6 +17,7 @@ jobs:
   test:
     name: Python ${{ matrix.python-version }}
     runs-on: redducklabs-runners
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
