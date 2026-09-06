@@ -716,7 +716,7 @@ def _absolute_markdown_path(record_path: str | os.PathLike[str]) -> str:
     if not isinstance(raw, str) or not raw:
         raise ValueError("unsafe-path: record path must be non-empty text")
     if any(
-        character in "<>\u2028\u2029" or unicodedata.category(character).startswith("C")
+        character in "<>\u2028\u2029" or unicodedata.category(character) in {"Cc", "Cs"}
         for character in raw
     ):
         raise ValueError(

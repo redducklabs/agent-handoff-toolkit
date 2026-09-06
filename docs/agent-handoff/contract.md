@@ -12,9 +12,11 @@ Completion of the highest authorized epic, feature, rollout, or explicitly stand
 
 Every active scope declares `scope_id`, `scope_kind`, `parent_scope_id`, `highest_authorized`, `remaining_work`, `remaining_code`, `remaining_code_detail`, and `status`. Scope kind is `unit`, `issue`, `phase`, `epic`, `rollout`, or `standalone`.
 
+Status is `pending`, `in-progress`, `blocked`, or `complete`. A scope with status `complete` has neither remaining work nor remaining code. The highest-authorized scope of a continuation has a nonterminal status (`pending`, `in-progress`, or `blocked`); the highest-authorized scope of a completion audit has status `complete`.
+
 Exactly one active scope is highest-authorized. Every non-root parent reference resolves within the scope list, and the graph is acyclic. The highest-authorized scope has no parent.
 
-A continuation requires `remaining_work: true` at the highest-authorized scope. A completion audit requires `remaining_work: false` there. `remaining_code_detail` must explain both `true` and `false` answers. Code, review/UAT/decision work, and completed work remain distinct.
+A continuation requires `remaining_work: true` at the highest-authorized scope. A completion audit requires `remaining_work: false` there. `remaining_code: true` implies `remaining_work: true` for the same scope. A true `remaining_work` or `remaining_code` value on a descendant requires the corresponding value to be true on every ancestor. `remaining_code_detail` must explain both `true` and `false` answers. Code, review/UAT/decision work, and completed work remain distinct.
 
 ## Question gate
 
@@ -74,6 +76,19 @@ Its metadata identifies the completed highest-authorized scope and authorization
 ## Verification evidence
 
 Every verification entry has a command or check, a result of `pass`, `fail`, or `not-run`, and evidence or a reason. Never convert `not-run` into `pass`. A failing check remains visible until it is rerun successfully or explicitly carried as a known risk.
+
+## Canonical derived sections
+
+Structured metadata is authoritative for facts that also appear in narrative sections. The renderer generates these sections; authors do not maintain separate prose copies:
+
+- **Verification evidence** is the complete `verification` list for both record types.
+- **Exact next action** is the continuation's complete `exact_action` object.
+- **Remaining code by active scope** is the continuation's complete `active_scopes` list.
+- **Next-session prompt** is the continuation's exact `next_session_prompt` value in a fenced `text` block.
+
+The three structured sections use deterministic JSON with UTF-8 characters preserved, keys sorted, two-space indentation, LF line endings, and a fenced `json` block long enough not to collide with content. The prompt must be non-empty, use LF line endings, and contain no leading or trailing whitespace. The renderer does not strip or otherwise normalize the prompt. It uses a fence long enough not to collide with prompt content.
+
+The validator normalizes record-document line endings to LF for parsing, regenerates every derived section from metadata, and requires exact equality with the visible section. A contradictory prose summary is invalid even when each representation would be valid in isolation.
 
 ## Final response
 

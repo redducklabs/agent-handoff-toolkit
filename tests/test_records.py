@@ -402,6 +402,8 @@ class RecordRenderingTests(unittest.TestCase):
         for path in (
             "/tmp/bad>\nINJECTED.md",
             "/tmp/bad<destination.md",
+            "/tmp/carriage\rreturn.md",
+            "/tmp/nul\x00byte.md",
             "/tmp/control\x01.md",
             "/tmp/line-separator\u2028injected.md",
         ):
@@ -411,13 +413,27 @@ class RecordRenderingTests(unittest.TestCase):
             ):
                 render_tail(path, text)
 
+    def test_tail_allows_unicode_format_characters_in_paths(self) -> None:
+        text = render_record(self.continuation)
+        path = "/tmp/👩‍💻-क्‍ष.md"
+        tail = render_tail(path, text)
+        self.assertTrue(tail.endswith(f"[Continuation handoff](<{path}>)"))
+
 
 class CommandLineTests(unittest.TestCase):
-    def run_cli(self, *args: str) -> subprocess.CompletedProcess[str]:
+    def run_cli(
+        self, *args: str, env_overrides: dict[str, str] | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        environment = {
+            **__import__("os").environ,
+            "PYTHONPATH": str(ROOT / "src"),
+        }
+        if env_overrides:
+            environment.update(env_overrides)
         return subprocess.run(
             [sys.executable, "-m", "agent_handoff_toolkit", *args],
             cwd=ROOT,
-            env={**__import__("os").environ, "PYTHONPATH": str(ROOT / "src")},
+            env=environment,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -454,6 +470,26 @@ class CommandLineTests(unittest.TestCase):
                 tail.stdout.rstrip().splitlines()[-1],
                 f"[Continuation handoff](<{output.resolve().as_posix()}>)",
             )
+
+    def test_render_tail_forces_utf8_when_ambient_encoding_is_legacy(self) -> None:
+        data = load_fixture("continuation.json")
+        data["next_session_prompt"] = "继续工作并保留验证证据。"
+        with tempfile.TemporaryDirectory() as directory:
+            unicode_directory = Path(directory) / "交接"
+            unicode_directory.mkdir()
+            record = unicode_directory / "继续工作.md"
+            record.write_text(render_record(data), encoding="utf-8", newline="\n")
+
+            result = self.run_cli(
+                "render-tail",
+                str(record),
+                env_overrides={"PYTHONIOENCODING": "cp1252"},
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("继续工作并保留验证证据。", result.stdout)
+        self.assertIn("交接/继续工作.md", result.stdout.replace("\\", "/"))
+        self.assertEqual(result.stderr, "")
 
 
 if __name__ == "__main__":

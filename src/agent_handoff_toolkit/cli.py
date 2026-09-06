@@ -58,9 +58,19 @@ def _repository_root(start: Path) -> Path:
     return resolved
 
 
+def _configure_output_encoding() -> None:
+    """Use deterministic UTF-8 for command output when the host supports it."""
+
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="strict")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run explicit fail-closed commands or the automatic fail-open hook."""
 
+    _configure_output_encoding()
     args = _parser().parse_args(argv)
 
     if args.command == "hook":
