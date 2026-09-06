@@ -85,6 +85,68 @@ class RecordValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "scope-state"):
             render_record(data)
 
+    def test_remaining_code_implies_work_and_descendants_propagate(self) -> None:
+        data = copy.deepcopy(self.continuation)
+        data["active_scopes"][1]["remaining_work"] = False
+        with self.assertRaisesRegex(ValueError, "scope-consistency"):
+            render_record(data)
+
+        data = copy.deepcopy(self.continuation)
+        data["active_scopes"][0]["remaining_code"] = False
+        with self.assertRaisesRegex(ValueError, "scope-propagation"):
+            render_record(data)
+
+        data = copy.deepcopy(self.continuation)
+        data["active_scopes"][1]["remaining_work"] = False
+        data["active_scopes"][1]["remaining_code"] = False
+        data["active_scopes"][1]["status"] = "complete"
+        data["active_scopes"].append(
+            {
+                "scope_id": "nested-unit",
+                "scope_kind": "unit",
+                "parent_scope_id": "core-cli",
+                "highest_authorized": False,
+                "remaining_work": True,
+                "remaining_code": False,
+                "remaining_code_detail": "Review work remains, but no code changes are known.",
+                "status": "in-progress",
+            }
+        )
+        with self.assertRaisesRegex(ValueError, "scope-propagation"):
+            render_record(data)
+
+        data = copy.deepcopy(self.audit)
+        data["active_scopes"].append(
+            {
+                "scope_id": "unfinished-child",
+                "scope_kind": "phase",
+                "parent_scope_id": "standalone-contract",
+                "highest_authorized": False,
+                "remaining_work": True,
+                "remaining_code": True,
+                "remaining_code_detail": "Implementation remains.",
+                "status": "in-progress",
+            }
+        )
+        with self.assertRaisesRegex(ValueError, "scope-propagation"):
+            render_record(data)
+
+    def test_scope_status_is_bounded_and_matches_highest_record_state(self) -> None:
+        data = copy.deepcopy(self.continuation)
+        data["active_scopes"][0]["status"] = "complete"
+        with self.assertRaisesRegex(ValueError, "scope-status"):
+            render_record(data)
+
+        data = copy.deepcopy(self.audit)
+        data["active_scopes"][0]["status"] = "in-progress"
+        with self.assertRaisesRegex(ValueError, "scope-status"):
+            render_record(data)
+
+        data = copy.deepcopy(self.continuation)
+        data["active_scopes"][1]["status"] = "almost-finished"
+        with self.assertRaisesRegex(ValueError, "scope-status"):
+            render_record(data)
+
         data = copy.deepcopy(self.audit)
         data["active_scopes"][0]["remaining_work"] = True
         with self.assertRaisesRegex(ValueError, "scope-state"):
@@ -154,6 +216,21 @@ class RecordValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "completed-scope"):
             render_record(data)
 
+    def test_prompt_requires_canonical_whitespace_and_newlines(self) -> None:
+        for prompt in (
+            " leading space",
+            "trailing space ",
+            "leading newline\n",
+            "line one\r\nline two",
+        ):
+            data = copy.deepcopy(self.continuation)
+            data["next_session_prompt"] = prompt
+            with (
+                self.subTest(prompt=repr(prompt)),
+                self.assertRaisesRegex(ValueError, "next-prompt-format"),
+            ):
+                render_record(data)
+
 
 class RecordRenderingTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -164,8 +241,97 @@ class RecordRenderingTests(unittest.TestCase):
         first = render_record(self.continuation)
         second = render_record(copy.deepcopy(self.continuation))
         self.assertEqual(first, second)
-        self.assertEqual(parse_markdown(first), self.continuation)
+        parsed = parse_markdown(first)
+        self.assertEqual(render_record(parsed), first)
+        self.assertEqual(
+            {key: value for key, value in parsed.items() if key != "sections"},
+            {
+                key: value
+                for key, value in self.continuation.items()
+                if key != "sections"
+            },
+        )
+        for section in (
+            "Objective",
+            "Authoritative references",
+            "User decisions",
+            "Repository state",
+            "Completed work",
+            "Incomplete work and risks",
+            "External effects",
+        ):
+            self.assertEqual(
+                parsed["sections"][section], self.continuation["sections"][section]
+            )
         self.assertIn("<!-- agent-handoff-metadata", first)
+
+    def test_renderer_derives_prompt_and_structured_sections_from_metadata(
+        self,
+    ) -> None:
+        self.continuation["sections"]["Verification evidence"] = "Everything passed."
+        self.continuation["sections"]["Exact next action"] = "Do something else."
+        self.continuation["sections"][
+            "Remaining code by active scope"
+        ] = "Nothing remains."
+        self.continuation["sections"]["Next-session prompt"] = "A different prompt."
+
+        text = render_record(self.continuation)
+        parsed = parse_markdown(text)
+        self.assertNotIn("Everything passed.", text)
+        self.assertNotIn("Do something else.", text)
+        self.assertNotIn("Nothing remains.", text)
+        self.assertNotIn("A different prompt.", text)
+        self.assertIn(
+            '"result": "not-run"', parsed["sections"]["Verification evidence"]
+        )
+        self.assertIn(
+            '"completion_condition": "Claude and Codex payload fixtures pass."',
+            parsed["sections"]["Exact next action"],
+        )
+        self.assertIn(
+            '"remaining_code": true',
+            parsed["sections"]["Remaining code by active scope"],
+        )
+        self.assertEqual(
+            parsed["sections"]["Next-session prompt"],
+            f"```text\n{self.continuation['next_session_prompt']}\n```",
+        )
+
+    def test_validator_rejects_contradictory_derived_sections(self) -> None:
+        text = render_record(self.continuation)
+        parsed = parse_markdown(text)
+        replacements = {
+            "Verification evidence": "Everything passed.",
+            "Exact next action": "Do something else.",
+            "Remaining code by active scope": "Nothing remains.",
+            "Next-session prompt": "```text\nA different prompt.\n```",
+        }
+        for section, replacement in replacements.items():
+            with self.subTest(section=section):
+                contradictory = text.replace(
+                    parsed["sections"][section], replacement, 1
+                )
+                self.assertIn("section-consistency", issue_codes(contradictory))
+
+        audit_text = render_record(self.audit)
+        audit_verification = parse_markdown(audit_text)["sections"][
+            "Verification evidence"
+        ]
+        contradictory_audit = audit_text.replace(
+            audit_verification, "No verification was performed.", 1
+        )
+        self.assertIn("section-consistency", issue_codes(contradictory_audit))
+
+    def test_headings_inside_backtick_and_tilde_fences_are_not_sections(self) -> None:
+        objective = (
+            "````markdown\n## Hidden in backticks\n```\n"
+            "## Still hidden\n````\n\n"
+            "~~~markdown\n## Hidden in tildes\n~~~~"
+        )
+        self.continuation["sections"]["Objective"] = objective
+        text = render_record(self.continuation)
+        self.assertEqual(validate_markdown(text), [])
+        self.assertEqual(parse_markdown(text)["sections"]["Objective"], objective)
 
     def test_render_uses_canonical_section_order_not_json_key_order(self) -> None:
         self.continuation["sections"] = dict(
@@ -230,6 +396,20 @@ class RecordRenderingTests(unittest.TestCase):
         tail = render_tail("/tmp/handoff.md", render_record(self.continuation))
         self.assertTrue(tail.startswith("````text\n"))
         self.assertIn("\n````\n\n[Continuation handoff]", tail)
+
+    def test_tail_rejects_unsafe_markdown_path_characters(self) -> None:
+        text = render_record(self.continuation)
+        for path in (
+            "/tmp/bad>\nINJECTED.md",
+            "/tmp/bad<destination.md",
+            "/tmp/control\x01.md",
+            "/tmp/line-separator\u2028injected.md",
+        ):
+            with (
+                self.subTest(path=repr(path)),
+                self.assertRaisesRegex(ValueError, "unsafe-path"),
+            ):
+                render_tail(path, text)
 
 
 class CommandLineTests(unittest.TestCase):
