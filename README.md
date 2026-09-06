@@ -36,6 +36,8 @@ Automatic hooks fail open so they cannot break an agent session. Explicit comman
 
 V1 ships source artifacts and documents the integration contract. The next rollout increment will add manifest-based `install` and `sync` commands with dry-run-first behavior, tagged-version pinning, managed-file hashes, and merge-safe updates for existing `AGENTS.md`, `CLAUDE.md`, and Claude settings. See [consumer integration](docs/consumer-integration.md).
 
+Before enabling the distributed hooks, run `python --version` in the consumer repository and verify that `python` resolves to Python 3.11 or newer. The manifest declares this exact launcher and minimum version; the hook fragments use the same command.
+
 ## Development
 
 ```powershell

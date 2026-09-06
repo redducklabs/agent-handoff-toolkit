@@ -47,6 +47,7 @@ REQUIRED_SKILL_GATES = {
 }
 
 EXPECTED_INSTALL_TARGETS = {
+    "LICENSE": {".agent-handoff-toolkit/LICENSE"},
     "docs/agent-handoff/contract.md": {"docs/agent-handoff/contract.md"},
     "skills/agent-handoff/SKILL.md": {
         ".agents/skills/agent-handoff/SKILL.md",
@@ -181,6 +182,33 @@ class DistributionTests(unittest.TestCase):
 
         self.assertEqual(actual, EXPECTED_INSTALL_TARGETS)
 
+    def test_declared_python_launcher_is_available_at_the_minimum_version(self) -> None:
+        runtime = load_manifest()["runtime"]
+        self.assertEqual(
+            runtime,
+            {"python_command": "python", "minimum_version": "3.11"},
+        )
+        try:
+            result = subprocess.run(
+                [runtime["python_command"], "--version"],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+        except FileNotFoundError:
+            self.fail(
+                "distribution prerequisite failed: `python --version` is unavailable"
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        match = re.search(r"Python (?P<major>\d+)\.(?P<minor>\d+)", result.stdout)
+        self.assertIsNotNone(match, result.stdout)
+        actual = (int(match.group("major")), int(match.group("minor")))
+        minimum = tuple(int(part) for part in runtime["minimum_version"].split("."))
+        self.assertGreaterEqual(actual, minimum)
+
     def test_skill_has_byte_identical_dual_host_install_semantics(self) -> None:
         manifest = load_manifest()
         skill = next(
@@ -312,6 +340,7 @@ class DistributionTests(unittest.TestCase):
         self.assertNotIn("## Next-session prompt", audit)
 
     def test_hook_fragments_use_the_supported_event_matrix(self) -> None:
+        python_command = load_manifest()["runtime"]["python_command"]
         claude = json.loads(
             (ROOT / "adapters" / "claude" / "settings.fragment.json").read_text(
                 encoding="utf-8"
@@ -343,7 +372,7 @@ class DistributionTests(unittest.TestCase):
                 self.assertEqual(hook["type"], "command")
                 self.assertEqual(
                     hook["command"],
-                    "python .agent-handoff-toolkit/runner.py hook "
+                    f"{python_command} .agent-handoff-toolkit/runner.py hook "
                     f"--platform {platform} --event {cli_event}",
                 )
                 if platform == "codex":
@@ -408,6 +437,32 @@ class DistributionTests(unittest.TestCase):
         self.assertIn("[Continuation handoff]", tail.stdout)
         self.assertEqual(context_health.returncode, 0, context_health.stderr)
         self.assertIn("60%", context_health.stdout)
+
+    def test_installed_runner_does_not_create_unmanifested_runtime_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            consumer = Path(directory)
+            install_copy_artifacts(consumer)
+            expected = {
+                Path(*PurePosixPath(target).parts)
+                for artifact in load_manifest()["artifacts"]
+                if artifact["install"]["mode"] == "copy"
+                for target in artifact["install"]["targets"]
+            }
+
+            result = run_installed_command(
+                "python .agent-handoff-toolkit/runner.py hook "
+                "--platform codex --event session-start",
+                consumer,
+                "{}",
+            )
+            actual = {
+                path.relative_to(consumer)
+                for path in consumer.rglob("*")
+                if path.is_file()
+            }
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actual, expected)
 
     def test_hook_fragment_commands_execute_against_the_installed_layout(self) -> None:
         payloads = {

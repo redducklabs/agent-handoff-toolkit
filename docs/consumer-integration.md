@@ -4,6 +4,10 @@
 
 V1 provides the canonical contract, templates, skill, host hook fragments, and validation/rendering CLI. It does not rewrite consumer repositories. Copying files by hand is supported for evaluation but is not the long-term update path.
 
+## Runtime prerequisite
+
+Before enabling either host's hooks, run `python --version` in the consumer repository. The `python` command must resolve to Python 3.11 or newer. This requirement is machine-readable in `distribution/manifest.json` and matches the launcher in every distributed hook fragment.
+
 ## Target rollout model
 
 Consumers should pin a tagged toolkit release. A future installer will:
