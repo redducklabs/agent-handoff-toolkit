@@ -10,5 +10,6 @@ Read `docs/contract.md` before changing record behavior, templates, validation, 
 - Do not add secrets, credentials, prompts, replies, transcripts, or customer data to fixtures or logs.
 - Use `gh` for GitHub operations.
 - Do not add AI attribution to commits or pull requests.
+- On Windows, invoke bundled Bash helper scripts only after confirming they use LF line endings; CRLF copies fail at `set -o pipefail`. Use the equivalent PowerShell setup when they are not portable.
 
 `AGENTS.md` carries the same repository-local rules for Codex. Keep the two files semantically identical.
