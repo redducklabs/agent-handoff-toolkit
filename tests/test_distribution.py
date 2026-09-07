@@ -50,6 +50,7 @@ EXPECTED_INSTALL_TARGETS = {
     "distribution/consumer-instructions.md": {"AGENTS.md", "CLAUDE.md"},
     "LICENSE": {".agent-handoff-toolkit/LICENSE"},
     "docs/agent-handoff/contract.md": {"docs/agent-handoff/contract.md"},
+    "docs/consumer-integration.md": {".agent-handoff-toolkit/consumer-integration.md"},
     "skills/agent-handoff/SKILL.md": {
         ".agents/skills/agent-handoff/SKILL.md",
         ".claude/skills/agent-handoff/SKILL.md",
@@ -236,7 +237,7 @@ class DistributionTests(unittest.TestCase):
 
         for phrase in (
             "deprecated historical artifacts",
-            "do not open, read, review, validate, migrate, summarize, or reconcile",
+            "do not open, read, review, validate, migrate, summarize, reconcile, or rewrite",
             "new or materially replaced records",
             "cannot loosen or contradict",
             "highest authorized scope",
@@ -246,12 +247,32 @@ class DistributionTests(unittest.TestCase):
             "consumer repository root",
             "automatic codex hook discovery",
             "consumer regression tests",
+            "deprecated by policy",
+            "rewrite",
         ):
             self.assertIn(phrase, combined)
 
         self.assertNotIn("validate existing records", integration)
         self.assertIn("merged claude and codex hook json", integration)
         self.assertIn("continuation and completion-audit", integration)
+
+    def test_managed_instruction_file_references_are_installed(self) -> None:
+        instructions = (ROOT / "distribution/consumer-instructions.md").read_text(
+            encoding="utf-8"
+        )
+        installed_targets = {
+            target
+            for artifact in load_manifest()["artifacts"]
+            for target in artifact["install"]["targets"]
+        }
+        file_references = {
+            match.group(1)
+            for match in re.finditer(r"`([^`\n]+)`", instructions)
+            if "/" in match.group(1) and match.group(1).endswith((".md", ".py"))
+        }
+
+        self.assertTrue(file_references)
+        self.assertLessEqual(file_references, installed_targets)
 
     def test_managed_artifact_bytes_are_stable_across_git_checkouts(self) -> None:
         sources = [artifact["source"] for artifact in load_manifest()["artifacts"]]
@@ -600,7 +621,10 @@ class DistributionTests(unittest.TestCase):
             self.assertEqual(state["toolkit_version"], "0.2.1")
             self.assertEqual(
                 [target["target"] for target in state["targets"]],
-                sorted(target["target"] for target in state["targets"]),
+                sorted(
+                    (target["target"] for target in state["targets"]),
+                    key=str.casefold,
+                ),
             )
 
             for instruction_name in ("AGENTS.md", "CLAUDE.md"):

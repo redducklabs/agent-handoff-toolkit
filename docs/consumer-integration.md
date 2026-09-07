@@ -51,11 +51,11 @@ Existing project instructions and unrelated JSON settings remain
 consumer-owned. The installer refuses locally modified, missing, or
 identity-colliding owned content instead of overwriting it.
 
-Pre-toolkit handoffs are deprecated historical artifacts. Installation and
-synchronization preserve them as opaque files: do not open, read, review,
-validate, migrate, summarize, or reconcile them. No unresolved question or
-content in those files gates adoption. The current schema and policy apply only
-to new or materially replaced records.
+Pre-toolkit handoffs are deprecated historical artifacts by policy. Installation
+and synchronization preserve them as opaque files: do not open, read, review,
+validate, migrate, summarize, reconcile, or rewrite them. No unresolved question
+or content in those files gates adoption. The current schema and policy apply
+only to new or materially replaced records.
 
 Each target is stale-checked immediately before its write and published with a
 per-file atomic replacement. Multi-file atomicity is not provided. If a later
@@ -69,10 +69,10 @@ Run these checks on the installation branch before enabling routine use:
 
 1. Run `sync --check` from the pinned release checkout. It must report `CURRENT`
    without changing the consumer worktree.
-2. Compare `.agent-handoff-toolkit/install-state.json` with the manifest and
-   confirm every managed copy, managed block, and merge-owned JSON entry is
-   represented. Inspect the merged Claude and Codex hook JSON while leaving
-   unrelated settings unchanged.
+2. Compare `.agent-handoff-toolkit/install-state.json` with the pinned release
+   checkout's `distribution/manifest.json`. Confirm every managed copy, managed
+   block, and merge-owned JSON entry is represented. Inspect the merged Claude
+   and Codex hook JSON while leaving unrelated settings unchanged.
 3. From the consumer repository root, execute every installed Claude and Codex
    hook command directly with representative matching and non-matching input.
    Do not infer runtime viability from valid JSON alone.
@@ -105,8 +105,8 @@ Before bulk adoption, select one repository with mature handoffs and one with li
    protect it; do not open the records.
 2. Run the v0.2.1 installer in dry-run mode from its release checkout.
 3. Review the proposed instruction and hook merges.
-4. Apply on a branch and mark pre-toolkit records deprecated without reading or
-   rewriting them.
+4. Apply on a branch. Treat pre-toolkit records as deprecated by policy without
+   marking, reading, or rewriting individual files.
 5. Exercise one continuation and one highest-scope completion audit in both Claude Code and Codex.
 6. Record compatibility exceptions as project-local overlays, not forks of the core contract.
 

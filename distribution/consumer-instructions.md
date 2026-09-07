@@ -7,10 +7,10 @@ before creating or changing a continuation or completion audit.
 - The contract is the shared minimum for new records. Project overlays may add
   stricter requirements, but cannot loosen or contradict the record-type
   decision, metadata-derived canonical sections, or final-tail requirements.
-- Treat every pre-toolkit handoff as a deprecated historical artifact. During
-  installation or synchronization, do not open, read, review, validate, migrate,
-  summarize, or reconcile those records. Apply the current contract only to new
-  or materially replaced records.
+- Treat every pre-toolkit handoff as a deprecated historical artifact by policy.
+  During installation or synchronization, do not open, read, review, validate,
+  migrate, summarize, reconcile, or rewrite those records. Apply the current
+  contract only to new or materially replaced records.
 - Treat verification results, exact next actions, and other canonical sections
   as generated content derived from record metadata, not handwritten prose.
 - Validate new or materially replaced records with
@@ -21,4 +21,5 @@ before creating or changing a continuation or completion audit.
   vendored runner intentionally contains the record and hook runtime, not the
   installer modules needed to update itself.
 - Complete the post-install acceptance checklist in
-  `docs/consumer-integration.md` before enabling the workflow in a consumer.
+  `.agent-handoff-toolkit/consumer-integration.md` before enabling the workflow
+  in a consumer.
