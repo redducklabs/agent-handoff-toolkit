@@ -9,6 +9,10 @@ Read `docs/agent-handoff/contract.md` before changing record behavior, templates
 - Add or update tests before implementation changes and run the full verification commands in `README.md` before reporting success.
 - Do not add secrets, credentials, prompts, replies, transcripts, or customer data to fixtures or logs.
 - Use `gh` for GitHub operations.
+- Do not use `gh pr merge --auto` as a check gate unless repository rulesets
+  actually require the checks. Without that protection GitHub merges
+  immediately; inspect `gh pr checks` and merge only after every required job
+  reports `pass`.
 - Do not add AI attribution to commits or pull requests.
 - On Windows, invoke bundled Bash helper scripts only after confirming they use LF line endings; CRLF copies fail at `set -o pipefail`. Use the equivalent PowerShell setup when they are not portable.
 - Resolved Windows setup warning: cached Bash helpers had CRLF and were unusable directly in this worktree. Use an equivalent PowerShell scratch-artifact generator with `git log` and `git diff`; source edits still use `apply_patch`.
