@@ -178,16 +178,16 @@ class DistributionTests(unittest.TestCase):
         manifest = load_manifest()
 
         self.assertEqual(manifest["manifest_version"], 2)
-        self.assertEqual(manifest["toolkit_version"], "0.2.2")
+        self.assertEqual(manifest["toolkit_version"], "0.2.3")
         self.assertEqual(manifest["text_hash"], "utf8-lf-sha256-v1")
         self.assertIn(
-            '__version__ = "0.2.2"',
+            '__version__ = "0.2.3"',
             (ROOT / "src/agent_handoff_toolkit/__init__.py").read_text(
                 encoding="utf-8"
             ),
         )
         self.assertIn(
-            'version = "0.2.2"',
+            'version = "0.2.3"',
             (ROOT / "pyproject.toml").read_text(encoding="utf-8"),
         )
         self.assertEqual(manifest["record_schema_version"], 1)
@@ -420,6 +420,31 @@ class DistributionTests(unittest.TestCase):
         }
         self.assertEqual(gates, REQUIRED_SKILL_GATES)
         self.assertIn("docs/agent-handoff/contract.md", text)
+        self.assertIn(
+            "must not reproduce the handoff document",
+            " ".join(text.lower().split()),
+        )
+
+    def test_continuation_output_contract_is_a_concise_handoff_pointer(self) -> None:
+        required_phrases = (
+            "continue from handoff",
+            "exact next action",
+            "essential blockers, decisions, and validation gates",
+            "must not reproduce the handoff document",
+            "120 words",
+        )
+        for relative_path in (
+            "README.md",
+            "docs/agent-handoff/contract.md",
+            "distribution/consumer-instructions.md",
+            "skills/agent-handoff/SKILL.md",
+        ):
+            text = " ".join(
+                (ROOT / relative_path).read_text(encoding="utf-8").lower().split()
+            )
+            with self.subTest(path=relative_path):
+                for phrase in required_phrases:
+                    self.assertIn(phrase, text)
 
     def test_templates_match_the_contract_section_shapes(self) -> None:
         continuation = (ROOT / "templates" / "continuation.md").read_text(
@@ -576,6 +601,14 @@ class DistributionTests(unittest.TestCase):
                         self.assertIn("[Continuation handoff]", tail.stdout)
                         self.assertIn("```text", tail.stdout)
                         self.assertIn(expected_path, tail.stdout)
+                        self.assertIn("Continue from handoff:", tail.stdout)
+                        self.assertIn("Exact next action:", tail.stdout)
+                        self.assertIn(
+                            "Essential blockers, decisions, and validation gates:",
+                            tail.stdout,
+                        )
+                        self.assertNotIn("<!-- agent-handoff-metadata", tail.stdout)
+                        self.assertNotIn("## Objective", tail.stdout)
                     else:
                         self.assertIn("[Audit record (not a handoff)]", tail.stdout)
                         self.assertIn(expected_path, tail.stdout)
@@ -616,6 +649,8 @@ class DistributionTests(unittest.TestCase):
         self.assertIn("valid:", validated.stdout)
         self.assertEqual(tail.returncode, 0, tail.stderr)
         self.assertIn("[Continuation handoff]", tail.stdout)
+        self.assertIn("Continue from handoff:", tail.stdout)
+        self.assertNotIn("<!-- agent-handoff-metadata", tail.stdout)
         self.assertEqual(context_health.returncode, 0, context_health.stderr)
         self.assertIn("60%", context_health.stdout)
 
@@ -628,7 +663,7 @@ class DistributionTests(unittest.TestCase):
 
             result = run_installed_command(
                 "python .agent-handoff-toolkit/runner.py install "
-                "--target . --release v0.2.2 --dry-run",
+                "--target . --release v0.2.3 --dry-run",
                 consumer,
             )
 
@@ -669,18 +704,18 @@ class DistributionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             consumer = Path(directory)
             result = run_source_cli(
-                "install", "--apply", target=consumer, release="v0.2.2"
+                "install", "--apply", target=consumer, release="v0.2.3"
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            check = run_source_cli("sync", "--check", target=consumer, release="v0.2.2")
+            check = run_source_cli("sync", "--check", target=consumer, release="v0.2.3")
             self.assertEqual(check.returncode, 0, check.stderr)
             state = json.loads(
                 (consumer / ".agent-handoff-toolkit/install-state.json").read_text(
                     encoding="utf-8"
                 )
             )
-            self.assertEqual(state["release"], "v0.2.2")
-            self.assertEqual(state["toolkit_version"], "0.2.2")
+            self.assertEqual(state["release"], "v0.2.3")
+            self.assertEqual(state["toolkit_version"], "0.2.3")
             self.assertEqual(
                 [target["target"] for target in state["targets"]],
                 sorted(
@@ -763,7 +798,7 @@ class DistributionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             consumer = Path(directory)
             installed = run_source_cli(
-                "install", "--apply", target=consumer, release="v0.2.2"
+                "install", "--apply", target=consumer, release="v0.2.3"
             )
             self.assertEqual(installed.returncode, 0, installed.stderr)
             installed_configs = {

@@ -1,6 +1,6 @@
 """Public API for agent handoff records."""
 
-__version__ = "0.2.2"
+__version__ = "0.2.3"
 
 from .records import (
     ValidationIssue,

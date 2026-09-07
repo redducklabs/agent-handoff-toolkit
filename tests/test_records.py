@@ -222,6 +222,8 @@ class RecordValidationTests(unittest.TestCase):
             "trailing space ",
             "leading newline\n",
             "line one\r\nline two",
+            "line one\u2028line two",
+            "line one\x00line two",
         ):
             data = copy.deepcopy(self.continuation)
             data["next_session_prompt"] = prompt
@@ -230,6 +232,68 @@ class RecordValidationTests(unittest.TestCase):
                 self.assertRaisesRegex(ValueError, "next-prompt-format"),
             ):
                 render_record(data)
+
+    def test_prompt_rejects_oversized_or_full_record_content(self) -> None:
+        oversized = " ".join(f"word{index}" for index in range(121))
+        full_record = (
+            "<!-- agent-handoff-metadata\n{}\n-->\n\n"
+            "# Session continuation\n\n## Objective\n\nPasted record."
+        )
+        fenced_document = "```markdown\n## Objective\nPasted record.\n```"
+
+        for prompt, issue_code in (
+            (oversized, "next-prompt-size"),
+            (full_record, "next-prompt-document"),
+            (fenced_document, "next-prompt-document"),
+        ):
+            data = copy.deepcopy(self.continuation)
+            data["next_session_prompt"] = prompt
+            with (
+                self.subTest(prompt=prompt[:40]),
+                self.assertRaisesRegex(ValueError, issue_code),
+            ):
+                render_record(data)
+
+    def test_prompt_rejects_more_than_six_nonempty_lines(self) -> None:
+        data = copy.deepcopy(self.continuation)
+        data["next_session_prompt"] = "\n".join(
+            f"- Gate {index}." for index in range(1, 8)
+        )
+
+        with self.assertRaisesRegex(ValueError, "next-prompt-lines"):
+            render_record(data)
+
+    def test_prompt_limits_accept_the_boundary_and_reject_the_next_unit(self) -> None:
+        for accepted, rejected, issue_code in (
+            (" ".join(["word"] * 120), " ".join(["word"] * 121), "next-prompt-size"),
+            ("x" * 1200, "x" * 1201, "next-prompt-size"),
+            ("\n".join(["gate"] * 6), "\n".join(["gate"] * 7), "next-prompt-lines"),
+        ):
+            with self.subTest(issue=issue_code, accepted_length=len(accepted)):
+                data = copy.deepcopy(self.continuation)
+                data["next_session_prompt"] = accepted
+                render_record(data)
+                data["next_session_prompt"] = rejected
+                with self.assertRaisesRegex(ValueError, issue_code):
+                    render_record(data)
+
+    def test_exact_action_rejects_document_or_multiline_injection(self) -> None:
+        document = "<!-- agent-handoff-metadata -->"
+        for field in ("action", "target", "constraints", "completion_condition"):
+            for value in (
+                document,
+                "first line\n## Objective",
+                "first line\u2028spoofed label",
+                "first line\x00spoofed label",
+                ["Safe item.", document],
+            ):
+                data = copy.deepcopy(self.continuation)
+                data["exact_action"][field] = value
+                with (
+                    self.subTest(field=field, value=value),
+                    self.assertRaisesRegex(ValueError, "exact-action-format"),
+                ):
+                    render_record(data)
 
 
 class RecordRenderingTests(unittest.TestCase):
@@ -363,11 +427,21 @@ class RecordRenderingTests(unittest.TestCase):
         prompt = self.continuation["next_session_prompt"]
         self.assertEqual(
             tail,
-            f"```text\n{prompt}\n```\n\n"
+            "```text\n"
+            "Continue from handoff: C:/work spaces/handoffs/继续工作.md\n"
+            "Exact next action: Implement the host payload normalizer.\n"
+            "Target: src/handoff_toolkit/hooks.py\n"
+            "Constraints: Keep the adapter independent of record policy.\n"
+            "Completion gate: Claude and Codex payload fixtures pass.\n"
+            "Essential blockers, decisions, and validation gates:\n"
+            f"{prompt}\n"
+            "```\n\n"
             "[Continuation handoff](<C:/work%20spaces/handoffs/"
             "%E7%BB%A7%E7%BB%AD%E5%B7%A5%E4%BD%9C.md>)",
         )
         self.assertEqual(tail.rstrip().splitlines()[-1], tail.splitlines()[-1])
+        self.assertNotIn("<!-- agent-handoff-metadata", tail)
+        self.assertNotIn("## Objective", tail)
 
     def test_posix_tail_and_audit_tail(self) -> None:
         continuation_tail = render_tail(
@@ -390,13 +464,40 @@ class RecordRenderingTests(unittest.TestCase):
         )
         self.assertNotIn("```", audit_tail)
 
-    def test_tail_selects_a_safe_fence_for_prompt_code_blocks(self) -> None:
+    def test_tail_rejects_prompt_code_blocks_instead_of_reproducing_them(self) -> None:
         self.continuation["next_session_prompt"] = (
             "Inspect this example:\n```python\nprint('safe')\n```\nThen continue."
         )
+        with self.assertRaisesRegex(ValueError, "next-prompt-document"):
+            render_record(self.continuation)
+
+    def test_tail_rejects_a_generated_summary_over_the_output_budget(self) -> None:
+        self.continuation["exact_action"]["constraints"] = "x" * 2200
+
+        with self.assertRaisesRegex(ValueError, "continuation-tail-size"):
+            render_record(self.continuation)
+
+    def test_tail_preserves_list_valued_v1_exact_action_fields(self) -> None:
+        self.continuation["exact_action"]["constraints"] = [
+            "Keep record policy in the core.",
+            "Keep adapters host-specific.",
+        ]
+
         tail = render_tail("/tmp/handoff.md", render_record(self.continuation))
-        self.assertTrue(tail.startswith("````text\n"))
-        self.assertIn("\n````\n\n[Continuation handoff]", tail)
+
+        self.assertIn(
+            "Constraints: Keep record policy in the core.; Keep adapters host-specific.",
+            tail,
+        )
+
+    def test_tail_rejects_an_oversized_complete_output_from_path_expansion(
+        self,
+    ) -> None:
+        text = render_record(self.continuation)
+        oversized_path = "/tmp/" + ("é" * 1000) + ".md"
+
+        with self.assertRaisesRegex(ValueError, "continuation-tail-size"):
+            render_tail(oversized_path, text)
 
     def test_tail_rejects_unsafe_markdown_path_characters(self) -> None:
         text = render_record(self.continuation)

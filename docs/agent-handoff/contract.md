@@ -26,7 +26,7 @@ If the user is unavailable or declines a gating decision, do not present the rec
 
 ## Live-state reconciliation
 
-Repository, remote, tracker, and rollout facts in a record are timestamped snapshots, not authority. The next-session prompt must direct the agent to:
+Repository, remote, tracker, and rollout facts in a record are timestamped snapshots, not authority. The agent continuing from the referenced handoff must:
 
 1. Read repository instructions, governing design/plan/ADRs, and the record.
 2. Inspect live branch, HEAD, index, untracked files, remote state, tracker hierarchy, and rollout state relevant to the work.
@@ -84,20 +84,27 @@ Structured metadata is authoritative for facts that also appear in narrative sec
 - **Verification evidence** is the complete `verification` list for both record types.
 - **Exact next action** is the continuation's complete `exact_action` object.
 - **Remaining code by active scope** is the continuation's complete `active_scopes` list.
-- **Next-session prompt** is the continuation's exact `next_session_prompt` value in a fenced `text` block.
+- **Next-session prompt** is the continuation's exact `next_session_prompt` value in a fenced `text` block. It contains only essential blockers, settled decisions, and validation gates not already represented by `exact_action`.
 
-The three structured sections use deterministic JSON with UTF-8 characters preserved, keys sorted, two-space indentation, LF line endings, and a fenced `json` block long enough not to collide with content. The prompt must be non-empty, use LF line endings, and contain no leading or trailing whitespace. The renderer does not strip or otherwise normalize the prompt. It uses a fence long enough not to collide with prompt content.
+The structured sections use deterministic JSON with UTF-8 characters preserved, keys sorted, two-space indentation, LF line endings, and a fenced `json` block long enough not to collide with content. The prompt must be non-empty, use LF line endings, contain no unsafe control or line-separator characters or leading or trailing whitespace, and use at most six non-empty lines, 120 words, and 1,200 characters. It must not contain a Markdown fence or handoff-document structure. The renderer does not strip or otherwise normalize it.
+
+Each `exact_action` field is either non-empty text or a non-empty list of text
+items, preserving schema-v1 compatibility. Every item is trimmed, single-line,
+and free of unsafe control or line-separator characters, Markdown fences, and
+handoff-document structure. The tail joins list items with `; `.
 
 The validator normalizes record-document line endings to LF for parsing, regenerates every derived section from metadata, and requires exact equality with the visible section. A contradictory prose summary is invalid even when each representation would be valid in isolation.
 
 ## Final response
 
-For a continuation, the response tail is generated from the stored prompt and contains exactly:
+For a continuation, the response tail contains exactly:
 
-1. The prompt in a fenced copy/paste block.
-2. An absolute clickable Markdown link to the continuation as the final non-whitespace line.
+1. One fenced `text` block beginning with `Continue from handoff` and the absolute handoff path.
+2. The exact action, target, constraints, and completion gate from metadata.
+3. Only the stored essential blockers, decisions, and validation gates.
+4. An absolute clickable Markdown link to the continuation as the final non-whitespace line.
 
-The record stores repository-relative paths; the response renderer resolves the host-specific absolute path. Completion responses label their link **Audit record (not a handoff)** and do not generate a restart prompt.
+The complete generated tail, including its fence and link, is limited to 300 words and 2,400 characters. It must not reproduce the handoff document. The detailed record remains the source of truth; the tail is only a concise pointer and executable start. Completion responses label their link **Audit record (not a handoff)** and do not generate a restart prompt.
 
 ## Enforcement boundary
 
