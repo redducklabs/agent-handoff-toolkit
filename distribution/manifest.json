@@ -10,7 +10,7 @@
   "artifacts": [
     {
       "source": "distribution/consumer-instructions.md",
-      "sha256": "7a0941325bbdbdde2643b425eac42b0c14e9af4d512dd2acfdff2600b70800ce",
+      "sha256": "bb10be0b5c6ab3aeaaab92bdca72aa7d99a7c8dc1c298255c5ac9ee4903de1d9",
       "block_id": "agent-handoff-toolkit",
       "install": {"mode": "managed-block", "transform": "none", "targets": ["AGENTS.md", "CLAUDE.md"]}
     },

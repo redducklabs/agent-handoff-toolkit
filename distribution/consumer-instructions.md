@@ -13,3 +13,6 @@ before creating or changing a continuation or completion audit.
   `python .agent-handoff-toolkit/runner.py validate <record>`.
 - Render a continuation's required final tail with
   `python .agent-handoff-toolkit/runner.py render-tail <continuation-record>`.
+- Run `install` and `sync` only from the exact toolkit release checkout. The
+  vendored runner intentionally contains the record and hook runtime, not the
+  installer modules needed to update itself.
