@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path, PurePosixPath
+from urllib.parse import quote
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = ROOT / "distribution" / "manifest.json"
@@ -111,7 +114,16 @@ def install_copy_artifacts(consumer: Path) -> None:
 def run_installed_command(
     command: str, consumer: Path, input_text: str = ""
 ) -> subprocess.CompletedProcess[str]:
-    arguments = command.split()
+    arguments = shlex.split(command, posix=os.name != "nt")
+    if os.name == "nt":
+        arguments = [
+            argument[1:-1]
+            if len(argument) >= 2
+            and argument[0] == argument[-1]
+            and argument[0] in {'"', "'"}
+            else argument
+            for argument in arguments
+        ]
     if not arguments or arguments[0] != "python":
         raise AssertionError(f"unsupported hook command: {command}")
     return subprocess.run(
@@ -166,19 +178,28 @@ class DistributionTests(unittest.TestCase):
         manifest = load_manifest()
 
         self.assertEqual(manifest["manifest_version"], 2)
-        self.assertEqual(manifest["toolkit_version"], "0.2.1")
+        self.assertEqual(manifest["toolkit_version"], "0.2.2")
         self.assertEqual(manifest["text_hash"], "utf8-lf-sha256-v1")
         self.assertIn(
-            '__version__ = "0.2.1"',
+            '__version__ = "0.2.2"',
             (ROOT / "src/agent_handoff_toolkit/__init__.py").read_text(
                 encoding="utf-8"
             ),
         )
         self.assertIn(
-            'version = "0.2.1"',
+            'version = "0.2.2"',
             (ROOT / "pyproject.toml").read_text(encoding="utf-8"),
         )
         self.assertEqual(manifest["record_schema_version"], 1)
+        expected_release = f"v{manifest['toolkit_version']}"
+        for documentation in ("README.md", "docs/consumer-integration.md"):
+            release_references = set(
+                re.findall(
+                    r"v\d+\.\d+\.\d+",
+                    (ROOT / documentation).read_text(encoding="utf-8"),
+                )
+            )
+            self.assertEqual(release_references, {expected_release})
         artifacts = manifest["artifacts"]
         self.assertIsInstance(artifacts, list)
         self.assertGreater(len(artifacts), 0)
@@ -268,6 +289,16 @@ class DistributionTests(unittest.TestCase):
         )
         self.assertIn("merged claude and codex hook json", integration_normalized)
         self.assertIn("continuation and completion-audit", integration_normalized)
+        for phrase in (
+            "hash-check the complete managed blocks",
+            "derive each command from the installed json",
+            "do not search or inspect deprecated pre-toolkit handoffs",
+            "render and validate both record types",
+            "audit record (not a handoff)",
+            "url encoding",
+            "no restart prompt",
+        ):
+            self.assertIn(phrase, integration_normalized)
 
     def test_managed_instruction_file_references_are_installed(self) -> None:
         instructions = (ROOT / "distribution/consumer-instructions.md").read_text(
@@ -515,7 +546,8 @@ class DistributionTests(unittest.TestCase):
             install_copy_artifacts(consumer)
             for name in ("continuation.md", "completion-audit.md"):
                 template = consumer / "handoffs" / "templates" / name
-                materialized = consumer / "handoffs" / name
+                materialized = consumer / "handoffs" / "fresh record Ω" / name
+                materialized.parent.mkdir(parents=True, exist_ok=True)
                 materialized.write_text(
                     template.read_text(encoding="utf-8").replace(
                         timestamp_placeholder, "2026-09-06T12:00:00Z"
@@ -524,11 +556,30 @@ class DistributionTests(unittest.TestCase):
                     newline="\n",
                 )
                 result = run_installed_command(
-                    f"python .agent-handoff-toolkit/runner.py validate {materialized}",
+                    "python .agent-handoff-toolkit/runner.py validate "
+                    f'"{materialized.relative_to(consumer).as_posix()}"',
                     consumer,
                 )
                 with self.subTest(template=name):
                     self.assertEqual(result.returncode, 0, result.stderr)
+
+                    tail = run_installed_command(
+                        "python .agent-handoff-toolkit/runner.py render-tail "
+                        f'"{materialized.relative_to(consumer).as_posix()}"',
+                        consumer,
+                    )
+                    self.assertEqual(tail.returncode, 0, tail.stderr)
+                    expected_path = quote(
+                        materialized.resolve().as_posix(), safe="/:._-"
+                    )
+                    if name == "continuation.md":
+                        self.assertIn("[Continuation handoff]", tail.stdout)
+                        self.assertIn("```text", tail.stdout)
+                        self.assertIn(expected_path, tail.stdout)
+                    else:
+                        self.assertIn("[Audit record (not a handoff)]", tail.stdout)
+                        self.assertIn(expected_path, tail.stdout)
+                        self.assertNotIn("```text", tail.stdout)
 
     def test_installed_runner_executes_explicit_commands_without_an_ambient_package(
         self,
@@ -577,7 +628,7 @@ class DistributionTests(unittest.TestCase):
 
             result = run_installed_command(
                 "python .agent-handoff-toolkit/runner.py install "
-                "--target . --release v0.2.1 --dry-run",
+                "--target . --release v0.2.2 --dry-run",
                 consumer,
             )
 
@@ -618,18 +669,18 @@ class DistributionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             consumer = Path(directory)
             result = run_source_cli(
-                "install", "--apply", target=consumer, release="v0.2.1"
+                "install", "--apply", target=consumer, release="v0.2.2"
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            check = run_source_cli("sync", "--check", target=consumer, release="v0.2.1")
+            check = run_source_cli("sync", "--check", target=consumer, release="v0.2.2")
             self.assertEqual(check.returncode, 0, check.stderr)
             state = json.loads(
                 (consumer / ".agent-handoff-toolkit/install-state.json").read_text(
                     encoding="utf-8"
                 )
             )
-            self.assertEqual(state["release"], "v0.2.1")
-            self.assertEqual(state["toolkit_version"], "0.2.1")
+            self.assertEqual(state["release"], "v0.2.2")
+            self.assertEqual(state["toolkit_version"], "0.2.2")
             self.assertEqual(
                 [target["target"] for target in state["targets"]],
                 sorted(
@@ -709,31 +760,26 @@ class DistributionTests(unittest.TestCase):
                 }
             ),
         }
-        fragments = {
-            platform: json.loads(
-                (
-                    ROOT
-                    / "adapters"
-                    / platform
-                    / (
-                        "settings.fragment.json"
-                        if platform == "claude"
-                        else "hooks.fragment.json"
-                    )
-                ).read_text(encoding="utf-8")
-            )
-            for platform in ("claude", "codex")
-        }
-
         with tempfile.TemporaryDirectory() as directory:
             consumer = Path(directory)
-            install_copy_artifacts(consumer)
-            for platform, fragment in fragments.items():
+            installed = run_source_cli(
+                "install", "--apply", target=consumer, release="v0.2.2"
+            )
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+            installed_configs = {
+                "claude": json.loads(
+                    (consumer / ".claude" / "settings.json").read_text(encoding="utf-8")
+                ),
+                "codex": json.loads(
+                    (consumer / ".codex" / "hooks.json").read_text(encoding="utf-8")
+                ),
+            }
+            for platform, config in installed_configs.items():
                 for event, raw in (
                     ("SessionStart", "{}"),
                     ("PostToolUse", payloads[platform]),
                 ):
-                    command = fragment["hooks"][event][0]["hooks"][0]["command"]
+                    command = config["hooks"][event][0]["hooks"][0]["command"]
                     result = run_installed_command(command, consumer, raw)
                     with self.subTest(platform=platform, event=event):
                         self.assertEqual(result.returncode, 0, result.stderr)
@@ -745,6 +791,11 @@ class DistributionTests(unittest.TestCase):
                             "docs/agent-handoff/contract.md",
                             output["hookSpecificOutput"]["additionalContext"],
                         )
+                        if event == "SessionStart":
+                            self.assertIn(
+                                "Do not search or inspect deprecated pre-toolkit handoffs.",
+                                output["hookSpecificOutput"]["additionalContext"],
+                            )
 
                 malformed = run_installed_command(command, consumer, "{")
                 with self.subTest(platform=platform, event="malformed"):
