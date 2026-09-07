@@ -153,6 +153,14 @@ def normalized_sha256(data: bytes) -> str:
 
 
 class DistributionTests(unittest.TestCase):
+    def test_public_repository_ci_uses_github_hosted_runners(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("runs-on: ubuntu-latest", workflow)
+        self.assertNotIn("runs-on: redducklabs-runners", workflow)
+
     def test_manifest_hashes_every_managed_artifact(self) -> None:
         manifest = load_manifest()
 
