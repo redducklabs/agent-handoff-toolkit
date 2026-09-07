@@ -6,7 +6,9 @@ This repository provides a shared contract, deterministic validation and renderi
 
 ## Status
 
-The initial toolkit is under active development. Consumer repositories are not modified automatically by this release.
+Version 0.2.0 provides release-pinned managed installation and synchronization
+from an inspectable source checkout. It preserves consumer-owned instructions,
+JSON settings, and historical records.
 
 ## Core rules
 
@@ -32,9 +34,30 @@ handoff-toolkit hook --platform claude|codex --event post-tool-use
 
 Automatic hooks fail open so they cannot break an agent session. Explicit commands fail closed and return a non-zero exit code for invalid input.
 
-## Consumer strategy
+## Consumer installation
 
-V1 ships source artifacts and documents the integration contract. The next rollout increment will add manifest-based `install` and `sync` commands with dry-run-first behavior, tagged-version pinning, managed-file hashes, and merge-safe updates for existing `AGENTS.md`, `CLAUDE.md`, and Claude settings. See [consumer integration](docs/consumer-integration.md).
+Check out the public v0.2.0 release, inspect the proposed changes, then apply
+them from that checkout:
+
+```powershell
+git clone --branch v0.2.0 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
+Set-Location agent-handoff-toolkit
+python distribution/runner.py install --target <consumer-repository> --release v0.2.0 --dry-run
+python distribution/runner.py install --target <consumer-repository> --release v0.2.0 --apply
+python distribution/runner.py sync --target <consumer-repository> --release v0.2.0 --check
+python distribution/runner.py sync --target <consumer-repository> --release v0.2.0 --apply
+```
+
+Run install and sync only in an isolated, clean Git worktree with no concurrent
+writers. Recheck the worktree after any failed apply: replacement is atomic per
+file, while multi-file rollback is best effort and preserves bytes that no
+longer match the output written by that run.
+
+`install --dry-run` and a current `sync --check` exit `0`; `sync --check`
+exits `1` when safe updates are available; and `2` reports invalid input,
+source corruption, ownership conflicts, or write failures. See
+[consumer integration](docs/consumer-integration.md) for conflict ownership,
+rollback limitations, and pilot migration notes.
 
 Before enabling the distributed hooks, run `python --version` in the consumer repository and verify that `python` resolves to Python 3.11 or newer. The manifest declares this exact launcher and minimum version; the hook fragments use the same command.
 

@@ -11,6 +11,8 @@ Read `docs/agent-handoff/contract.md` before changing record behavior, templates
 - Use `gh` for GitHub operations.
 - Do not add AI attribution to commits or pull requests.
 - On Windows, invoke bundled Bash helper scripts only after confirming they use LF line endings; CRLF copies fail at `set -o pipefail`. Use the equivalent PowerShell setup when they are not portable.
+- Resolved Windows setup warning: cached Bash helpers had CRLF and were unusable directly in this worktree. Use an equivalent PowerShell scratch-artifact generator with `git log` and `git diff`; source edits still use `apply_patch`.
 - Run Ruff through the repository configuration in `pyproject.toml`; unconfigured broad rules incorrectly reject the intentional catch-all boundary that makes automatic hooks fail open.
 
-`CLAUDE.md` carries the same repository-local rules for Claude Code. Keep the two files semantically identical.
+These repository-local rules apply to both Codex and Claude Code. Keep
+`AGENTS.md` and `CLAUDE.md` semantically identical.

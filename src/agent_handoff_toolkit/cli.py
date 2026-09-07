@@ -43,6 +43,20 @@ def _parser() -> argparse.ArgumentParser:
         / "agent-handoff-toolkit"
         / "context-health",
     )
+
+    for command in ("install", "sync"):
+        managed = subparsers.add_parser(
+            command, help=f"{command} managed toolkit artifacts"
+        )
+        managed.add_argument("--target", type=Path, required=True)
+        managed.add_argument("--source-root", type=Path)
+        managed.add_argument("--release", required=True)
+        mode = managed.add_mutually_exclusive_group(required=True)
+        mode.add_argument(
+            "--dry-run" if command == "install" else "--check",
+            action="store_true",
+        )
+        mode.add_argument("--apply", action="store_true")
     return parser
 
 
@@ -56,6 +70,12 @@ def _repository_root(start: Path) -> Path:
         if (candidate / ".git").exists():
             return candidate
     return resolved
+
+
+def _source_root() -> Path:
+    """Infer the checkout or installed toolkit root from this module's path."""
+
+    return Path(__file__).resolve().parents[2]
 
 
 def _configure_output_encoding() -> None:
@@ -87,6 +107,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         except Exception:
             return 0
         return 0
+
+    if args.command in {"install", "sync"}:
+        try:
+            # The installed hook runtime deliberately omits installer-only modules.
+            from .installer import apply_plan, build_plan, render_plan
+
+            plan = build_plan(
+                args.source_root if args.source_root is not None else _source_root(),
+                args.target,
+                args.release,
+                args.command,
+            )
+            sys.stdout.write(render_plan(plan))
+            if plan.conflicts:
+                return 2
+            if getattr(args, "dry_run", False) or getattr(args, "check", False):
+                return 1 if args.command == "sync" and plan.changes else 0
+            apply_plan(plan)
+            return 0
+        except Exception as error:
+            print(f"error: {error}", file=sys.stderr)
+            return 2
 
     try:
         if args.command == "context-health":
