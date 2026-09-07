@@ -6,12 +6,12 @@ Run installation from an inspectable checkout of the public release rather than
 from a network downloader:
 
 ```powershell
-git clone --branch v0.2.1 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
+git clone --branch v0.2.2 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
 Set-Location agent-handoff-toolkit
-python distribution/runner.py install --target <consumer-repository> --release v0.2.1 --dry-run
-python distribution/runner.py install --target <consumer-repository> --release v0.2.1 --apply
-python distribution/runner.py sync --target <consumer-repository> --release v0.2.1 --check
-python distribution/runner.py sync --target <consumer-repository> --release v0.2.1 --apply
+python distribution/runner.py install --target <consumer-repository> --release v0.2.2 --dry-run
+python distribution/runner.py install --target <consumer-repository> --release v0.2.2 --apply
+python distribution/runner.py sync --target <consumer-repository> --release v0.2.2 --check
+python distribution/runner.py sync --target <consumer-repository> --release v0.2.2 --apply
 ```
 
 Run install and sync only in an isolated, clean Git worktree. Confirm the
@@ -72,16 +72,22 @@ Run these checks on the installation branch before enabling routine use:
    without changing the consumer worktree.
 2. Compare `.agent-handoff-toolkit/install-state.json` with the pinned release
    checkout's `distribution/manifest.json`. Confirm every managed copy, managed
-   block, and merge-owned JSON entry is represented. Inspect the merged Claude
-   and Codex hook JSON while leaving unrelated settings unchanged.
+   block, and merge-owned JSON entry is represented. Hash-check the complete
+   managed blocks, including their markers, and require the `AGENTS.md` and
+   `CLAUDE.md` blocks to be byte-identical after LF normalization. Inspect the
+   merged Claude and Codex hook JSON while leaving unrelated settings unchanged.
 3. From the consumer repository root, execute every installed Claude and Codex
    hook command directly with representative matching and non-matching input.
-   Do not infer runtime viability from valid JSON alone.
+   Derive each command from the installed JSON rather than duplicating its
+   argument list in the test. Assert that SessionStart emits the exact policy
+   sentence `Do not search or inspect deprecated pre-toolkit handoffs.` Do not
+   infer runtime viability from valid JSON alone.
 4. Create fresh disposable continuation and completion-audit records. Render and
-   validate both record types, including the highest authorized scope completion
-   audit and the continuation's copy/paste tail. Verification results and exact
-   next actions must be derived from record metadata, not maintained as
-   handwritten prose.
+   validate both record types. Assert the continuation's copy/paste tail and the
+   completion audit's `Audit record (not a handoff)` link, including correct URL
+   encoding, and assert that an audit emits no restart prompt. Include the highest
+   authorized scope completion audit. Verification results and exact next actions
+   must be derived from record metadata, not maintained as handwritten prose.
 5. Reconcile project overlays at the policy level. Overlays may be stricter but
    cannot loosen or contradict the record-type decision, canonical derived
    sections, or final-tail requirements. This review never includes deprecated
@@ -104,7 +110,7 @@ Before bulk adoption, select one repository with mature handoffs and one with li
 1. Inventory local instructions, hook and skill configuration, and tracker
    conventions. Count or locate historical handoff storage only if needed to
    protect it; do not open the records.
-2. Run the v0.2.1 installer in dry-run mode from its release checkout.
+2. Run the v0.2.2 installer in dry-run mode from its release checkout.
 3. Review the proposed instruction and hook merges.
 4. Apply on a branch. Treat pre-toolkit records as deprecated by policy without
    marking, reading, or rewriting individual files.

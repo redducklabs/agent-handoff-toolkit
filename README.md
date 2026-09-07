@@ -6,7 +6,7 @@ This repository provides a shared contract, deterministic validation and renderi
 
 ## Status
 
-Version 0.2.1 provides release-pinned managed installation and synchronization
+Version 0.2.2 provides release-pinned managed installation and synchronization
 from an inspectable source checkout. It preserves consumer-owned instructions,
 JSON settings, and opaque deprecated historical records. It also defines a
 prospective post-install acceptance checklist for both Claude Code and Codex.
@@ -37,16 +37,16 @@ Automatic hooks fail open so they cannot break an agent session. Explicit comman
 
 ## Consumer installation
 
-Check out the public v0.2.1 release, inspect the proposed changes, then apply
+Check out the public v0.2.2 release, inspect the proposed changes, then apply
 them from that checkout:
 
 ```powershell
-git clone --branch v0.2.1 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
+git clone --branch v0.2.2 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
 Set-Location agent-handoff-toolkit
-python distribution/runner.py install --target <consumer-repository> --release v0.2.1 --dry-run
-python distribution/runner.py install --target <consumer-repository> --release v0.2.1 --apply
-python distribution/runner.py sync --target <consumer-repository> --release v0.2.1 --check
-python distribution/runner.py sync --target <consumer-repository> --release v0.2.1 --apply
+python distribution/runner.py install --target <consumer-repository> --release v0.2.2 --dry-run
+python distribution/runner.py install --target <consumer-repository> --release v0.2.2 --apply
+python distribution/runner.py sync --target <consumer-repository> --release v0.2.2 --check
+python distribution/runner.py sync --target <consumer-repository> --release v0.2.2 --apply
 ```
 
 Run install and sync only in an isolated, clean Git worktree with no concurrent
