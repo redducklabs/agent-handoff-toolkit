@@ -1,6 +1,6 @@
 {
   "manifest_version": 2,
-  "toolkit_version": "0.2.0",
+  "toolkit_version": "0.2.1",
   "record_schema_version": 1,
   "runtime": {
     "python_command": "python",
@@ -10,7 +10,7 @@
   "artifacts": [
     {
       "source": "distribution/consumer-instructions.md",
-      "sha256": "bb10be0b5c6ab3aeaaab92bdca72aa7d99a7c8dc1c298255c5ac9ee4903de1d9",
+      "sha256": "ed6976cf29180e453c97e650a579ee04dc01739a8e3e7ff4919b3a364a773bba",
       "block_id": "agent-handoff-toolkit",
       "install": {"mode": "managed-block", "transform": "none", "targets": ["AGENTS.md", "CLAUDE.md"]}
     },
@@ -27,7 +27,7 @@
     },
     {"source": "adapters/codex/hooks.fragment.json", "sha256": "5aa7b9ed77f63a4e2deec362ac2bf306b1fd212edb026993719207a3fd41b0d3", "install": {"mode": "merge-json", "transform": "none", "targets": [".codex/hooks.json"]}},
     {"source": "distribution/runner.py", "sha256": "1be1f9d4a8c627676ae6d3651715430addbade18c15e77a5980f4b5a5be5ffeb", "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/runner.py"]}},
-    {"source": "src/agent_handoff_toolkit/__init__.py", "sha256": "7e976f58a58eefcfc6eef04455a28e41baced5a692bc45e571eb16c7bce65b9c", "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/src/agent_handoff_toolkit/__init__.py"]}},
+    {"source": "src/agent_handoff_toolkit/__init__.py", "sha256": "7b964495b1743985fbe89981e6bb81a0405364f783aee6656aba1206c535521d", "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/src/agent_handoff_toolkit/__init__.py"]}},
     {"source": "src/agent_handoff_toolkit/__main__.py", "sha256": "7e67c47885690bebe4e36ef43de45ab7491cd34b7bf0f972ed821ea943657d82", "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/src/agent_handoff_toolkit/__main__.py"]}},
     {"source": "src/agent_handoff_toolkit/cli.py", "sha256": "5af08330ddb9e56c7ca12f487bbcdf6cb15e9d1f1c98ed3adc4bf15417f143d4", "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/src/agent_handoff_toolkit/cli.py"]}},
     {"source": "src/agent_handoff_toolkit/hooks.py", "sha256": "004acf32f840e952811d3d28f48162ceb6deb338c6e017d580e32c7ba06c6807", "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/src/agent_handoff_toolkit/hooks.py"]}},

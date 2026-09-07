@@ -165,16 +165,16 @@ class DistributionTests(unittest.TestCase):
         manifest = load_manifest()
 
         self.assertEqual(manifest["manifest_version"], 2)
-        self.assertEqual(manifest["toolkit_version"], "0.2.0")
+        self.assertEqual(manifest["toolkit_version"], "0.2.1")
         self.assertEqual(manifest["text_hash"], "utf8-lf-sha256-v1")
         self.assertIn(
-            '__version__ = "0.2.0"',
+            '__version__ = "0.2.1"',
             (ROOT / "src/agent_handoff_toolkit/__init__.py").read_text(
                 encoding="utf-8"
             ),
         )
         self.assertIn(
-            'version = "0.2.0"',
+            'version = "0.2.1"',
             (ROOT / "pyproject.toml").read_text(encoding="utf-8"),
         )
         self.assertEqual(manifest["record_schema_version"], 1)
@@ -222,6 +222,36 @@ class DistributionTests(unittest.TestCase):
             claude["array_identities"],
             [{"pointer": "/hooks/PostToolUse", "fields": ["matcher"]}],
         )
+
+    def test_consumer_guidance_requires_prospective_acceptance_only(self) -> None:
+        managed = (
+            (ROOT / "distribution/consumer-instructions.md")
+            .read_text(encoding="utf-8")
+            .lower()
+        )
+        integration = (
+            (ROOT / "docs/consumer-integration.md").read_text(encoding="utf-8").lower()
+        )
+        combined = re.sub(r"\s+", " ", f"{managed}\n{integration}")
+
+        for phrase in (
+            "deprecated historical artifacts",
+            "do not open, read, review, validate, migrate, summarize, or reconcile",
+            "new or materially replaced records",
+            "cannot loosen or contradict",
+            "highest authorized scope",
+            "derived from record metadata",
+            "install-state.json` is the source of truth",
+            "must report `current`",
+            "consumer repository root",
+            "automatic codex hook discovery",
+            "consumer regression tests",
+        ):
+            self.assertIn(phrase, combined)
+
+        self.assertNotIn("validate existing records", integration)
+        self.assertIn("merged claude and codex hook json", integration)
+        self.assertIn("continuation and completion-audit", integration)
 
     def test_managed_artifact_bytes_are_stable_across_git_checkouts(self) -> None:
         sources = [artifact["source"] for artifact in load_manifest()["artifacts"]]
@@ -515,7 +545,7 @@ class DistributionTests(unittest.TestCase):
 
             result = run_installed_command(
                 "python .agent-handoff-toolkit/runner.py install "
-                "--target . --release v0.2.0 --dry-run",
+                "--target . --release v0.2.1 --dry-run",
                 consumer,
             )
 
@@ -556,18 +586,18 @@ class DistributionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             consumer = Path(directory)
             result = run_source_cli(
-                "install", "--apply", target=consumer, release="v0.2.0"
+                "install", "--apply", target=consumer, release="v0.2.1"
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            check = run_source_cli("sync", "--check", target=consumer, release="v0.2.0")
+            check = run_source_cli("sync", "--check", target=consumer, release="v0.2.1")
             self.assertEqual(check.returncode, 0, check.stderr)
             state = json.loads(
                 (consumer / ".agent-handoff-toolkit/install-state.json").read_text(
                     encoding="utf-8"
                 )
             )
-            self.assertEqual(state["release"], "v0.2.0")
-            self.assertEqual(state["toolkit_version"], "0.2.0")
+            self.assertEqual(state["release"], "v0.2.1")
+            self.assertEqual(state["toolkit_version"], "0.2.1")
             self.assertEqual(
                 [target["target"] for target in state["targets"]],
                 sorted(target["target"] for target in state["targets"]),
