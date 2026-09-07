@@ -50,6 +50,7 @@ EXPECTED_INSTALL_TARGETS = {
     "distribution/consumer-instructions.md": {"AGENTS.md", "CLAUDE.md"},
     "LICENSE": {".agent-handoff-toolkit/LICENSE"},
     "docs/agent-handoff/contract.md": {"docs/agent-handoff/contract.md"},
+    "docs/consumer-integration.md": {".agent-handoff-toolkit/consumer-integration.md"},
     "skills/agent-handoff/SKILL.md": {
         ".agents/skills/agent-handoff/SKILL.md",
         ".claude/skills/agent-handoff/SKILL.md",
@@ -165,16 +166,16 @@ class DistributionTests(unittest.TestCase):
         manifest = load_manifest()
 
         self.assertEqual(manifest["manifest_version"], 2)
-        self.assertEqual(manifest["toolkit_version"], "0.2.0")
+        self.assertEqual(manifest["toolkit_version"], "0.2.1")
         self.assertEqual(manifest["text_hash"], "utf8-lf-sha256-v1")
         self.assertIn(
-            '__version__ = "0.2.0"',
+            '__version__ = "0.2.1"',
             (ROOT / "src/agent_handoff_toolkit/__init__.py").read_text(
                 encoding="utf-8"
             ),
         )
         self.assertIn(
-            'version = "0.2.0"',
+            'version = "0.2.1"',
             (ROOT / "pyproject.toml").read_text(encoding="utf-8"),
         )
         self.assertEqual(manifest["record_schema_version"], 1)
@@ -222,6 +223,67 @@ class DistributionTests(unittest.TestCase):
             claude["array_identities"],
             [{"pointer": "/hooks/PostToolUse", "fields": ["matcher"]}],
         )
+
+    def test_consumer_guidance_requires_prospective_acceptance_only(self) -> None:
+        managed = (
+            (ROOT / "distribution/consumer-instructions.md")
+            .read_text(encoding="utf-8")
+            .lower()
+        )
+        integration = (
+            (ROOT / "docs/consumer-integration.md").read_text(encoding="utf-8").lower()
+        )
+        combined = re.sub(r"\s+", " ", f"{managed}\n{integration}")
+        managed_normalized = re.sub(r"\s+", " ", managed)
+        integration_normalized = re.sub(r"\s+", " ", integration)
+
+        for phrase in (
+            "deprecated historical artifact",
+            "do not open, read, review, validate, migrate, summarize, reconcile, or rewrite",
+            "new or materially replaced records",
+            "cannot loosen or contradict",
+            "highest authorized scope",
+            "derived from record metadata",
+            "do not resolve questions from or mark individual legacy files",
+            ".agent-handoff-toolkit/consumer-integration.md",
+        ):
+            self.assertIn(phrase, managed_normalized)
+
+        for phrase in (
+            "install-state.json` is the source of truth",
+            "must report `current`",
+            "consumer repository root",
+            "automatic codex hook discovery",
+            "consumer regression tests",
+            "deprecated by policy",
+            "rewrite",
+        ):
+            self.assertIn(phrase, combined)
+
+        self.assertIsNone(
+            re.search(
+                r"validate\s+(?:any\s+)?(?:existing|historical|legacy|pre[- ](?:existing|toolkit))\s+(?:records?|handoffs?)",
+                combined,
+            )
+        )
+        self.assertIn("merged claude and codex hook json", integration_normalized)
+        self.assertIn("continuation and completion-audit", integration_normalized)
+
+    def test_managed_instruction_file_references_are_installed(self) -> None:
+        instructions = (ROOT / "distribution/consumer-instructions.md").read_text(
+            encoding="utf-8"
+        )
+        installed_targets = {
+            target
+            for artifact in load_manifest()["artifacts"]
+            for target in artifact["install"]["targets"]
+        }
+        file_references = set(
+            re.findall(r"(?<![\w/])(?:\.?[\w-]+/)+[\w.-]+\.(?:md|py)", instructions)
+        )
+
+        self.assertTrue(file_references)
+        self.assertLessEqual(file_references, installed_targets)
 
     def test_managed_artifact_bytes_are_stable_across_git_checkouts(self) -> None:
         sources = [artifact["source"] for artifact in load_manifest()["artifacts"]]
@@ -515,7 +577,7 @@ class DistributionTests(unittest.TestCase):
 
             result = run_installed_command(
                 "python .agent-handoff-toolkit/runner.py install "
-                "--target . --release v0.2.0 --dry-run",
+                "--target . --release v0.2.1 --dry-run",
                 consumer,
             )
 
@@ -556,21 +618,24 @@ class DistributionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             consumer = Path(directory)
             result = run_source_cli(
-                "install", "--apply", target=consumer, release="v0.2.0"
+                "install", "--apply", target=consumer, release="v0.2.1"
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            check = run_source_cli("sync", "--check", target=consumer, release="v0.2.0")
+            check = run_source_cli("sync", "--check", target=consumer, release="v0.2.1")
             self.assertEqual(check.returncode, 0, check.stderr)
             state = json.loads(
                 (consumer / ".agent-handoff-toolkit/install-state.json").read_text(
                     encoding="utf-8"
                 )
             )
-            self.assertEqual(state["release"], "v0.2.0")
-            self.assertEqual(state["toolkit_version"], "0.2.0")
+            self.assertEqual(state["release"], "v0.2.1")
+            self.assertEqual(state["toolkit_version"], "0.2.1")
             self.assertEqual(
                 [target["target"] for target in state["targets"]],
-                sorted(target["target"] for target in state["targets"]),
+                sorted(
+                    (target["target"] for target in state["targets"]),
+                    key=str.casefold,
+                ),
             )
 
             for instruction_name in ("AGENTS.md", "CLAUDE.md"):
