@@ -498,6 +498,26 @@ class DistributionTests(unittest.TestCase):
         self.assertEqual(context_health.returncode, 0, context_health.stderr)
         self.assertIn("60%", context_health.stdout)
 
+    def test_installed_runner_directs_managed_commands_to_release_checkout(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            consumer = Path(directory)
+            install_copy_artifacts(consumer)
+
+            result = run_installed_command(
+                "python .agent-handoff-toolkit/runner.py install "
+                "--target . --release v0.2.0 --dry-run",
+                consumer,
+            )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(
+            result.stderr,
+            "error: install and sync must be run from an agent-handoff-toolkit "
+            "release checkout using distribution/runner.py\n",
+        )
+
     def test_installed_runner_does_not_create_unmanifested_runtime_files(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             consumer = Path(directory)
