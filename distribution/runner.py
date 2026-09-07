@@ -9,6 +9,8 @@ import sys
 def main() -> int:
     """Load the package adjacent to this runner and dispatch its CLI."""
     source_root = Path(__file__).resolve().parent / "src"
+    if not source_root.is_dir():
+        source_root = Path(__file__).resolve().parents[1] / "src"
     sys.dont_write_bytecode = True
     sys.path.insert(0, str(source_root))
 

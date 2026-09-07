@@ -47,6 +47,7 @@ REQUIRED_SKILL_GATES = {
 }
 
 EXPECTED_INSTALL_TARGETS = {
+    "distribution/consumer-instructions.md": {"AGENTS.md", "CLAUDE.md"},
     "LICENSE": {".agent-handoff-toolkit/LICENSE"},
     "docs/agent-handoff/contract.md": {"docs/agent-handoff/contract.md"},
     "skills/agent-handoff/SKILL.md": {
@@ -123,11 +124,51 @@ def run_installed_command(
     )
 
 
+def run_source_cli(
+    command: str, *arguments: str, target: Path, release: str
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            sys.executable,
+            "distribution/runner.py",
+            command,
+            "--target",
+            str(target),
+            "--release",
+            release,
+            *arguments,
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+
+def normalized_sha256(data: bytes) -> str:
+    return hashlib.sha256(
+        data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
+    ).hexdigest()
+
+
 class DistributionTests(unittest.TestCase):
     def test_manifest_hashes_every_managed_artifact(self) -> None:
         manifest = load_manifest()
 
-        self.assertEqual(manifest["manifest_version"], 1)
+        self.assertEqual(manifest["manifest_version"], 2)
+        self.assertEqual(manifest["toolkit_version"], "0.2.0")
+        self.assertEqual(manifest["text_hash"], "utf8-lf-sha256-v1")
+        self.assertIn(
+            '__version__ = "0.2.0"',
+            (ROOT / "src/agent_handoff_toolkit/__init__.py").read_text(
+                encoding="utf-8"
+            ),
+        )
+        self.assertIn(
+            'version = "0.2.0"',
+            (ROOT / "pyproject.toml").read_text(encoding="utf-8"),
+        )
         self.assertEqual(manifest["record_schema_version"], 1)
         artifacts = manifest["artifacts"]
         self.assertIsInstance(artifacts, list)
@@ -144,16 +185,35 @@ class DistributionTests(unittest.TestCase):
             seen_sources.add(source)
 
             payload = (ROOT / Path(*source_path.parts)).read_bytes()
-            self.assertEqual(hashlib.sha256(payload).hexdigest(), artifact["sha256"])
+            self.assertEqual(normalized_sha256(payload), artifact["sha256"])
 
             install = artifact["install"]
-            self.assertIn(install["mode"], {"copy", "merge-json"})
+            self.assertIn(install["mode"], {"copy", "managed-block", "merge-json"})
             for target in install["targets"]:
                 target_path = PurePosixPath(target)
                 self.assertFalse(target_path.is_absolute())
                 self.assertNotIn("..", target_path.parts)
                 self.assertNotIn(target, seen_targets)
                 seen_targets.add(target)
+
+        instructions = next(
+            artifact
+            for artifact in artifacts
+            if artifact["source"] == "distribution/consumer-instructions.md"
+        )
+        self.assertEqual(instructions["install"]["mode"], "managed-block")
+        self.assertEqual(instructions["block_id"], "agent-handoff-toolkit")
+        self.assertEqual(instructions["install"]["targets"], ["AGENTS.md", "CLAUDE.md"])
+
+        claude = next(
+            artifact
+            for artifact in artifacts
+            if artifact["source"] == "adapters/claude/settings.fragment.json"
+        )
+        self.assertEqual(
+            claude["array_identities"],
+            [{"pointer": "/hooks/PostToolUse", "fields": ["matcher"]}],
+        )
 
     def test_managed_artifact_bytes_are_stable_across_git_checkouts(self) -> None:
         sources = [artifact["source"] for artifact in load_manifest()["artifacts"]]
@@ -463,6 +523,79 @@ class DistributionTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(actual, expected)
+
+    def test_manifest_install_then_sync_check_is_current(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            consumer = Path(directory)
+            result = run_source_cli(
+                "install", "--apply", target=consumer, release="v0.2.0"
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            check = run_source_cli("sync", "--check", target=consumer, release="v0.2.0")
+            self.assertEqual(check.returncode, 0, check.stderr)
+            state = json.loads(
+                (consumer / ".agent-handoff-toolkit/install-state.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(state["release"], "v0.2.0")
+            self.assertEqual(state["toolkit_version"], "0.2.0")
+            self.assertEqual(
+                [target["target"] for target in state["targets"]],
+                sorted(target["target"] for target in state["targets"]),
+            )
+
+            for instruction_name in ("AGENTS.md", "CLAUDE.md"):
+                instruction = (consumer / instruction_name).read_text(encoding="utf-8")
+                self.assertIn("<!-- agent-handoff-toolkit:start -->", instruction)
+                self.assertIn("<!-- agent-handoff-toolkit:end -->", instruction)
+                self.assertIn("docs/agent-handoff/contract.md", instruction)
+
+            template = consumer / "handoffs/templates/continuation.md"
+            record = consumer / "handoffs/current.md"
+            record.write_text(
+                template.read_text(encoding="utf-8").replace(
+                    "<replace with ISO-8601 timestamp including timezone>",
+                    "2026-09-06T12:00:00Z",
+                ),
+                encoding="utf-8",
+                newline="\n",
+            )
+            validated = run_installed_command(
+                f"python .agent-handoff-toolkit/runner.py validate {record}", consumer
+            )
+            hooked = run_installed_command(
+                "python .agent-handoff-toolkit/runner.py hook "
+                "--platform claude --event post-tool-use",
+                consumer,
+                json.dumps(
+                    {
+                        "tool_name": "Write",
+                        "tool_input": {"file_path": "handoffs/current.md"},
+                    }
+                ),
+            )
+            installed_source = (
+                consumer / ".agent-handoff-toolkit/src/agent_handoff_toolkit"
+            )
+            self.assertEqual(validated.returncode, 0, validated.stderr)
+            self.assertEqual(hooked.returncode, 0, hooked.stderr)
+            hook_output = json.loads(hooked.stdout)
+            self.assertEqual(
+                hook_output["hookSpecificOutput"]["hookEventName"], "PostToolUse"
+            )
+            self.assertIn(
+                "Edited: handoffs/current.md",
+                hook_output["hookSpecificOutput"]["additionalContext"],
+            )
+            self.assertIn(
+                "Run the explicit `validate` subcommand",
+                hook_output["hookSpecificOutput"]["additionalContext"],
+            )
+            self.assertFalse((installed_source / "installer.py").exists())
+            self.assertFalse((installed_source / "manifest.py").exists())
+            self.assertFalse((installed_source / "operations.py").exists())
+            self.assertFalse((installed_source / "state.py").exists())
 
     def test_hook_fragment_commands_execute_against_the_installed_layout(self) -> None:
         payloads = {
