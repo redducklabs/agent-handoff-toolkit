@@ -364,7 +364,8 @@ class RecordRenderingTests(unittest.TestCase):
         self.assertEqual(
             tail,
             f"```text\n{prompt}\n```\n\n"
-            "[Continuation handoff](<C:/work spaces/handoffs/继续工作.md>)",
+            "[Continuation handoff](<C:/work%20spaces/handoffs/"
+            "%E7%BB%A7%E7%BB%AD%E5%B7%A5%E4%BD%9C.md>)",
         )
         self.assertEqual(tail.rstrip().splitlines()[-1], tail.splitlines()[-1])
 
@@ -375,7 +376,7 @@ class RecordRenderingTests(unittest.TestCase):
         )
         self.assertTrue(
             continuation_tail.endswith(
-                "[Continuation handoff](</tmp/work spaces/continuación.md>)"
+                "[Continuation handoff](</tmp/work%20spaces/continuaci%C3%B3n.md>)"
             )
         )
 
@@ -385,7 +386,7 @@ class RecordRenderingTests(unittest.TestCase):
         )
         self.assertEqual(
             audit_tail,
-            "[Audit record (not a handoff)](</tmp/work spaces/audit.md>)",
+            "[Audit record (not a handoff)](</tmp/work%20spaces/audit.md>)",
         )
         self.assertNotIn("```", audit_tail)
 
@@ -417,7 +418,13 @@ class RecordRenderingTests(unittest.TestCase):
         text = render_record(self.continuation)
         path = "/tmp/👩‍💻-क्‍ष.md"
         tail = render_tail(path, text)
-        self.assertTrue(tail.endswith(f"[Continuation handoff](<{path}>)"))
+        self.assertTrue(
+            tail.endswith(
+                "[Continuation handoff](</tmp/"
+                "%F0%9F%91%A9%E2%80%8D%F0%9F%92%BB-"
+                "%E0%A4%95%E0%A5%8D%E2%80%8D%E0%A4%B7.md>)"
+            )
+        )
 
 
 class CommandLineTests(unittest.TestCase):
@@ -468,7 +475,8 @@ class CommandLineTests(unittest.TestCase):
             self.assertEqual(tail.returncode, 0, tail.stderr)
             self.assertEqual(
                 tail.stdout.rstrip().splitlines()[-1],
-                f"[Continuation handoff](<{output.resolve().as_posix()}>)",
+                "[Continuation handoff](<"
+                f"{output.resolve().as_posix().replace(' ', '%20')}>)",
             )
 
     def test_render_tail_forces_utf8_when_ambient_encoding_is_legacy(self) -> None:
@@ -488,7 +496,10 @@ class CommandLineTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("继续工作并保留验证证据。", result.stdout)
-        self.assertIn("交接/继续工作.md", result.stdout.replace("\\", "/"))
+        self.assertIn(
+            "%E4%BA%A4%E6%8E%A5/%E7%BB%A7%E7%BB%AD%E5%B7%A5%E4%BD%9C.md",
+            result.stdout.replace("\\", "/"),
+        )
         self.assertEqual(result.stderr, "")
 
 

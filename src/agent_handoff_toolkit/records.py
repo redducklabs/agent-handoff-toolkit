@@ -11,6 +11,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 from typing import Any
 import unicodedata
+from urllib.parse import quote
 
 SCHEMA_VERSION = 1
 METADATA_OPEN = "<!-- agent-handoff-metadata"
@@ -735,7 +736,7 @@ def render_tail(record_path: str | os.PathLike[str], text: str) -> str:
     """Render the exact response tail for a structurally valid record."""
 
     data = parse_markdown(text)
-    link_path = _absolute_markdown_path(record_path)
+    link_path = quote(_absolute_markdown_path(record_path), safe="/:._-")
     if data["record_type"] == "continuation":
         prompt = str(data["next_session_prompt"])
         return (

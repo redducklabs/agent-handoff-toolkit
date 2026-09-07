@@ -29,8 +29,8 @@
     {"source": "distribution/runner.py", "sha256": "1be1f9d4a8c627676ae6d3651715430addbade18c15e77a5980f4b5a5be5ffeb", "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/runner.py"]}},
     {"source": "src/agent_handoff_toolkit/__init__.py", "sha256": "7e976f58a58eefcfc6eef04455a28e41baced5a692bc45e571eb16c7bce65b9c", "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/src/agent_handoff_toolkit/__init__.py"]}},
     {"source": "src/agent_handoff_toolkit/__main__.py", "sha256": "7e67c47885690bebe4e36ef43de45ab7491cd34b7bf0f972ed821ea943657d82", "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/src/agent_handoff_toolkit/__main__.py"]}},
-    {"source": "src/agent_handoff_toolkit/cli.py", "sha256": "75cbd715a9d78666bdd3a3149a003c854f6e9b139accf25864c27bca1d9acb8c", "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/src/agent_handoff_toolkit/cli.py"]}},
+    {"source": "src/agent_handoff_toolkit/cli.py", "sha256": "5af08330ddb9e56c7ca12f487bbcdf6cb15e9d1f1c98ed3adc4bf15417f143d4", "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/src/agent_handoff_toolkit/cli.py"]}},
     {"source": "src/agent_handoff_toolkit/hooks.py", "sha256": "004acf32f840e952811d3d28f48162ceb6deb338c6e017d580e32c7ba06c6807", "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/src/agent_handoff_toolkit/hooks.py"]}},
-    {"source": "src/agent_handoff_toolkit/records.py", "sha256": "c985a4685e13de17c06a92801a6061641b77000a7ec124f9bf1b1c3eb0dece26", "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/src/agent_handoff_toolkit/records.py"]}}
+    {"source": "src/agent_handoff_toolkit/records.py", "sha256": "9b37cec1daa7894dab7d516c0af8d5cd17a4644996e7d641935e8c5c0221cc41", "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/src/agent_handoff_toolkit/records.py"]}}
   ]
 }
