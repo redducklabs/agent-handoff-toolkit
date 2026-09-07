@@ -10,7 +10,8 @@ before creating or changing a continuation or completion audit.
 - Treat every pre-toolkit handoff as a deprecated historical artifact by policy.
   During installation or synchronization, do not open, read, review, validate,
   migrate, summarize, reconcile, or rewrite those records. Apply the current
-  contract only to new or materially replaced records.
+  contract only to new or materially replaced records. Do not resolve questions
+  from or mark individual legacy files.
 - Treat verification results, exact next actions, and other canonical sections
   as generated content derived from record metadata, not handwritten prose.
 - Validate new or materially replaced records with

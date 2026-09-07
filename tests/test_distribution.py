@@ -234,14 +234,22 @@ class DistributionTests(unittest.TestCase):
             (ROOT / "docs/consumer-integration.md").read_text(encoding="utf-8").lower()
         )
         combined = re.sub(r"\s+", " ", f"{managed}\n{integration}")
+        managed_normalized = re.sub(r"\s+", " ", managed)
+        integration_normalized = re.sub(r"\s+", " ", integration)
 
         for phrase in (
-            "deprecated historical artifacts",
+            "deprecated historical artifact",
             "do not open, read, review, validate, migrate, summarize, reconcile, or rewrite",
             "new or materially replaced records",
             "cannot loosen or contradict",
             "highest authorized scope",
             "derived from record metadata",
+            "do not resolve questions from or mark individual legacy files",
+            ".agent-handoff-toolkit/consumer-integration.md",
+        ):
+            self.assertIn(phrase, managed_normalized)
+
+        for phrase in (
             "install-state.json` is the source of truth",
             "must report `current`",
             "consumer repository root",
@@ -252,9 +260,14 @@ class DistributionTests(unittest.TestCase):
         ):
             self.assertIn(phrase, combined)
 
-        self.assertNotIn("validate existing records", integration)
-        self.assertIn("merged claude and codex hook json", integration)
-        self.assertIn("continuation and completion-audit", integration)
+        self.assertIsNone(
+            re.search(
+                r"validate\s+(?:any\s+)?(?:existing|historical|legacy|pre[- ](?:existing|toolkit))\s+(?:records?|handoffs?)",
+                combined,
+            )
+        )
+        self.assertIn("merged claude and codex hook json", integration_normalized)
+        self.assertIn("continuation and completion-audit", integration_normalized)
 
     def test_managed_instruction_file_references_are_installed(self) -> None:
         instructions = (ROOT / "distribution/consumer-instructions.md").read_text(
@@ -265,11 +278,9 @@ class DistributionTests(unittest.TestCase):
             for artifact in load_manifest()["artifacts"]
             for target in artifact["install"]["targets"]
         }
-        file_references = {
-            match.group(1)
-            for match in re.finditer(r"`([^`\n]+)`", instructions)
-            if "/" in match.group(1) and match.group(1).endswith((".md", ".py"))
-        }
+        file_references = set(
+            re.findall(r"(?<![\w/])(?:\.?[\w-]+/)+[\w.-]+\.(?:md|py)", instructions)
+        )
 
         self.assertTrue(file_references)
         self.assertLessEqual(file_references, installed_targets)

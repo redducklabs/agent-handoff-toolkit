@@ -25,7 +25,7 @@ an ownership conflict, or a write failure.
 
 ## Runtime prerequisite
 
-Before enabling either host's hooks, run `python --version` in the consumer repository. The `python` command must resolve to Python 3.11 or newer. This requirement is machine-readable in `distribution/manifest.json` and matches the launcher in every distributed hook fragment.
+Before enabling either host's hooks, run `python --version` in the consumer repository. The `python` command must resolve to Python 3.11 or newer. This requirement is machine-readable in the pinned release checkout's `distribution/manifest.json` and matches the launcher in every distributed hook fragment.
 
 ## Managed ownership and conflicts
 
@@ -40,11 +40,12 @@ Consumers pin a tagged toolkit release. The installer:
 - detects local edits, shows a patch, and refuses destructive replacement;
 - keeps generated policy text derived from one canonical source.
 
-The installer owns every copied file listed in `distribution/manifest.json`, the
-marked toolkit blocks in `AGENTS.md` and `CLAUDE.md`, and the precise merged JSON
-entries in `.claude/settings.json` and `.codex/hooks.json`. This includes the
-vendored runtime and license, contract, both host skill copies, both record
-templates, and both hook integrations. The installed
+The installer owns every copied file listed in the pinned release checkout's
+`distribution/manifest.json`, the marked toolkit blocks in `AGENTS.md` and
+`CLAUDE.md`, and the precise merged JSON entries in `.claude/settings.json` and
+`.codex/hooks.json`. This includes the vendored runtime and license, contract,
+consumer acceptance guide, both host skill copies, both record templates, and
+both hook integrations. The installed
 `.agent-handoff-toolkit/install-state.json` is the source of truth for the
 pinned release, schema version, managed targets, modes, and installed hashes.
 Existing project instructions and unrelated JSON settings remain
