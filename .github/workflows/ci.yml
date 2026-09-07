@@ -5,6 +5,17 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
+    inputs:
+      expected_workflow_sha:
+        description: Exact reviewed commit containing this workflow
+        required: true
+        type: string
+      source_sha:
+        description: Exact approved source commit to test
+        required: true
+        default: f042c7192797e59b9c10ab034a4d4c2bbcaee1ca
+        type: string
 
 permissions:
   contents: read
@@ -28,7 +39,46 @@ jobs:
           - "3.14"
 
     steps:
+      - name: Validate workflow dispatch inputs
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          ACTUAL_WORKFLOW_SHA: ${{ github.sha }}
+          EXPECTED_WORKFLOW_SHA: ${{ inputs.expected_workflow_sha }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          readonly approved_source_sha='f042c7192797e59b9c10ab034a4d4c2bbcaee1ca'
+          readonly sha_pattern='^[0-9a-f]{40}$'
+
+          if ! [[ "$EXPECTED_WORKFLOW_SHA" =~ $sha_pattern ]]; then
+            echo 'expected_workflow_sha must be exactly 40 lowercase hexadecimal characters' >&2
+            exit 1
+          fi
+          if ! [[ "$ACTUAL_WORKFLOW_SHA" =~ $sha_pattern ]]; then
+            echo 'github.sha was not an exact lowercase commit SHA' >&2
+            exit 1
+          fi
+          if [[ "$EXPECTED_WORKFLOW_SHA" != "$ACTUAL_WORKFLOW_SHA" ]]; then
+            echo 'expected_workflow_sha does not match the dispatched workflow revision' >&2
+            exit 1
+          fi
+          if ! [[ "$SOURCE_SHA" =~ $sha_pattern ]]; then
+            echo 'source_sha must be exactly 40 lowercase hexadecimal characters' >&2
+            exit 1
+          fi
+          if [[ "$SOURCE_SHA" != "$approved_source_sha" ]]; then
+            echo 'source_sha is not the approved runner-density acceptance revision' >&2
+            exit 1
+          fi
+
+      - name: Check out dispatched source revision
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_sha }}
+
       - name: Check out repository
+        if: github.event_name != 'workflow_dispatch'
         uses: actions/checkout@v7
 
       - name: Set up Python

@@ -3,10 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path, PurePosixPath
 
@@ -153,6 +155,48 @@ def normalized_sha256(data: bytes) -> str:
     ).hexdigest()
 
 
+def workflow_run_script(step_name: str) -> str:
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    marker = f"      - name: {step_name}\n"
+    try:
+        step = workflow.split(marker, 1)[1]
+    except IndexError as error:
+        raise AssertionError(f"workflow step is missing: {step_name}") from error
+    step = step.split("\n      - name: ", 1)[0]
+    try:
+        raw_script = step.split("        run: |\n", 1)[1]
+    except IndexError as error:
+        raise AssertionError(f"workflow step has no run block: {step_name}") from error
+    return textwrap.dedent(raw_script)
+
+
+def run_dispatch_validation(
+    script: str,
+    *,
+    actual_workflow_sha: str,
+    expected_workflow_sha: str,
+    source_sha: str,
+) -> subprocess.CompletedProcess[str]:
+    environment_wrapper = (
+        f"export ACTUAL_WORKFLOW_SHA={shlex.quote(actual_workflow_sha)}\n"
+        f"export EXPECTED_WORKFLOW_SHA={shlex.quote(expected_workflow_sha)}\n"
+        f"export SOURCE_SHA={shlex.quote(source_sha)}\n"
+    )
+    result = subprocess.run(
+        ["bash"],
+        cwd=ROOT,
+        input=(environment_wrapper + script).encode("utf-8"),
+        capture_output=True,
+        check=False,
+    )
+    return subprocess.CompletedProcess(
+        result.args,
+        result.returncode,
+        result.stdout.decode("utf-8"),
+        result.stderr.decode("utf-8"),
+    )
+
+
 class DistributionTests(unittest.TestCase):
     def test_public_repository_ci_uses_github_hosted_runners(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
@@ -161,6 +205,39 @@ class DistributionTests(unittest.TestCase):
 
         self.assertIn("runs-on: ubuntu-latest", workflow)
         self.assertNotIn("runs-on: redducklabs-runners", workflow)
+
+    def test_dispatch_accepts_only_the_reviewed_workflow_and_source_shas(self) -> None:
+        script = workflow_run_script("Validate workflow dispatch inputs")
+        reviewed_workflow_sha = "1" * 40
+        approved_source_sha = "f042c7192797e59b9c10ab034a4d4c2bbcaee1ca"
+
+        result = run_dispatch_validation(
+            script,
+            actual_workflow_sha=reviewed_workflow_sha,
+            expected_workflow_sha=reviewed_workflow_sha,
+            source_sha=approved_source_sha,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
+
+    def test_dispatch_rejects_multiline_input_without_echoing_it(self) -> None:
+        script = workflow_run_script("Validate workflow dispatch inputs")
+        reviewed_workflow_sha = "1" * 40
+        injected_source_sha = (
+            ROOT / "tests" / "fixtures" / "workflow-dispatch-multiline-injection.txt"
+        ).read_text(encoding="utf-8")
+
+        result = run_dispatch_validation(
+            script,
+            actual_workflow_sha=reviewed_workflow_sha,
+            expected_workflow_sha=reviewed_workflow_sha,
+            source_sha=injected_source_sha,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("attacker_payload", result.stdout)
+        self.assertNotIn("attacker_payload", result.stderr)
 
     def test_manifest_hashes_every_managed_artifact(self) -> None:
         manifest = load_manifest()
