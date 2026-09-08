@@ -178,16 +178,16 @@ class DistributionTests(unittest.TestCase):
         manifest = load_manifest()
 
         self.assertEqual(manifest["manifest_version"], 2)
-        self.assertEqual(manifest["toolkit_version"], "0.2.3")
+        self.assertEqual(manifest["toolkit_version"], "0.2.4")
         self.assertEqual(manifest["text_hash"], "utf8-lf-sha256-v1")
         self.assertIn(
-            '__version__ = "0.2.3"',
+            '__version__ = "0.2.4"',
             (ROOT / "src/agent_handoff_toolkit/__init__.py").read_text(
                 encoding="utf-8"
             ),
         )
         self.assertIn(
-            'version = "0.2.3"',
+            'version = "0.2.4"',
             (ROOT / "pyproject.toml").read_text(encoding="utf-8"),
         )
         self.assertEqual(manifest["record_schema_version"], 1)
@@ -293,6 +293,8 @@ class DistributionTests(unittest.TestCase):
             "hash-check the complete managed blocks",
             "derive each command from the installed json",
             "do not search or inspect deprecated pre-toolkit handoffs",
+            "active consumer-owned documentation and tests",
+            "stale toolkit release tags, versions, commit pins, or assertions",
             "render and validate both record types",
             "audit record (not a handoff)",
             "url encoding",
@@ -663,7 +665,7 @@ class DistributionTests(unittest.TestCase):
 
             result = run_installed_command(
                 "python .agent-handoff-toolkit/runner.py install "
-                "--target . --release v0.2.3 --dry-run",
+                "--target . --release v0.2.4 --dry-run",
                 consumer,
             )
 
@@ -704,18 +706,18 @@ class DistributionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             consumer = Path(directory)
             result = run_source_cli(
-                "install", "--apply", target=consumer, release="v0.2.3"
+                "install", "--apply", target=consumer, release="v0.2.4"
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            check = run_source_cli("sync", "--check", target=consumer, release="v0.2.3")
+            check = run_source_cli("sync", "--check", target=consumer, release="v0.2.4")
             self.assertEqual(check.returncode, 0, check.stderr)
             state = json.loads(
                 (consumer / ".agent-handoff-toolkit/install-state.json").read_text(
                     encoding="utf-8"
                 )
             )
-            self.assertEqual(state["release"], "v0.2.3")
-            self.assertEqual(state["toolkit_version"], "0.2.3")
+            self.assertEqual(state["release"], "v0.2.4")
+            self.assertEqual(state["toolkit_version"], "0.2.4")
             self.assertEqual(
                 [target["target"] for target in state["targets"]],
                 sorted(
@@ -798,7 +800,7 @@ class DistributionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             consumer = Path(directory)
             installed = run_source_cli(
-                "install", "--apply", target=consumer, release="v0.2.3"
+                "install", "--apply", target=consumer, release="v0.2.4"
             )
             self.assertEqual(installed.returncode, 0, installed.stderr)
             installed_configs = {

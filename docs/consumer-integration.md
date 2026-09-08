@@ -6,12 +6,12 @@ Run installation from an inspectable checkout of the public release rather than
 from a network downloader:
 
 ```powershell
-git clone --branch v0.2.3 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
+git clone --branch v0.2.4 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
 Set-Location agent-handoff-toolkit
-python distribution/runner.py install --target <consumer-repository> --release v0.2.3 --dry-run
-python distribution/runner.py install --target <consumer-repository> --release v0.2.3 --apply
-python distribution/runner.py sync --target <consumer-repository> --release v0.2.3 --check
-python distribution/runner.py sync --target <consumer-repository> --release v0.2.3 --apply
+python distribution/runner.py install --target <consumer-repository> --release v0.2.4 --dry-run
+python distribution/runner.py install --target <consumer-repository> --release v0.2.4 --apply
+python distribution/runner.py sync --target <consumer-repository> --release v0.2.4 --check
+python distribution/runner.py sync --target <consumer-repository> --release v0.2.4 --apply
 ```
 
 Run install and sync only in an isolated, clean Git worktree. Confirm the
@@ -102,6 +102,9 @@ Run these checks on the installation branch before enabling routine use:
    the absolute record path and exact next action, includes only essential
    blockers, decisions, and validation gates, and does not reproduce record
    metadata or narrative sections.
+9. Search active consumer-owned documentation and tests, excluding deprecated
+   handoffs, for stale toolkit release tags, versions, commit pins, or
+   assertions. Update every active reference to the exact installed release.
 
 Structural checks prove schema, ownership, merge, and runtime properties. They
 do not prove that prose is semantically complete or truthful; that remains a
@@ -114,7 +117,7 @@ Before bulk adoption, select one repository with mature handoffs and one with li
 1. Inventory local instructions, hook and skill configuration, and tracker
    conventions. Count or locate historical handoff storage only if needed to
    protect it; do not open the records.
-2. Run the v0.2.3 installer in dry-run mode from its release checkout.
+2. Run the v0.2.4 installer in dry-run mode from its release checkout.
 3. Review the proposed instruction and hook merges.
 4. Apply on a branch. Treat pre-toolkit records as deprecated by policy without
    marking, reading, or rewriting individual files.
