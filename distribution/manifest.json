@@ -16,7 +16,7 @@
     },
     {"source": "LICENSE", "sha256": "b6e6d85d44db88c456379014cbaa080194dccfa428f24fa063d8fbff5eeb3527", "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/LICENSE"]}},
     {"source": "docs/agent-handoff/contract.md", "sha256": "97568ab6647014ccb8714c1ea6d968579bfaebb5d8544568ddd8202b62db2513", "install": {"mode": "copy", "transform": "none", "targets": ["docs/agent-handoff/contract.md"]}},
-    {"source": "docs/consumer-integration.md", "sha256": "deeab97976c2f766764711e64d58de0b53f41a58517fb30455b582f8f892a1c8", "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/consumer-integration.md"]}},
+    {"source": "docs/consumer-integration.md", "sha256": "0ea838fb247577b828d0e05dc271943336a1628da32a4e6066f8b1a7632605b4", "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/consumer-integration.md"]}},
     {"source": "skills/agent-handoff/SKILL.md", "sha256": "1950092184c7505b6add3b6c07e47d11305aafb8cc4fc399afb620a54161da39", "install": {"mode": "copy", "transform": "none", "targets": [".agents/skills/agent-handoff/SKILL.md", ".claude/skills/agent-handoff/SKILL.md"]}},
     {"source": "templates/continuation.md", "sha256": "bde32e411526b8ab200d30ce06e8bd654e8e8438322785d74d9f90261257cbdf", "install": {"mode": "copy", "transform": "none", "targets": ["handoffs/templates/continuation.md"]}},
     {"source": "templates/completion-audit.md", "sha256": "7ab9cbf2516a817eda2aaf2b8d01bbaee4443c7b24b6bead111b8a6fe81dab1f", "install": {"mode": "copy", "transform": "none", "targets": ["handoffs/templates/completion-audit.md"]}},

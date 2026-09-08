@@ -300,6 +300,9 @@ class DistributionTests(unittest.TestCase):
             "audit record (not a handoff)",
             "url encoding",
             "no restart prompt",
+            "do not derive expected hashes from the installed state",
+            "every merge-owned json fragment",
+            "mount every asserted managed artifact read-only",
         ):
             self.assertIn(phrase, integration_normalized)
 

@@ -77,6 +77,8 @@ Run these checks on the installation branch before enabling routine use:
    managed blocks, including their markers, and require the `AGENTS.md` and
    `CLAUDE.md` blocks to be byte-identical after LF normalization. Inspect the
    merged Claude and Codex hook JSON while leaving unrelated settings unchanged.
+   Pin the state digest or expected values independently; do not derive expected
+   hashes from the installed state being tested.
 3. From the consumer repository root, execute every installed Claude and Codex
    hook command directly with representative matching and non-matching input.
    Derive each command from the installed JSON rather than duplicating its
@@ -95,7 +97,10 @@ Run these checks on the installation branch before enabling routine use:
    historical records.
 6. Add consumer regression tests for the merged Claude and Codex hook JSON,
    install-state ownership and `CURRENT` status, schema-derived section parity,
-   and continuation/completion record-decision semantics.
+   and continuation/completion record-decision semantics. Recursively assert
+   every merge-owned JSON fragment, not only copied-file hashes. If the normal
+   test command runs in a container, mount every asserted managed artifact
+   read-only and run that documented command.
 7. Report automatic Codex hook discovery as unverified unless it has been
    observed end-to-end in the consumer's actual Codex host. Direct command
    execution verifies the installed hook itself, not host discovery.
