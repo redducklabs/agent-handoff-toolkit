@@ -95,6 +95,8 @@ class HostHookTests(unittest.TestCase):
                 context = hook_context(output)
                 self.assertIn("docs/agent-handoff/contract.md", context)
                 self.assertIn("continuation", context.lower())
+                self.assertIn("schema-v1", context.lower())
+                self.assertIn("do not search or inspect deprecated", context.lower())
                 self.assertEqual(
                     json.loads(output)["hookSpecificOutput"]["hookEventName"],
                     "SessionStart",

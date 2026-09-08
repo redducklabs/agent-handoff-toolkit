@@ -111,7 +111,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command in {"install", "sync"}:
         try:
             # The installed hook runtime deliberately omits installer-only modules.
-            from .installer import apply_plan, build_plan, render_plan
+            try:
+                from .installer import apply_plan, build_plan, render_plan
+            except ModuleNotFoundError as error:
+                if error.name != f"{__package__}.installer":
+                    raise
+                print(
+                    "error: install and sync must be run from an "
+                    "agent-handoff-toolkit release checkout using "
+                    "distribution/runner.py",
+                    file=sys.stderr,
+                )
+                return 2
 
             plan = build_plan(
                 args.source_root if args.source_root is not None else _source_root(),

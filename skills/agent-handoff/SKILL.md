@@ -29,6 +29,12 @@ Read repository instructions, governing designs/plans/ADRs, and the record. Insp
 
 Record snapshot timestamps and name the concrete first action after reconciliation, including its target, constraints, and completion condition. Reconciliation itself is preflight, not that action.
 
+Keep `next_session_prompt` to essential blockers, settled decisions, and
+validation gates not already represented by `exact_action`. Use no more than six
+non-empty lines or 120 words. It must not reproduce the handoff document or
+contain a Markdown fence. Keep every `exact_action` item trimmed and on one line;
+it also must not contain a Markdown fence or handoff-document structure.
+
 ## Gate: Validate the record
 
 Write the record, then run:
@@ -47,7 +53,11 @@ Run:
 python .agent-handoff-toolkit/runner.py render-tail <record-path>
 ```
 
-Append the output verbatim. For a continuation it contains the stored prompt in a fenced copy/paste block and an absolute clickable link as the final line. For an audit it labels the link **Audit record (not a handoff)** and emits no restart prompt. Put nothing after the generated link.
+Append the output verbatim. For a continuation it begins with `Continue from
+handoff`, includes the absolute record path and exact next action, then lists
+only essential blockers, decisions, and validation gates. It must not reproduce
+the handoff document. For an audit it labels the link **Audit record (not a
+handoff)** and emits no restart prompt. Put nothing after the generated link.
 
 ## Stop conditions
 
