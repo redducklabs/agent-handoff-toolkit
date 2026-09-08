@@ -6,7 +6,7 @@ This repository provides a shared contract, deterministic validation and renderi
 
 ## Status
 
-Version 0.2.2 provides release-pinned managed installation and synchronization
+Version 0.2.3 provides release-pinned managed installation and synchronization
 from an inspectable source checkout. It preserves consumer-owned instructions,
 JSON settings, and opaque deprecated historical records. It also defines a
 prospective post-install acceptance checklist for both Claude Code and Codex.
@@ -19,7 +19,11 @@ prospective post-install acceptance checklist for both Claude Code and Codex.
 - Questions that can change the next session's first action are answered before a continuation is finalized.
 - Recorded repository and tracker state is a timestamped snapshot. A resumed session reconciles live state before acting.
 - Verification results are classified as `pass`, `fail`, or `not-run`; skipped checks are never reported as passing.
-- A continuation response ends with the stored next-session prompt in a copy/paste block and an absolute clickable link as its final line.
+- A continuation response says `Continue from handoff`, identifies the exact next
+  action, and lists only essential blockers, decisions, and validation gates.
+  Its stored context is limited to 120 words and the complete generated tail to
+  300 words. The response must not reproduce the handoff document. The absolute
+  clickable link remains the final line.
 
 See [the contract](docs/agent-handoff/contract.md) for the normative requirements.
 
@@ -37,16 +41,16 @@ Automatic hooks fail open so they cannot break an agent session. Explicit comman
 
 ## Consumer installation
 
-Check out the public v0.2.2 release, inspect the proposed changes, then apply
+Check out the public v0.2.3 release, inspect the proposed changes, then apply
 them from that checkout:
 
 ```powershell
-git clone --branch v0.2.2 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
+git clone --branch v0.2.3 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
 Set-Location agent-handoff-toolkit
-python distribution/runner.py install --target <consumer-repository> --release v0.2.2 --dry-run
-python distribution/runner.py install --target <consumer-repository> --release v0.2.2 --apply
-python distribution/runner.py sync --target <consumer-repository> --release v0.2.2 --check
-python distribution/runner.py sync --target <consumer-repository> --release v0.2.2 --apply
+python distribution/runner.py install --target <consumer-repository> --release v0.2.3 --dry-run
+python distribution/runner.py install --target <consumer-repository> --release v0.2.3 --apply
+python distribution/runner.py sync --target <consumer-repository> --release v0.2.3 --check
+python distribution/runner.py sync --target <consumer-repository> --release v0.2.3 --apply
 ```
 
 Run install and sync only in an isolated, clean Git worktree with no concurrent

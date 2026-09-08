@@ -18,6 +18,11 @@ before creating or changing a continuation or completion audit.
   `python .agent-handoff-toolkit/runner.py validate <record>`.
 - Render a continuation's required final tail with
   `python .agent-handoff-toolkit/runner.py render-tail <continuation-record>`.
+- The continuation tail must begin with `Continue from handoff`, state the exact
+  next action, and list only essential blockers, decisions, and validation gates.
+  Keep `next_session_prompt` within 120 words. The prompt and `exact_action`
+  fields must not reproduce the handoff document; the generated absolute link
+  is how the next session locates it.
 - Run `install` and `sync` only from the exact toolkit release checkout. The
   vendored runner intentionally contains the record and hook runtime, not the
   installer modules needed to update itself.

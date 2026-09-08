@@ -43,7 +43,7 @@
     "constraints": "Keep the adapter independent of record policy.",
     "completion_condition": "Claude and Codex payload fixtures pass."
   },
-  "next_session_prompt": "Read the repository instructions, design, plan, and this continuation. Reconcile live branch, HEAD, index, untracked files, remote state, tracker hierarchy, and rollout state; preserve newer inherited state and report material conflicts. Then implement the host payload normalizer in src/handoff_toolkit/hooks.py without repeating completed work, keeping policy in the core, until the Claude and Codex payload fixtures pass.",
+  "next_session_prompt": "- Decision: preserve newer live state and report material conflicts before editing.",
   "sections": {
     "Objective": "Deliver the remaining host adapters and distribution artifacts.",
     "Authoritative references": "- `AGENTS.md`\n- `docs/agent-handoff/contract.md`",

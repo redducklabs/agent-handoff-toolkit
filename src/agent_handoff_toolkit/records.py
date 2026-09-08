@@ -47,12 +47,18 @@ SCOPE_KINDS = frozenset({"unit", "issue", "phase", "epic", "rollout", "standalon
 SCOPE_STATUSES = frozenset({"pending", "in-progress", "blocked", "complete"})
 NONTERMINAL_SCOPE_STATUSES = SCOPE_STATUSES - {"complete"}
 VERIFICATION_RESULTS = frozenset({"pass", "fail", "not-run"})
+MAX_NEXT_PROMPT_WORDS = 120
+MAX_NEXT_PROMPT_CHARACTERS = 1200
+MAX_NEXT_PROMPT_LINES = 6
+MAX_CONTINUATION_TAIL_WORDS = 300
+MAX_CONTINUATION_TAIL_CHARACTERS = 2400
 METADATA_RE = re.compile(
     r"<!-- agent-handoff-metadata\n(?P<json>.*?)\n-->",
     re.DOTALL,
 )
 FENCE_OPEN_RE = re.compile(r"^[ ]{0,3}(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
 HEADING_LINE_RE = re.compile(r"^[ ]{0,3}##[ \t]+(?P<title>.*?)(?:[ \t]+#+)?[ \t]*$")
+PROMPT_FENCE_RE = re.compile(r"^[ ]{0,3}(?:`{3,}|~{3,})", re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -84,6 +90,85 @@ def _has_content(value: object) -> bool:
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
         return bool(value) and all(_is_nonempty_string(item) for item in value)
     return False
+
+
+def _word_count(value: str) -> int:
+    return len(re.findall(r"\S+", value))
+
+
+def _looks_like_record_document(value: str) -> bool:
+    if PROMPT_FENCE_RE.search(value):
+        return True
+    lowered = value.lower()
+    markers = (
+        METADATA_OPEN,
+        METADATA_CLOSE,
+        AUDIT_SENTINEL,
+        "# session continuation",
+        "# completion audit",
+        *(f"## {section.lower()}" for section in CONTINUATION_SECTIONS),
+        *(f"## {section.lower()}" for section in AUDIT_SECTIONS),
+    )
+    return any(marker.lower() in lowered for marker in markers)
+
+
+def _has_unsafe_control(value: str, *, allow_lf: bool) -> bool:
+    return any(
+        not (allow_lf and character == "\n")
+        and unicodedata.category(character) in {"Cc", "Cs", "Zl", "Zp"}
+        for character in value
+    )
+
+
+def _tail_field_parts(value: object) -> tuple[str, ...]:
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return tuple(item for item in value if isinstance(item, str))
+    return ()
+
+
+def _tail_field_is_safe(value: object) -> bool:
+    parts = _tail_field_parts(value)
+    return bool(parts) and all(
+        part == part.strip()
+        and not _has_unsafe_control(part, allow_lf=False)
+        and not _looks_like_record_document(part)
+        for part in parts
+    )
+
+
+def _tail_field_text(value: object) -> str:
+    return "; ".join(_tail_field_parts(value))
+
+
+def _continuation_tail_body(data: Mapping[str, object], handoff_reference: str) -> str:
+    action = data["exact_action"]
+    assert isinstance(action, Mapping)
+    return "\n".join(
+        (
+            f"Continue from handoff: {handoff_reference}",
+            f"Exact next action: {_tail_field_text(action['action'])}",
+            f"Target: {_tail_field_text(action['target'])}",
+            f"Constraints: {_tail_field_text(action['constraints'])}",
+            f"Completion gate: {_tail_field_text(action['completion_condition'])}",
+            "Essential blockers, decisions, and validation gates:",
+            str(data["next_session_prompt"]),
+        )
+    )
+
+
+def _continuation_tail(data: Mapping[str, object], handoff_reference: str) -> str:
+    body = _continuation_tail_body(data, handoff_reference)
+    link_path = quote(handoff_reference, safe="/:._-")
+    return f"{_fenced_block(body, 'text')}\n\n[Continuation handoff](<{link_path}>)"
+
+
+def _tail_is_within_budget(value: str) -> bool:
+    return (
+        _word_count(value) <= MAX_CONTINUATION_TAIL_WORDS
+        and len(value) <= MAX_CONTINUATION_TAIL_CHARACTERS
+    )
 
 
 def _fenced_block(value: str, language: str) -> str:
@@ -412,10 +497,18 @@ def _validate_type_fields(data: Mapping[str, object]) -> list[ValidationIssue]:
             issues.append(_issue("exact-action", "exact_action must be an object"))
         else:
             for field in ("action", "target", "constraints", "completion_condition"):
-                if not _has_content(action.get(field)):
+                value = action.get(field)
+                if not _has_content(value):
                     issues.append(
                         _issue(
                             "exact-action", f"exact_action.{field} must be non-empty"
+                        )
+                    )
+                elif not _tail_field_is_safe(value):
+                    issues.append(
+                        _issue(
+                            "exact-action-format",
+                            f"exact_action.{field} must contain only trimmed, single-line text without Markdown fences or handoff-document structure",
                         )
                     )
         prompt = data.get("next_session_prompt")
@@ -423,11 +516,56 @@ def _validate_type_fields(data: Mapping[str, object]) -> list[ValidationIssue]:
             issues.append(
                 _issue("next-prompt", "next_session_prompt must be non-empty")
             )
-        elif prompt != prompt.strip() or "\r" in prompt:
+        elif prompt != prompt.strip() or _has_unsafe_control(prompt, allow_lf=True):
             issues.append(
                 _issue(
                     "next-prompt-format",
-                    "next_session_prompt must use LF newlines and have no leading or trailing whitespace",
+                    "next_session_prompt must use LF newlines, contain no unsafe control characters, and have no leading or trailing whitespace",
+                )
+            )
+        else:
+            if (
+                _word_count(prompt) > MAX_NEXT_PROMPT_WORDS
+                or len(prompt) > MAX_NEXT_PROMPT_CHARACTERS
+            ):
+                issues.append(
+                    _issue(
+                        "next-prompt-size",
+                        "next_session_prompt must not exceed 120 words or 1200 characters",
+                    )
+                )
+            if (
+                len([line for line in prompt.splitlines() if line.strip()])
+                > MAX_NEXT_PROMPT_LINES
+            ):
+                issues.append(
+                    _issue(
+                        "next-prompt-lines",
+                        "next_session_prompt must not exceed six non-empty lines",
+                    )
+                )
+            if _looks_like_record_document(prompt):
+                issues.append(
+                    _issue(
+                        "next-prompt-document",
+                        "next_session_prompt must not contain a Markdown fence or handoff-document structure",
+                    )
+                )
+        if (
+            isinstance(action, Mapping)
+            and all(
+                _tail_field_is_safe(action.get(field))
+                for field in ("action", "target", "constraints", "completion_condition")
+            )
+            and _is_nonempty_string(prompt)
+            and not _tail_is_within_budget(
+                _continuation_tail(data, "<absolute-handoff-path>")
+            )
+        ):
+            issues.append(
+                _issue(
+                    "continuation-tail-size",
+                    "the generated continuation tail must not exceed 300 words or 2400 characters",
                 )
             )
     elif record_type == "completion-audit":
@@ -736,10 +874,14 @@ def render_tail(record_path: str | os.PathLike[str], text: str) -> str:
     """Render the exact response tail for a structurally valid record."""
 
     data = parse_markdown(text)
-    link_path = quote(_absolute_markdown_path(record_path), safe="/:._-")
+    absolute_path = _absolute_markdown_path(record_path)
     if data["record_type"] == "continuation":
-        prompt = str(data["next_session_prompt"])
-        return (
-            f"{_fenced_block(prompt, 'text')}\n\n[Continuation handoff](<{link_path}>)"
-        )
+        tail = _continuation_tail(data, absolute_path)
+        if not _tail_is_within_budget(tail):
+            raise ValueError(
+                "continuation-tail-size: the generated continuation tail must not "
+                "exceed 300 words or 2400 characters"
+            )
+        return tail
+    link_path = quote(absolute_path, safe="/:._-")
     return f"[Audit record (not a handoff)](<{link_path}>)"
