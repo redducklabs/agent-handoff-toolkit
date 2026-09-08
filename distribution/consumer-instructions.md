@@ -7,7 +7,8 @@ before creating or changing a continuation or completion audit.
 - The contract is the shared minimum for new records. Project overlays may add
   stricter requirements, but cannot loosen or contradict the record-type
   decision, metadata-derived canonical sections, or final-tail requirements.
-- Treat every pre-toolkit handoff as a deprecated historical artifact by policy.
+- Treat every handoff record that existed before the current pinned release was
+  adopted in the consumer as a deprecated historical artifact by policy.
   During installation or synchronization, do not open, read, review, validate,
   migrate, summarize, reconcile, or rewrite those records. Apply the current
   contract only to new or materially replaced records. Do not resolve questions

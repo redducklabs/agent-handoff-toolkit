@@ -6,12 +6,12 @@ Run installation from an inspectable checkout of the public release rather than
 from a network downloader:
 
 ```powershell
-git clone --branch v0.2.4 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
+git clone --branch v0.2.5 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
 Set-Location agent-handoff-toolkit
-python distribution/runner.py install --target <consumer-repository> --release v0.2.4 --dry-run
-python distribution/runner.py install --target <consumer-repository> --release v0.2.4 --apply
-python distribution/runner.py sync --target <consumer-repository> --release v0.2.4 --check
-python distribution/runner.py sync --target <consumer-repository> --release v0.2.4 --apply
+python distribution/runner.py install --target <consumer-repository> --release v0.2.5 --dry-run
+python distribution/runner.py install --target <consumer-repository> --release v0.2.5 --apply
+python distribution/runner.py sync --target <consumer-repository> --release v0.2.5 --check
+python distribution/runner.py sync --target <consumer-repository> --release v0.2.5 --apply
 ```
 
 Run install and sync only in an isolated, clean Git worktree. Confirm the
@@ -52,10 +52,11 @@ Existing project instructions and unrelated JSON settings remain
 consumer-owned. The installer refuses locally modified, missing, or
 identity-colliding owned content instead of overwriting it.
 
-Pre-toolkit handoffs are deprecated historical artifacts by policy. Installation
-and synchronization preserve them as opaque files: do not open, read, review,
-validate, migrate, summarize, reconcile, or rewrite them. No unresolved question
-or content in those files gates adoption. The current schema and policy apply
+Every handoff record that existed before the current pinned release was adopted
+in the consumer is a deprecated historical artifact by policy. Installation and
+synchronization preserve those records as opaque files: do not open, read,
+review, validate, migrate, summarize, reconcile, or rewrite them. No unresolved
+question or content in those files gates adoption. The current policy applies
 only to new or materially replaced records.
 
 Each target is stale-checked immediately before its write and published with a
@@ -80,7 +81,7 @@ Run these checks on the installation branch before enabling routine use:
    hook command directly with representative matching and non-matching input.
    Derive each command from the installed JSON rather than duplicating its
    argument list in the test. Assert that SessionStart emits the exact policy
-   sentence `Do not search or inspect deprecated pre-toolkit handoffs.` Do not
+   sentence `Do not search or inspect deprecated legacy handoffs.` Do not
    infer runtime viability from valid JSON alone.
 4. Create fresh disposable continuation and completion-audit records. Render and
    validate both record types. Assert the continuation's copy/paste tail and the
@@ -117,10 +118,10 @@ Before bulk adoption, select one repository with mature handoffs and one with li
 1. Inventory local instructions, hook and skill configuration, and tracker
    conventions. Count or locate historical handoff storage only if needed to
    protect it; do not open the records.
-2. Run the v0.2.4 installer in dry-run mode from its release checkout.
+2. Run the v0.2.5 installer in dry-run mode from its release checkout.
 3. Review the proposed instruction and hook merges.
-4. Apply on a branch. Treat pre-toolkit records as deprecated by policy without
-   marking, reading, or rewriting individual files.
+4. Apply on a branch. Treat every record that predates this adoption as
+   deprecated by policy without marking, reading, or rewriting individual files.
 5. Exercise one continuation and one highest-scope completion audit in both Claude Code and Codex.
 6. Record compatibility exceptions as project-local overlays, not forks of the core contract.
 
