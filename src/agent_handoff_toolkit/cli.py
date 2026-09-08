@@ -153,7 +153,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
 
         if args.command == "validate":
-            issues = validate_markdown(_read_text(args.record))
+            issues = validate_markdown(_read_text(args.record), record_path=args.record)
             if issues:
                 for issue in issues:
                     print(f"{issue.code}: {issue.message}", file=sys.stderr)

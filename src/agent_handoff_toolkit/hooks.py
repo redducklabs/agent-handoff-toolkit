@@ -44,7 +44,7 @@ _SESSION_START_REMINDER = (
     "Read `docs/agent-handoff/contract.md` before continuing. If the incoming session "
     "context explicitly links a current schema-v1 continuation, reconcile that record "
     "with live state and do not repeat completed work. Do not search or inspect "
-    "deprecated pre-toolkit handoffs."
+    "deprecated legacy handoffs."
 )
 
 

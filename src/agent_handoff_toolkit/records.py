@@ -471,7 +471,10 @@ def _validate_verification(data: Mapping[str, object]) -> list[ValidationIssue]:
     return issues
 
 
-def _validate_type_fields(data: Mapping[str, object]) -> list[ValidationIssue]:
+def _validate_type_fields(
+    data: Mapping[str, object],
+    record_path: str | os.PathLike[str] | None = None,
+) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
     record_type = data.get("record_type")
     if record_type == "continuation":
@@ -559,7 +562,14 @@ def _validate_type_fields(data: Mapping[str, object]) -> list[ValidationIssue]:
             )
             and _is_nonempty_string(prompt)
             and not _tail_is_within_budget(
-                _continuation_tail(data, "<absolute-handoff-path>")
+                _continuation_tail(
+                    data,
+                    (
+                        _absolute_markdown_path(record_path)
+                        if record_path is not None
+                        else "<absolute-handoff-path>"
+                    ),
+                )
             )
         ):
             issues.append(
@@ -611,7 +621,10 @@ def _validate_type_fields(data: Mapping[str, object]) -> list[ValidationIssue]:
     return issues
 
 
-def _validate_data(data: object) -> list[ValidationIssue]:
+def _validate_data(
+    data: object,
+    record_path: str | os.PathLike[str] | None = None,
+) -> list[ValidationIssue]:
     if not isinstance(data, Mapping):
         return [_issue("metadata-type", "metadata must be a JSON object")]
 
@@ -636,7 +649,7 @@ def _validate_data(data: object) -> list[ValidationIssue]:
 
     issues.extend(_validate_scopes(data))
     issues.extend(_validate_verification(data))
-    issues.extend(_validate_type_fields(data))
+    issues.extend(_validate_type_fields(data, record_path=record_path))
 
     sections = data.get("sections")
     if expected_sections is not None:
@@ -705,7 +718,10 @@ def _headings_outside_fences(text: str) -> list[_Heading]:
     return headings
 
 
-def _extract_markdown(text: str) -> tuple[dict[str, Any] | None, list[ValidationIssue]]:
+def _extract_markdown(
+    text: str,
+    record_path: str | os.PathLike[str] | None = None,
+) -> tuple[dict[str, Any] | None, list[ValidationIssue]]:
     normalized = text.replace("\r\n", "\n").replace("\r", "\n")
     match = METADATA_RE.search(normalized)
     if match is None:
@@ -778,7 +794,7 @@ def _extract_markdown(text: str) -> tuple[dict[str, Any] | None, list[Validation
 
     data = dict(metadata)
     data["sections"] = sections
-    issues.extend(_validate_data(data))
+    issues.extend(_validate_data(data, record_path=record_path))
     for section_name, canonical_text in _derived_sections(data).items():
         actual_text = sections.get(section_name)
         if actual_text is not None and actual_text != canonical_text:
@@ -791,10 +807,21 @@ def _extract_markdown(text: str) -> tuple[dict[str, Any] | None, list[Validation
     return data, issues
 
 
-def validate_markdown(text: str) -> list[ValidationIssue]:
+def validate_markdown(
+    text: str,
+    record_path: str | os.PathLike[str] | None = None,
+) -> list[ValidationIssue]:
     """Validate structural conformance without claiming factual correctness."""
 
-    _, issues = _extract_markdown(text)
+    if record_path is not None:
+        try:
+            record_path = _absolute_markdown_path(record_path)
+        except ValueError as error:
+            _, issues = _extract_markdown(text)
+            message = str(error).removeprefix("unsafe-path: ")
+            return [*issues, _issue("unsafe-path", message)]
+
+    _, issues = _extract_markdown(text, record_path=record_path)
     return issues
 
 

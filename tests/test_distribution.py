@@ -178,16 +178,16 @@ class DistributionTests(unittest.TestCase):
         manifest = load_manifest()
 
         self.assertEqual(manifest["manifest_version"], 2)
-        self.assertEqual(manifest["toolkit_version"], "0.2.4")
+        self.assertEqual(manifest["toolkit_version"], "0.2.5")
         self.assertEqual(manifest["text_hash"], "utf8-lf-sha256-v1")
         self.assertIn(
-            '__version__ = "0.2.4"',
+            '__version__ = "0.2.5"',
             (ROOT / "src/agent_handoff_toolkit/__init__.py").read_text(
                 encoding="utf-8"
             ),
         )
         self.assertIn(
-            'version = "0.2.4"',
+            'version = "0.2.5"',
             (ROOT / "pyproject.toml").read_text(encoding="utf-8"),
         )
         self.assertEqual(manifest["record_schema_version"], 1)
@@ -260,6 +260,7 @@ class DistributionTests(unittest.TestCase):
 
         for phrase in (
             "deprecated historical artifact",
+            "existed before the current pinned release was adopted",
             "do not open, read, review, validate, migrate, summarize, reconcile, or rewrite",
             "new or materially replaced records",
             "cannot loosen or contradict",
@@ -292,7 +293,7 @@ class DistributionTests(unittest.TestCase):
         for phrase in (
             "hash-check the complete managed blocks",
             "derive each command from the installed json",
-            "do not search or inspect deprecated pre-toolkit handoffs",
+            "do not search or inspect deprecated legacy handoffs",
             "active consumer-owned documentation and tests",
             "stale toolkit release tags, versions, commit pins, or assertions",
             "render and validate both record types",
@@ -665,7 +666,7 @@ class DistributionTests(unittest.TestCase):
 
             result = run_installed_command(
                 "python .agent-handoff-toolkit/runner.py install "
-                "--target . --release v0.2.4 --dry-run",
+                "--target . --release v0.2.5 --dry-run",
                 consumer,
             )
 
@@ -706,18 +707,18 @@ class DistributionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             consumer = Path(directory)
             result = run_source_cli(
-                "install", "--apply", target=consumer, release="v0.2.4"
+                "install", "--apply", target=consumer, release="v0.2.5"
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            check = run_source_cli("sync", "--check", target=consumer, release="v0.2.4")
+            check = run_source_cli("sync", "--check", target=consumer, release="v0.2.5")
             self.assertEqual(check.returncode, 0, check.stderr)
             state = json.loads(
                 (consumer / ".agent-handoff-toolkit/install-state.json").read_text(
                     encoding="utf-8"
                 )
             )
-            self.assertEqual(state["release"], "v0.2.4")
-            self.assertEqual(state["toolkit_version"], "0.2.4")
+            self.assertEqual(state["release"], "v0.2.5")
+            self.assertEqual(state["toolkit_version"], "0.2.5")
             self.assertEqual(
                 [target["target"] for target in state["targets"]],
                 sorted(
@@ -778,6 +779,108 @@ class DistributionTests(unittest.TestCase):
             self.assertFalse((installed_source / "operations.py").exists())
             self.assertFalse((installed_source / "state.py").exists())
 
+    def test_sync_upgrades_a_prior_release_without_touching_legacy_records(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            previous_source = root / "v0.2.4"
+            shutil.copytree(
+                ROOT,
+                previous_source,
+                ignore=shutil.ignore_patterns(
+                    ".git", "build", "dist", "*.egg-info", "__pycache__"
+                ),
+            )
+
+            replacements = {
+                "distribution/consumer-instructions.md": (
+                    "Treat every handoff record that existed before the current pinned "
+                    "release was\n  adopted in the consumer",
+                    "Treat every pre-toolkit handoff",
+                ),
+                "src/agent_handoff_toolkit/__init__.py": ("0.2.5", "0.2.4"),
+                "src/agent_handoff_toolkit/hooks.py": (
+                    "deprecated legacy handoffs",
+                    "deprecated pre-toolkit handoffs",
+                ),
+            }
+            for relative, (current, previous) in replacements.items():
+                path = previous_source / relative
+                path.write_text(
+                    path.read_text(encoding="utf-8").replace(current, previous),
+                    encoding="utf-8",
+                    newline="\n",
+                )
+
+            previous_manifest_path = previous_source / "distribution/manifest.json"
+            previous_manifest = json.loads(
+                previous_manifest_path.read_text(encoding="utf-8")
+            )
+            previous_manifest["toolkit_version"] = "0.2.4"
+            for artifact in previous_manifest["artifacts"]:
+                source = previous_source / Path(
+                    *PurePosixPath(artifact["source"]).parts
+                )
+                artifact["sha256"] = normalized_sha256(source.read_bytes())
+            previous_manifest_path.write_text(
+                json.dumps(previous_manifest, indent=2) + "\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+
+            consumer = root / "consumer"
+            consumer.mkdir()
+            (consumer / "AGENTS.md").write_text(
+                "Project-owned rule.\n", encoding="utf-8", newline="\n"
+            )
+            installed = subprocess.run(
+                [
+                    sys.executable,
+                    "distribution/runner.py",
+                    "install",
+                    "--target",
+                    str(consumer),
+                    "--release",
+                    "v0.2.4",
+                    "--apply",
+                ],
+                cwd=previous_source,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+
+            legacy_record = consumer / "handoffs/legacy.md"
+            legacy_record.parent.mkdir(exist_ok=True)
+            legacy_bytes = b"opaque legacy record\r\n"
+            legacy_record.write_bytes(legacy_bytes)
+
+            upgraded = run_source_cli(
+                "sync", "--apply", target=consumer, release="v0.2.5"
+            )
+            self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
+            current = run_source_cli(
+                "sync", "--check", target=consumer, release="v0.2.5"
+            )
+
+            self.assertEqual(current.returncode, 0, current.stderr)
+            self.assertIn("CURRENT", current.stdout)
+            self.assertEqual(legacy_record.read_bytes(), legacy_bytes)
+            self.assertIn(
+                "Project-owned rule.",
+                (consumer / "AGENTS.md").read_text(encoding="utf-8"),
+            )
+            state = json.loads(
+                (consumer / ".agent-handoff-toolkit/install-state.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(state["release"], "v0.2.5")
+            self.assertEqual(state["toolkit_version"], "0.2.5")
+
     def test_hook_fragment_commands_execute_against_the_installed_layout(self) -> None:
         payloads = {
             "claude": json.dumps(
@@ -800,7 +903,7 @@ class DistributionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             consumer = Path(directory)
             installed = run_source_cli(
-                "install", "--apply", target=consumer, release="v0.2.4"
+                "install", "--apply", target=consumer, release="v0.2.5"
             )
             self.assertEqual(installed.returncode, 0, installed.stderr)
             installed_configs = {
@@ -830,7 +933,7 @@ class DistributionTests(unittest.TestCase):
                         )
                         if event == "SessionStart":
                             self.assertIn(
-                                "Do not search or inspect deprecated pre-toolkit handoffs.",
+                                "Do not search or inspect deprecated legacy handoffs.",
                                 output["hookSpecificOutput"]["additionalContext"],
                             )
 

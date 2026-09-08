@@ -499,6 +499,24 @@ class RecordRenderingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "continuation-tail-size"):
             render_tail(oversized_path, text)
 
+    def test_validation_uses_the_real_record_path_for_tail_budget(self) -> None:
+        self.continuation["exact_action"]["constraints"] = "x" * 1700
+        text = render_record(self.continuation)
+        record_path = "C:/" + ("nested-directory/" * 12) + "handoff.md"
+
+        self.assertEqual(validate_markdown(text), [])
+        self.assertIn(
+            "continuation-tail-size",
+            {issue.code for issue in validate_markdown(text, record_path=record_path)},
+        )
+
+    def test_validation_reports_unsafe_record_paths_as_issues(self) -> None:
+        text = render_record(self.continuation)
+
+        issues = validate_markdown(text, record_path="<unsafe>.md")
+
+        self.assertIn("unsafe-path", {issue.code for issue in issues})
+
     def test_tail_rejects_unsafe_markdown_path_characters(self) -> None:
         text = render_record(self.continuation)
         for path in (
@@ -579,6 +597,21 @@ class CommandLineTests(unittest.TestCase):
                 "[Continuation handoff](<"
                 f"{output.resolve().as_posix().replace(' ', '%20')}>)",
             )
+
+    def test_validate_uses_the_output_path_for_tail_budget(self) -> None:
+        data = load_fixture("continuation.json")
+        data["exact_action"]["constraints"] = "x" * 1700
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            deep = root.joinpath(*(["nested-directory-with-padding"] * 5))
+            deep.mkdir(parents=True)
+            record = deep / "continuation.md"
+            record.write_text(render_record(data), encoding="utf-8", newline="\n")
+
+            result = self.run_cli("validate", str(record))
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("continuation-tail-size", result.stderr)
 
     def test_render_tail_forces_utf8_when_ambient_encoding_is_legacy(self) -> None:
         data = load_fixture("continuation.json")

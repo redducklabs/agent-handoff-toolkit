@@ -6,10 +6,13 @@ This repository provides a shared contract, deterministic validation and renderi
 
 ## Status
 
-Version 0.2.4 provides release-pinned managed installation and synchronization
+Version 0.2.5 provides release-pinned managed installation and synchronization
 from an inspectable source checkout. It preserves consumer-owned instructions,
 JSON settings, and opaque deprecated historical records. It also defines a
 prospective post-install acceptance checklist for both Claude Code and Codex.
+Validation now measures the rendered continuation tail against the record's real
+absolute path, so a record cannot pass `validate` and then exceed the output
+budget in `render-tail` solely because its destination path is longer.
 
 ## Core rules
 
@@ -41,16 +44,16 @@ Automatic hooks fail open so they cannot break an agent session. Explicit comman
 
 ## Consumer installation
 
-Check out the public v0.2.4 release, inspect the proposed changes, then apply
+Check out the public v0.2.5 release, inspect the proposed changes, then apply
 them from that checkout:
 
 ```powershell
-git clone --branch v0.2.4 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
+git clone --branch v0.2.5 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
 Set-Location agent-handoff-toolkit
-python distribution/runner.py install --target <consumer-repository> --release v0.2.4 --dry-run
-python distribution/runner.py install --target <consumer-repository> --release v0.2.4 --apply
-python distribution/runner.py sync --target <consumer-repository> --release v0.2.4 --check
-python distribution/runner.py sync --target <consumer-repository> --release v0.2.4 --apply
+python distribution/runner.py install --target <consumer-repository> --release v0.2.5 --dry-run
+python distribution/runner.py install --target <consumer-repository> --release v0.2.5 --apply
+python distribution/runner.py sync --target <consumer-repository> --release v0.2.5 --check
+python distribution/runner.py sync --target <consumer-repository> --release v0.2.5 --apply
 ```
 
 Run install and sync only in an isolated, clean Git worktree with no concurrent
