@@ -6,12 +6,12 @@ Run installation from an inspectable checkout of the public release rather than
 from a network downloader:
 
 ```powershell
-git clone --branch v0.2.5 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
+git clone --branch v0.2.6 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
 Set-Location agent-handoff-toolkit
-python distribution/runner.py install --target <consumer-repository> --release v0.2.5 --dry-run
-python distribution/runner.py install --target <consumer-repository> --release v0.2.5 --apply
-python distribution/runner.py sync --target <consumer-repository> --release v0.2.5 --check
-python distribution/runner.py sync --target <consumer-repository> --release v0.2.5 --apply
+python distribution/runner.py install --target <consumer-repository> --release v0.2.6 --dry-run
+python distribution/runner.py install --target <consumer-repository> --release v0.2.6 --apply
+python distribution/runner.py sync --target <consumer-repository> --release v0.2.6 --check
+python distribution/runner.py sync --target <consumer-repository> --release v0.2.6 --apply
 ```
 
 Run install and sync only in an isolated, clean Git worktree. Confirm the
@@ -77,6 +77,10 @@ Run these checks on the installation branch before enabling routine use:
    managed blocks, including their markers, and require the `AGENTS.md` and
    `CLAUDE.md` blocks to be byte-identical after LF normalization. Inspect the
    merged Claude and Codex hook JSON while leaving unrelated settings unchanged.
+   For the acceptance test, pin the LF-normalized SHA-256 of the reviewed
+   `install-state.json` as a test constant; never derive expected values from the
+   state under test. The state is the installer's source of truth, not the
+   acceptance test's oracle.
 3. From the consumer repository root, execute every installed Claude and Codex
    hook command directly with representative matching and non-matching input.
    Derive each command from the installed JSON rather than duplicating its
@@ -95,7 +99,10 @@ Run these checks on the installation branch before enabling routine use:
    historical records.
 6. Add consumer regression tests for the merged Claude and Codex hook JSON,
    install-state ownership and `CURRENT` status, schema-derived section parity,
-   and continuation/completion record-decision semantics.
+   and continuation/completion record-decision semantics. Recursively assert
+   every merge-owned JSON fragment, not only copied-file hashes. If this focused
+   test runs in a container, mount every asserted managed artifact read-only.
+   Missing, empty, wrong-type, or unmounted artifacts must fail, never skip.
 7. Report automatic Codex hook discovery as unverified unless it has been
    observed end-to-end in the consumer's actual Codex host. Direct command
    execution verifies the installed hook itself, not host discovery.
@@ -106,6 +113,12 @@ Run these checks on the installation branch before enabling routine use:
 9. Search active consumer-owned documentation and tests, excluding deprecated
    handoffs, for stale toolkit release tags, versions, commit pins, or
    assertions. Update every active reference to the exact installed release.
+
+For a meta-only toolkit or handoff change, run only these focused local
+acceptance checks; never launch the consumer's full local application, backend,
+frontend, end-to-end, build, or dependency-audit suites. Let required
+pull-request CI run normally. Run broader local suites only when product code
+also changes.
 
 Structural checks prove schema, ownership, merge, and runtime properties. They
 do not prove that prose is semantically complete or truthful; that remains a
@@ -118,7 +131,7 @@ Before bulk adoption, select one repository with mature handoffs and one with li
 1. Inventory local instructions, hook and skill configuration, and tracker
    conventions. Count or locate historical handoff storage only if needed to
    protect it; do not open the records.
-2. Run the v0.2.5 installer in dry-run mode from its release checkout.
+2. Run the v0.2.6 installer in dry-run mode from its release checkout.
 3. Review the proposed instruction and hook merges.
 4. Apply on a branch. Treat every record that predates this adoption as
    deprecated by policy without marking, reading, or rewriting individual files.

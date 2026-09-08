@@ -178,16 +178,16 @@ class DistributionTests(unittest.TestCase):
         manifest = load_manifest()
 
         self.assertEqual(manifest["manifest_version"], 2)
-        self.assertEqual(manifest["toolkit_version"], "0.2.5")
+        self.assertEqual(manifest["toolkit_version"], "0.2.6")
         self.assertEqual(manifest["text_hash"], "utf8-lf-sha256-v1")
         self.assertIn(
-            '__version__ = "0.2.5"',
+            '__version__ = "0.2.6"',
             (ROOT / "src/agent_handoff_toolkit/__init__.py").read_text(
                 encoding="utf-8"
             ),
         )
         self.assertIn(
-            'version = "0.2.5"',
+            'version = "0.2.6"',
             (ROOT / "pyproject.toml").read_text(encoding="utf-8"),
         )
         self.assertEqual(manifest["record_schema_version"], 1)
@@ -279,6 +279,11 @@ class DistributionTests(unittest.TestCase):
             "consumer regression tests",
             "deprecated by policy",
             "rewrite",
+            "not the acceptance test's oracle",
+            "never derive expected values from the state under test",
+            "missing, empty, wrong-type, or unmounted artifacts must fail",
+            "never launch the consumer's full local application",
+            "let required pull-request ci run normally",
         ):
             self.assertIn(phrase, combined)
 
@@ -300,6 +305,9 @@ class DistributionTests(unittest.TestCase):
             "audit record (not a handoff)",
             "url encoding",
             "no restart prompt",
+            "never derive expected values from the state under test",
+            "every merge-owned json fragment",
+            "mount every asserted managed artifact read-only",
         ):
             self.assertIn(phrase, integration_normalized)
 
@@ -666,7 +674,7 @@ class DistributionTests(unittest.TestCase):
 
             result = run_installed_command(
                 "python .agent-handoff-toolkit/runner.py install "
-                "--target . --release v0.2.5 --dry-run",
+                "--target . --release v0.2.6 --dry-run",
                 consumer,
             )
 
@@ -707,18 +715,18 @@ class DistributionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             consumer = Path(directory)
             result = run_source_cli(
-                "install", "--apply", target=consumer, release="v0.2.5"
+                "install", "--apply", target=consumer, release="v0.2.6"
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            check = run_source_cli("sync", "--check", target=consumer, release="v0.2.5")
+            check = run_source_cli("sync", "--check", target=consumer, release="v0.2.6")
             self.assertEqual(check.returncode, 0, check.stderr)
             state = json.loads(
                 (consumer / ".agent-handoff-toolkit/install-state.json").read_text(
                     encoding="utf-8"
                 )
             )
-            self.assertEqual(state["release"], "v0.2.5")
-            self.assertEqual(state["toolkit_version"], "0.2.5")
+            self.assertEqual(state["release"], "v0.2.6")
+            self.assertEqual(state["toolkit_version"], "0.2.6")
             self.assertEqual(
                 [target["target"] for target in state["targets"]],
                 sorted(
@@ -784,7 +792,7 @@ class DistributionTests(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            previous_source = root / "v0.2.4"
+            previous_source = root / "v0.2.5"
             shutil.copytree(
                 ROOT,
                 previous_source,
@@ -799,7 +807,7 @@ class DistributionTests(unittest.TestCase):
                     "release was\n  adopted in the consumer",
                     "Treat every pre-toolkit handoff",
                 ),
-                "src/agent_handoff_toolkit/__init__.py": ("0.2.5", "0.2.4"),
+                "src/agent_handoff_toolkit/__init__.py": ("0.2.6", "0.2.5"),
                 "src/agent_handoff_toolkit/hooks.py": (
                     "deprecated legacy handoffs",
                     "deprecated pre-toolkit handoffs",
@@ -817,7 +825,7 @@ class DistributionTests(unittest.TestCase):
             previous_manifest = json.loads(
                 previous_manifest_path.read_text(encoding="utf-8")
             )
-            previous_manifest["toolkit_version"] = "0.2.4"
+            previous_manifest["toolkit_version"] = "0.2.5"
             for artifact in previous_manifest["artifacts"]:
                 source = previous_source / Path(
                     *PurePosixPath(artifact["source"]).parts
@@ -842,7 +850,7 @@ class DistributionTests(unittest.TestCase):
                     "--target",
                     str(consumer),
                     "--release",
-                    "v0.2.4",
+                    "v0.2.5",
                     "--apply",
                 ],
                 cwd=previous_source,
@@ -859,11 +867,11 @@ class DistributionTests(unittest.TestCase):
             legacy_record.write_bytes(legacy_bytes)
 
             upgraded = run_source_cli(
-                "sync", "--apply", target=consumer, release="v0.2.5"
+                "sync", "--apply", target=consumer, release="v0.2.6"
             )
             self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
             current = run_source_cli(
-                "sync", "--check", target=consumer, release="v0.2.5"
+                "sync", "--check", target=consumer, release="v0.2.6"
             )
 
             self.assertEqual(current.returncode, 0, current.stderr)
@@ -878,8 +886,8 @@ class DistributionTests(unittest.TestCase):
                     encoding="utf-8"
                 )
             )
-            self.assertEqual(state["release"], "v0.2.5")
-            self.assertEqual(state["toolkit_version"], "0.2.5")
+            self.assertEqual(state["release"], "v0.2.6")
+            self.assertEqual(state["toolkit_version"], "0.2.6")
 
     def test_hook_fragment_commands_execute_against_the_installed_layout(self) -> None:
         payloads = {
@@ -903,7 +911,7 @@ class DistributionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             consumer = Path(directory)
             installed = run_source_cli(
-                "install", "--apply", target=consumer, release="v0.2.5"
+                "install", "--apply", target=consumer, release="v0.2.6"
             )
             self.assertEqual(installed.returncode, 0, installed.stderr)
             installed_configs = {
