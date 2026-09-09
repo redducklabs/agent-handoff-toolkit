@@ -19,8 +19,11 @@ before creating or changing a continuation or completion audit.
   `python .agent-handoff-toolkit/runner.py validate <record>`.
 - Render a continuation's required final tail with
   `python .agent-handoff-toolkit/runner.py render-tail <continuation-record>`.
-- The continuation tail must begin with `Continue from handoff`, state the exact
-  next action, and list only essential blockers, decisions, and validation gates.
+- The continuation tail must state `This session is stopped because authorized
+  work remains` and `What you need to do: Start a new session from the
+  continuation handoff below`. Its fenced block for the new session begins with
+  `Continue from handoff`, states the exact next action, and lists only essential blockers,
+  decisions, and validation gates.
   Keep `next_session_prompt` within 120 words. The prompt and `exact_action`
   fields must not reproduce the handoff document; the generated absolute link
   is how the next session locates it.

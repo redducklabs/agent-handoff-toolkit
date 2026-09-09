@@ -254,6 +254,22 @@ class RecordValidationTests(unittest.TestCase):
             ):
                 render_record(data)
 
+    def test_prompt_rejects_no_action_assertions_for_continuations(self) -> None:
+        for prompt in (
+            "None.",
+            "Nothing to do.",
+            "No action required.",
+            "What you need to do: None.",
+            "- Decision: preserve current branch.\nWhat you need to do: None.",
+        ):
+            data = copy.deepcopy(self.continuation)
+            data["next_session_prompt"] = prompt
+            with (
+                self.subTest(prompt=prompt),
+                self.assertRaisesRegex(ValueError, "next-prompt-action"),
+            ):
+                render_record(data)
+
     def test_prompt_rejects_more_than_six_nonempty_lines(self) -> None:
         data = copy.deepcopy(self.continuation)
         data["next_session_prompt"] = "\n".join(
@@ -294,6 +310,38 @@ class RecordValidationTests(unittest.TestCase):
                     self.assertRaisesRegex(ValueError, "exact-action-format"),
                 ):
                     render_record(data)
+
+    def test_exact_action_rejects_no_action_assertions(self) -> None:
+        no_action_values = (
+            "None.",
+            "Nothing to do.",
+            "Nothing remains.",
+            "No action required.",
+            "What you need to do: None.",
+        )
+        for field in ("action", "target", "constraints", "completion_condition"):
+            for value in no_action_values:
+                data = copy.deepcopy(self.continuation)
+                data["exact_action"][field] = value
+                with (
+                    self.subTest(field=field, value=value),
+                    self.assertRaisesRegex(ValueError, "exact-action-state"),
+                ):
+                    render_record(data)
+
+        data = copy.deepcopy(self.continuation)
+        data["exact_action"]["constraints"] = [
+            "Preserve live state.",
+            "No action required.",
+        ]
+        with self.assertRaisesRegex(ValueError, "exact-action-state"):
+            render_record(data)
+
+        data = copy.deepcopy(self.continuation)
+        data["exact_action"]["completion_condition"] = (
+            "Ensure none of the focused tests fail."
+        )
+        render_record(data)
 
 
 class RecordRenderingTests(unittest.TestCase):
@@ -427,6 +475,9 @@ class RecordRenderingTests(unittest.TestCase):
         prompt = self.continuation["next_session_prompt"]
         self.assertEqual(
             tail,
+            "This session is stopped because authorized work remains.\n\n"
+            "What you need to do: Start a new session from the continuation "
+            "handoff below.\n\n"
             "```text\n"
             "Continue from handoff: C:/work spaces/handoffs/继续工作.md\n"
             "Exact next action: Implement the host payload normalizer.\n"

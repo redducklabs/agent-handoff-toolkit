@@ -1,6 +1,6 @@
 {
   "manifest_version": 2,
-  "toolkit_version": "0.2.6",
+  "toolkit_version": "0.2.7",
   "record_schema_version": 1,
   "runtime": {
     "python_command": "python",
@@ -10,15 +10,15 @@
   "artifacts": [
     {
       "source": "distribution/consumer-instructions.md",
-      "sha256": "a6248287cdbd899a57ac4e50714547659917fe019c72dbdb4f15b3e15ddffed2",
+      "sha256": "41b2cc5b7a4022a4039a3cc6905f4ba1779683c1dde27fdf305aeae2f2de5ed0",
       "block_id": "agent-handoff-toolkit",
       "install": {"mode": "managed-block", "transform": "none", "targets": ["AGENTS.md", "CLAUDE.md"]}
     },
     {"source": "LICENSE", "sha256": "b6e6d85d44db88c456379014cbaa080194dccfa428f24fa063d8fbff5eeb3527", "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/LICENSE"]}},
-    {"source": "docs/agent-handoff/contract.md", "sha256": "97568ab6647014ccb8714c1ea6d968579bfaebb5d8544568ddd8202b62db2513", "install": {"mode": "copy", "transform": "none", "targets": ["docs/agent-handoff/contract.md"]}},
-    {"source": "docs/consumer-integration.md", "sha256": "aa040f53fac7863cc262cf7c156666d5765e784c66d722514029fbda86a5fa23", "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/consumer-integration.md"]}},
-    {"source": "skills/agent-handoff/SKILL.md", "sha256": "1950092184c7505b6add3b6c07e47d11305aafb8cc4fc399afb620a54161da39", "install": {"mode": "copy", "transform": "none", "targets": [".agents/skills/agent-handoff/SKILL.md", ".claude/skills/agent-handoff/SKILL.md"]}},
-    {"source": "templates/continuation.md", "sha256": "bde32e411526b8ab200d30ce06e8bd654e8e8438322785d74d9f90261257cbdf", "install": {"mode": "copy", "transform": "none", "targets": ["handoffs/templates/continuation.md"]}},
+    {"source": "docs/agent-handoff/contract.md", "sha256": "1f9adec13dea74f5828144ccbb586fa8f32a144c751cc91852e4127465c3bc6b", "install": {"mode": "copy", "transform": "none", "targets": ["docs/agent-handoff/contract.md"]}},
+    {"source": "docs/consumer-integration.md", "sha256": "4e7d639c9d047264c05acc62c39c5871212615c6a86b5e631ba4dd9c438401ce", "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/consumer-integration.md"]}},
+    {"source": "skills/agent-handoff/SKILL.md", "sha256": "24d125a45213428a759982780763e6e744db5b7c8afe74471fce574659ae602f", "install": {"mode": "copy", "transform": "none", "targets": [".agents/skills/agent-handoff/SKILL.md", ".claude/skills/agent-handoff/SKILL.md"]}},
+    {"source": "templates/continuation.md", "sha256": "37b6b440bf8818b29f2ea6576b8d3e09aa0a9378d28bca2897b1383299c8b230", "install": {"mode": "copy", "transform": "none", "targets": ["handoffs/templates/continuation.md"]}},
     {"source": "templates/completion-audit.md", "sha256": "7ab9cbf2516a817eda2aaf2b8d01bbaee4443c7b24b6bead111b8a6fe81dab1f", "install": {"mode": "copy", "transform": "none", "targets": ["handoffs/templates/completion-audit.md"]}},
     {
       "source": "adapters/claude/settings.fragment.json",
@@ -28,10 +28,10 @@
     },
     {"source": "adapters/codex/hooks.fragment.json", "sha256": "5aa7b9ed77f63a4e2deec362ac2bf306b1fd212edb026993719207a3fd41b0d3", "install": {"mode": "merge-json", "transform": "none", "targets": [".codex/hooks.json"]}},
     {"source": "distribution/runner.py", "sha256": "1be1f9d4a8c627676ae6d3651715430addbade18c15e77a5980f4b5a5be5ffeb", "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/runner.py"]}},
-    {"source": "src/agent_handoff_toolkit/__init__.py", "sha256": "dc0aa27d3034e334fe68eb0f8ec0eaccec6128f0ed9439a82e18b501da5d3271", "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/src/agent_handoff_toolkit/__init__.py"]}},
+    {"source": "src/agent_handoff_toolkit/__init__.py", "sha256": "08967598d9b614792dd497bf7a3a0a6b64cc83b5e53c90d01bc41fcf15aba86e", "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/src/agent_handoff_toolkit/__init__.py"]}},
     {"source": "src/agent_handoff_toolkit/__main__.py", "sha256": "7e67c47885690bebe4e36ef43de45ab7491cd34b7bf0f972ed821ea943657d82", "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/src/agent_handoff_toolkit/__main__.py"]}},
     {"source": "src/agent_handoff_toolkit/cli.py", "sha256": "be33ea8ee69c8d84d15a4c8d235d04ce700dbdc73f48379a1a8bcad4471514e0", "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/src/agent_handoff_toolkit/cli.py"]}},
-    {"source": "src/agent_handoff_toolkit/hooks.py", "sha256": "1c435accb8ad1c886b0f1411300678b2cf519d6c2a833952644920b3792e258d", "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/src/agent_handoff_toolkit/hooks.py"]}},
-    {"source": "src/agent_handoff_toolkit/records.py", "sha256": "c19fe547ca48a8b39c7709896ab8efb0a824b4740d789ce355feb53e00cc1c55", "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/src/agent_handoff_toolkit/records.py"]}}
+    {"source": "src/agent_handoff_toolkit/hooks.py", "sha256": "cd9d926d4b6aede577195ff7620d47b739ee6ef4a62f2799d6bd2b0c876e59f4", "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/src/agent_handoff_toolkit/hooks.py"]}},
+    {"source": "src/agent_handoff_toolkit/records.py", "sha256": "c0914d4d8f03c2d4654a93fe77a6baf70ce2afa7ef10cad31cf91f633fa41ef7", "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/src/agent_handoff_toolkit/records.py"]}}
   ]
 }

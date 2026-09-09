@@ -204,7 +204,10 @@ def _authoring_reminder(changes: tuple[_RecordChange, ...]) -> str:
             "Determine the record type before finishing it. Continuation: resolve "
             "every question that gates the next session's first action, record "
             "remaining code at every active scope, and render the required response "
-            "tail. Completion audit: this is not a handoff and must not contain a "
+            "tail. Its response states `This session is stopped because authorized "
+            "work remains` and `What you need to do: Start a new session from the "
+            "continuation handoff below`. Completion audit: this is not a handoff and "
+            "must not contain a "
             "restart action, exact next action, or next-session prompt."
         )
     if deleted:
