@@ -60,7 +60,8 @@ FENCE_OPEN_RE = re.compile(r"^[ ]{0,3}(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
 HEADING_LINE_RE = re.compile(r"^[ ]{0,3}##[ \t]+(?P<title>.*?)(?:[ \t]+#+)?[ \t]*$")
 PROMPT_FENCE_RE = re.compile(r"^[ ]{0,3}(?:`{3,}|~{3,})", re.MULTILINE)
 NO_ACTION_PROMPT_RE = re.compile(
-    r"^\s*(?:[-*]\s*)?(?:(?:what you need to do|user action)\s*:\s*)?"
+    r"^\s*(?:(?:[-*+]|\d{1,9}[.)])\s*)?"
+    r"(?:(?:what you need to do|user action)\s*:\s*)?"
     r"(?:none|nothing to do|nothing remains|no action required)\.?\s*$",
     re.IGNORECASE,
 )
