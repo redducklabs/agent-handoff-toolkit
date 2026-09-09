@@ -260,6 +260,9 @@ class RecordValidationTests(unittest.TestCase):
             "Nothing to do.",
             "No action required.",
             "What you need to do: None.",
+            "1. None.",
+            "12) No action required.",
+            "+ Nothing remains.",
             "- Decision: preserve current branch.\nWhat you need to do: None.",
         ):
             data = copy.deepcopy(self.continuation)
@@ -269,6 +272,10 @@ class RecordValidationTests(unittest.TestCase):
                 self.assertRaisesRegex(ValueError, "next-prompt-action"),
             ):
                 render_record(data)
+
+        data = copy.deepcopy(self.continuation)
+        data["next_session_prompt"] = "1. None of the focused tests may fail."
+        render_record(data)
 
     def test_prompt_rejects_more_than_six_nonempty_lines(self) -> None:
         data = copy.deepcopy(self.continuation)
@@ -318,6 +325,9 @@ class RecordValidationTests(unittest.TestCase):
             "Nothing remains.",
             "No action required.",
             "What you need to do: None.",
+            "1. None.",
+            "12) No action required.",
+            "+ Nothing remains.",
         )
         for field in ("action", "target", "constraints", "completion_condition"):
             for value in no_action_values:

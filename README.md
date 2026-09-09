@@ -6,10 +6,11 @@ This repository provides a shared contract, deterministic validation and renderi
 
 ## Status
 
-Version 0.2.7 makes every continuation response stop the current session and
+Version 0.2.8 makes every continuation response stop the current session and
 direct the user to resume in a new session from the handoff. It preserves
 release-pinned installation, consumer-owned instructions, and opaque deprecated
-historical records for both Claude Code and Codex.
+historical records for both Claude Code and Codex. No-action continuation fields
+are rejected even when prefixed as ordered or unordered list items.
 
 ## Core rules
 
@@ -43,16 +44,16 @@ Automatic hooks fail open so they cannot break an agent session. Explicit comman
 
 ## Consumer installation
 
-Check out the public v0.2.7 release, inspect the proposed changes, then apply
+Check out the public v0.2.8 release, inspect the proposed changes, then apply
 them from that checkout:
 
 ```powershell
-git clone --branch v0.2.7 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
+git clone --branch v0.2.8 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
 Set-Location agent-handoff-toolkit
-python distribution/runner.py install --target <consumer-repository> --release v0.2.7 --dry-run
-python distribution/runner.py install --target <consumer-repository> --release v0.2.7 --apply
-python distribution/runner.py sync --target <consumer-repository> --release v0.2.7 --check
-python distribution/runner.py sync --target <consumer-repository> --release v0.2.7 --apply
+python distribution/runner.py install --target <consumer-repository> --release v0.2.8 --dry-run
+python distribution/runner.py install --target <consumer-repository> --release v0.2.8 --apply
+python distribution/runner.py sync --target <consumer-repository> --release v0.2.8 --check
+python distribution/runner.py sync --target <consumer-repository> --release v0.2.8 --apply
 ```
 
 Run install and sync only in an isolated, clean Git worktree with no concurrent
