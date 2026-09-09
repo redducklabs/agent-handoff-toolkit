@@ -91,7 +91,8 @@ The structured sections use deterministic JSON with UTF-8 characters preserved, 
 Each `exact_action` field is either non-empty text or a non-empty list of text
 items, preserving schema-v1 compatibility. Every item is trimmed, single-line,
 and free of unsafe control or line-separator characters, Markdown fences, and
-handoff-document structure. The tail joins list items with `; `.
+handoff-document structure. Each `exact_action` item must not be a no-action
+assertion. The tail joins list items with `; `.
 
 The validator normalizes record-document line endings to LF for parsing, regenerates every derived section from metadata, and requires exact equality with the visible section. A contradictory prose summary is invalid even when each representation would be valid in isolation.
 
@@ -99,12 +100,16 @@ The validator normalizes record-document line endings to LF for parsing, regener
 
 For a continuation, the response tail contains exactly:
 
-1. One fenced `text` block beginning with `Continue from handoff` and the absolute handoff path.
-2. The exact action, target, constraints, and completion gate from metadata.
-3. Only the stored essential blockers, decisions, and validation gates.
-4. An absolute clickable Markdown link to the continuation as the final non-whitespace line.
+1. `This session is stopped because authorized work remains.`
+2. `What you need to do: Start a new session from the continuation handoff below.`
+3. One fenced `text` block beginning with `Continue from handoff` and the absolute handoff path for use in the new session.
+4. The exact action, target, constraints, and completion gate from metadata.
+5. Only the stored essential blockers, decisions, and validation gates.
+6. An absolute clickable Markdown link to the continuation as the final non-whitespace line.
 
 The complete generated tail, including its fence and link, is limited to 300 words and 2,400 characters. It must not reproduce the handoff document. The detailed record remains the source of truth; the tail is only a concise pointer and executable start. Completion responses label their link **Audit record (not a handoff)** and do not generate a restart prompt.
+
+A continuation response may summarize completed and remaining work before the generated tail, but the generated tail supplies its sole user-action statement. A no-action statement such as `None`, `Nothing to do`, or `No action required` is valid only when the highest authorized scope is complete and the response links an audit rather than a continuation.
 
 ## Enforcement boundary
 

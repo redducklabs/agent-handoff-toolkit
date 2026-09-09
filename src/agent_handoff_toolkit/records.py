@@ -59,6 +59,11 @@ METADATA_RE = re.compile(
 FENCE_OPEN_RE = re.compile(r"^[ ]{0,3}(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
 HEADING_LINE_RE = re.compile(r"^[ ]{0,3}##[ \t]+(?P<title>.*?)(?:[ \t]+#+)?[ \t]*$")
 PROMPT_FENCE_RE = re.compile(r"^[ ]{0,3}(?:`{3,}|~{3,})", re.MULTILINE)
+NO_ACTION_PROMPT_RE = re.compile(
+    r"^\s*(?:[-*]\s*)?(?:(?:what you need to do|user action)\s*:\s*)?"
+    r"(?:none|nothing to do|nothing remains|no action required)\.?\s*$",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -112,6 +117,10 @@ def _looks_like_record_document(value: str) -> bool:
     return any(marker.lower() in lowered for marker in markers)
 
 
+def _denies_continuation_action(value: str) -> bool:
+    return any(NO_ACTION_PROMPT_RE.fullmatch(line) for line in value.splitlines())
+
+
 def _has_unsafe_control(value: str, *, allow_lf: bool) -> bool:
     return any(
         not (allow_lf and character == "\n")
@@ -161,7 +170,12 @@ def _continuation_tail_body(data: Mapping[str, object], handoff_reference: str) 
 def _continuation_tail(data: Mapping[str, object], handoff_reference: str) -> str:
     body = _continuation_tail_body(data, handoff_reference)
     link_path = quote(handoff_reference, safe="/:._-")
-    return f"{_fenced_block(body, 'text')}\n\n[Continuation handoff](<{link_path}>)"
+    return (
+        "This session is stopped because authorized work remains.\n\n"
+        "What you need to do: Start a new session from the continuation handoff below.\n\n"
+        f"{_fenced_block(body, 'text')}\n\n"
+        f"[Continuation handoff](<{link_path}>)"
+    )
 
 
 def _tail_is_within_budget(value: str) -> bool:
@@ -514,6 +528,16 @@ def _validate_type_fields(
                             f"exact_action.{field} must contain only trimmed, single-line text without Markdown fences or handoff-document structure",
                         )
                     )
+                elif any(
+                    _denies_continuation_action(part)
+                    for part in _tail_field_parts(value)
+                ):
+                    issues.append(
+                        _issue(
+                            "exact-action-state",
+                            f"exact_action.{field} must not claim that no action remains for a continuation",
+                        )
+                    )
         prompt = data.get("next_session_prompt")
         if not _is_nonempty_string(prompt):
             issues.append(
@@ -552,6 +576,13 @@ def _validate_type_fields(
                     _issue(
                         "next-prompt-document",
                         "next_session_prompt must not contain a Markdown fence or handoff-document structure",
+                    )
+                )
+            if _denies_continuation_action(prompt):
+                issues.append(
+                    _issue(
+                        "next-prompt-action",
+                        "next_session_prompt must not claim that no action remains for a continuation",
                     )
                 )
         if (

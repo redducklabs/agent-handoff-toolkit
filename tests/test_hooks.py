@@ -157,6 +157,14 @@ class HostHookTests(unittest.TestCase):
                 )
                 context = hook_context(run_hook("claude", "post-tool-use", raw, ROOT))
                 self.assertIn("Determine the record type", context)
+                self.assertIn(
+                    "This session is stopped because authorized work remains",
+                    context,
+                )
+                self.assertIn(
+                    "What you need to do: Start a new session from the continuation handoff below",
+                    context,
+                )
                 self.assertIn("Completion audit: this is not a handoff", context)
                 self.assertIn("must not contain a restart action", context)
 

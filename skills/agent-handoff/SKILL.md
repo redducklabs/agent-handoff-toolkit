@@ -53,11 +53,18 @@ Run:
 python .agent-handoff-toolkit/runner.py render-tail <record-path>
 ```
 
-Append the output verbatim. For a continuation it begins with `Continue from
-handoff`, includes the absolute record path and exact next action, then lists
-only essential blockers, decisions, and validation gates. It must not reproduce
-the handoff document. For an audit it labels the link **Audit record (not a
-handoff)** and emits no restart prompt. Put nothing after the generated link.
+For a continuation, any prose before the generated tail may summarize only what
+was done and what remains. The generated tail supplies the sole user-action
+statement: `This session is stopped because authorized work remains.` followed
+by `What you need to do: Start a new session from the continuation handoff
+below.` It then provides a fenced block for the new session beginning with
+`Continue from handoff`, the absolute record path, the exact next action, and only essential
+blockers, decisions, and validation gates. Append that output verbatim and put
+nothing after its final link.
+
+For an audit, the generated tail labels the link **Audit record (not a handoff)**
+and emits no restart prompt. Only a completed highest-authorized scope may be
+described with `None`, `Nothing to do`, or `No action required`.
 
 ## Stop conditions
 

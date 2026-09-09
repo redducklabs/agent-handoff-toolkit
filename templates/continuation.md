@@ -29,7 +29,7 @@
     "constraints": "<constraints that govern the action>",
     "completion_condition": "<observable condition that completes the action>"
   },
-  "next_session_prompt": "- <essential blocker, settled decision, or validation gate not already represented by exact_action>"
+  "next_session_prompt": "- <essential blocker, settled decision, or validation gate not already represented by exact_action; never state that no action remains>"
 }
 -->
 
@@ -106,5 +106,5 @@
 ## Next-session prompt
 
 ```text
-- <essential blocker, settled decision, or validation gate not already represented by exact_action>
+- <essential blocker, settled decision, or validation gate not already represented by exact_action; never state that no action remains>
 ```
