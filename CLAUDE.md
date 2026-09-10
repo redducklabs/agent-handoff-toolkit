@@ -17,6 +17,7 @@ Read `docs/agent-handoff/contract.md` before changing record behavior, templates
 - On Windows, invoke bundled Bash helper scripts only after confirming they use LF line endings; CRLF copies fail at `set -o pipefail`. Use the equivalent PowerShell setup when they are not portable.
 - Resolved Windows setup warning: cached Bash helpers had CRLF and were unusable directly in this worktree. Use an equivalent PowerShell scratch-artifact generator with `git log` and `git diff`; source edits still use `apply_patch`.
 - Resolved Claude CLI review warning: `--allowedTools` consumes trailing positional values, so a review prompt placed after that variadic option is treated as another tool value and `--print` reports that no input was provided. Pass the prompt before variadic options or provide it on standard input.
+- Resolved PowerShell review-package warning: inserting command-output arrays directly into a larger array and joining it serializes nested results as `System.Object[]`. Convert each `git log`, `git diff --stat`, and `git diff` result to a newline-joined string before composing the scratch review package.
 - In a tag-only or shallow release checkout, `git fetch origin main` may not create `origin/main`. Run `git fetch origin main:refs/remotes/origin/main` before creating a main-based worktree.
 - Run Ruff through the repository configuration in `pyproject.toml`; unconfigured broad rules incorrectly reject the intentional catch-all boundary that makes automatic hooks fail open.
 
