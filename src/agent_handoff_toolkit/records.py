@@ -15,7 +15,6 @@ from urllib.parse import quote
 
 from .lineage import (
     LineageError,
-    record_digest,
     scope_definition_digest,
     validate_hex_digest,
     validate_identifier,
@@ -394,7 +393,7 @@ def _validate_v2_lineage_fields(
         )
     else:
         kind = evidence.get("kind")
-        if kind not in AUTHORIZATION_EVIDENCE_KINDS:
+        if not isinstance(kind, str) or kind not in AUTHORIZATION_EVIDENCE_KINDS:
             issues.append(
                 _issue(
                     "lineage-evidence",
@@ -1008,8 +1007,10 @@ def _validate_data(
 
     issues: list[ValidationIssue] = []
     schema_version = data.get("schema_version")
-    if schema_version not in SUPPORTED_SCHEMA_VERSIONS or isinstance(
-        schema_version, bool
+    if (
+        not isinstance(schema_version, int)
+        or isinstance(schema_version, bool)
+        or schema_version not in SUPPORTED_SCHEMA_VERSIONS
     ):
         issues.append(_issue("schema-version", "schema_version must be 1 or 2"))
     record_type = data.get("record_type")
@@ -1064,6 +1065,7 @@ def validate_successor(
     predecessor: Mapping[str, object],
     *,
     expected_predecessor_path: str,
+    predecessor_sha256: str,
     approved_transition_hmac: str | None = None,
 ) -> list[ValidationIssue]:
     """Validate a schema-v2 successor against its direct predecessor."""
@@ -1097,10 +1099,12 @@ def validate_successor(
         issues.append(_issue("lineage-predecessor", str(error)))
         normalized_expected_path = None
 
-    predecessor_is_structurally_valid = not _validate_data(predecessor)
-    expected_digest = None
-    if predecessor_is_structurally_valid:
-        expected_digest = record_digest(render_record(predecessor))
+    expected_digest = _lineage_digest(
+        predecessor_sha256,
+        label="predecessor_sha256",
+        issues=issues,
+        code="lineage-predecessor",
+    )
     if not isinstance(predecessor_reference, Mapping):
         issues.append(
             _issue(

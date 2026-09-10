@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import inspect
 import json
 from pathlib import Path
 import subprocess
@@ -358,6 +359,26 @@ class RecordValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "record-type"):
             render_record(self.continuation)
 
+    def test_schema_version_arrays_and_objects_report_validation_issues(self) -> None:
+        for value in ([], {}):
+            for data in (copy.deepcopy(self.continuation), make_v2_continuation()):
+                data["schema_version"] = value
+                with (
+                    self.subTest(record_type=data["record_type"], value=value),
+                    self.assertRaisesRegex(ValueError, "schema-version"),
+                ):
+                    render_record(data)
+
+    def test_evidence_kind_arrays_and_objects_report_validation_issues(self) -> None:
+        for value in ([], {}):
+            data = make_v2_continuation()
+            data["authorization_evidence"]["kind"] = value
+            with (
+                self.subTest(value=value),
+                self.assertRaisesRegex(ValueError, "lineage-evidence"),
+            ):
+                render_record(data)
+
     def test_requires_exact_ordered_sections(self) -> None:
         text = render_record(self.continuation)
         text = text.replace(
@@ -682,17 +703,32 @@ class SuccessorValidationTests(unittest.TestCase):
         *,
         predecessor: dict[str, object] | None = None,
         expected_path: str = V2_PREDECESSOR_PATH,
+        predecessor_sha256: str | None = None,
         approved_transition_hmac: str | None = None,
     ) -> set[str]:
+        selected_predecessor = predecessor or self.predecessor
         return {
             issue.code
             for issue in validate_successor(
                 candidate,
-                predecessor or self.predecessor,
+                selected_predecessor,
                 expected_predecessor_path=expected_path,
+                predecessor_sha256=(
+                    predecessor_sha256
+                    if predecessor_sha256 is not None
+                    else record_digest(render_record(selected_predecessor))
+                ),
                 approved_transition_hmac=approved_transition_hmac,
             )
         }
+
+    def test_successor_requires_a_keyword_only_predecessor_digest(self) -> None:
+        parameter = inspect.signature(validate_successor).parameters[
+            "predecessor_sha256"
+        ]
+
+        self.assertIs(parameter.default, inspect.Parameter.empty)
+        self.assertIs(parameter.kind, inspect.Parameter.KEYWORD_ONLY)
 
     def test_successor_rejects_predecessor_identity_path_and_digest_mismatch(
         self,
@@ -706,6 +742,40 @@ class SuccessorValidationTests(unittest.TestCase):
             candidate["predecessor"][field] = value
             with self.subTest(field=field):
                 self.assertIn("lineage-predecessor", self.codes(candidate))
+
+    def test_successor_uses_the_supplied_source_byte_digest(self) -> None:
+        canonical_text = render_record(self.predecessor)
+        source_text = canonical_text.replace(
+            '"authorization_id": "auth-001"',
+            '"authorization_id" : "auth-001"',
+            1,
+        )
+        source_digest = record_digest(source_text)
+        self.assertNotEqual(source_digest, record_digest(canonical_text))
+        parsed_predecessor = parse_markdown(source_text)
+        candidate = successor_of(self.predecessor)
+        candidate["predecessor"]["sha256"] = source_digest
+
+        self.assertEqual(
+            self.codes(
+                candidate,
+                predecessor=parsed_predecessor,
+                predecessor_sha256=source_digest,
+            ),
+            set(),
+        )
+
+    def test_successor_validates_the_supplied_predecessor_digest(self) -> None:
+        candidate = successor_of(self.predecessor)
+        for invalid_digest in ("A" * 64, [], {}):
+            with self.subTest(invalid_digest=invalid_digest):
+                self.assertIn(
+                    "lineage-predecessor",
+                    self.codes(
+                        candidate,
+                        predecessor_sha256=invalid_digest,
+                    ),
+                )
 
     def test_successor_rejects_changed_authorization_without_transition(self) -> None:
         candidate = successor_of(self.predecessor)
