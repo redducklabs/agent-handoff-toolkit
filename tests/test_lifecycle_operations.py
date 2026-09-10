@@ -117,6 +117,23 @@ class BootstrapTests(unittest.TestCase):
                                 )
                             )
 
+    def test_bootstrap_rejects_backslashes_in_runner_or_record_on_every_host(self):
+        for operation in COMMANDS:
+            value = command(operation)
+            self.assertIsNotNone(self.parse(value))
+            self.assertIsNone(
+                self.parse(
+                    value.replace(
+                        ".agent-handoff-toolkit/runner.py",
+                        ".agent-handoff-toolkit\\runner.py",
+                    )
+                )
+            )
+            self.assertIsNone(self.parse(value.replace("/", "\\")))
+        self.assertIsNone(
+            self.parse(command("resume").replace("D:/repo/", "D:\\repo\\"))
+        )
+
     def test_rejects_noncanonical_tokens_and_challenges(self):
         original = command("register-root")
         bad = [
@@ -433,7 +450,8 @@ class OperationsTests(unittest.TestCase):
         )
 
     def test_proposal_does_not_authorize_and_approval_atomically_supersedes(self):
-        root = self.register()
+        self.record_chain()
+        root = self.storage.load_snapshot("session-1")
         proposal = self.proposal()
         self.assertEqual(proposal.chain, root.chain)
         self.assertIsNone(proposal.session.pending_transition_reference.evidence_hmac)
@@ -443,15 +461,14 @@ class OperationsTests(unittest.TestCase):
         self.assertEqual(
             registry.chains[root.chain.authorization_id].status, "superseded"
         )
-        self.assertEqual(result.session.pending_transition_reference.status, "consumed")
-        self.assertEqual(
-            len(result.session.pending_transition_reference.evidence_hmac), 64
-        )
+        self.assertEqual(result.chain.publication_evidence.status, "consumed")
+        self.assertIsNone(result.session.pending_transition_reference)
+        self.assertEqual(len(result.chain.publication_evidence.evidence_hmac), 64)
         again = self.user_event("yes")
         self.assertEqual(again.chain.authorization_id, result.chain.authorization_id)
 
     def test_ambiguous_nonadjacent_assistant_retains_and_negative_cancels(self):
-        self.register()
+        self.record_chain()
         self.proposal()
         for message, external, previous in (
             ("yes", False, "assistant-1"),
@@ -598,13 +615,13 @@ class OperationsTests(unittest.TestCase):
                 expected_session_revision=4,
             )
 
-    def call_cli(self, arguments, stdin=""):
+    def call_cli(self, arguments, stdin="", session_id="session-1"):
         output, errors = io.StringIO(), io.StringIO()
         with (
             patch.dict(
                 os.environ,
                 {
-                    "AHK_SESSION_ID": "session-1",
+                    "AHK_SESSION_ID": session_id,
                     "AHK_STATE_ROOT": str(self.root / "state"),
                 },
             ),
@@ -724,7 +741,7 @@ class OperationsTests(unittest.TestCase):
         self.assertEqual(self.storage.registry_path.read_bytes(), before)
 
     def test_pending_proposal_can_be_represented_but_not_silently_changed(self):
-        self.register()
+        self.record_chain()
         self.proposal()
         self.user_event("maybe")
         snapshot = self.storage.load_snapshot("session-1")
@@ -733,7 +750,7 @@ class OperationsTests(unittest.TestCase):
             old_scopes=pending.old_scopes,
             new_scopes=pending.new_scopes,
             assistant_turn_reference="assistant-clearer",
-            expected_chain_revision=1,
+            expected_chain_revision=2,
             expected_session_revision=snapshot.session.targeted_revision,
         )
         self.assertEqual(
@@ -742,9 +759,7 @@ class OperationsTests(unittest.TestCase):
         )
         self.assertIsNone(result.session.pending_transition_reference.evidence_hmac)
         approved = self.user_event("yes", adjacent="assistant-clearer")
-        self.assertEqual(
-            approved.session.pending_transition_reference.status, "consumed"
-        )
+        self.assertEqual(approved.chain.publication_evidence.status, "consumed")
 
     def test_first_record_of_registered_chain_is_accepted_and_installs_reference(self):
         snapshot = self.register()
@@ -893,9 +908,78 @@ class OperationsTests(unittest.TestCase):
         )
         self.proposal()
         snapshot = self.user_event("yes")
-        proposal = snapshot.session.pending_transition_reference
+        proposal = snapshot.chain.publication_evidence
+        before = self.storage.registry_path.read_bytes()
+        for changed_proof in (None, replace(proposal, proposal_id="other-proposal")):
+            with self.assertRaisesRegex(LifecycleStorageError, "publication evidence"):
+                self.storage.compare_and_swap(
+                    "session-1",
+                    snapshot.chain.targeted_revision,
+                    snapshot.session.targeted_revision,
+                    LifecycleMutation(
+                        replace(
+                            snapshot.session,
+                            targeted_revision=snapshot.session.targeted_revision + 1,
+                            chain_revision=2,
+                        ),
+                        replace(
+                            snapshot.chain,
+                            targeted_revision=2,
+                            publication_evidence=changed_proof,
+                        ),
+                    ),
+                )
+            self.assertEqual(self.storage.registry_path.read_bytes(), before)
         redirected = self.storage.load_snapshot("session-2")
-        self.assertEqual(redirected.session.pending_transition_reference, proposal)
+        self.assertEqual(redirected.chain.publication_evidence, proposal)
+        self.assertIsNone(redirected.session.pending_transition_reference)
+        self.seed("session-3")
+        joined = LifecycleService(self.storage, "session-3").join(
+            challenge="challenge-001",
+            authorization_id=snapshot.chain.authorization_id,
+            expected_chain_revision=1,
+            expected_session_revision=1,
+        )
+        self.assertEqual(joined.chain.publication_evidence, proposal)
+        self.seed("session-4")
+        status, output, errors = self.call_cli(
+            [
+                "join",
+                "--challenge",
+                "challenge-001",
+                "--authorization-id",
+                snapshot.chain.authorization_id,
+                "--expected-chain-revision",
+                "1",
+                "--expected-session-revision",
+                "1",
+            ],
+            session_id="session-4",
+        )
+        self.assertEqual((status, errors), (0, ""))
+        self.assertEqual(
+            json.loads(output)["publication_evidence"]["transition"]["evidence_hmac"],
+            proposal.evidence_hmac,
+        )
+        pending_new = make_scope(
+            "later-root", remaining_work=True, remaining_code=True, status="in-progress"
+        )
+        snapshot = self.service.propose_transition(
+            old_scopes=proposal.new_scopes,
+            new_scopes=[pending_new],
+            assistant_turn_reference="assistant-later",
+            expected_chain_revision=1,
+            expected_session_revision=snapshot.session.targeted_revision,
+        )
+        self.assertEqual(snapshot.chain.publication_evidence, proposal)
+        self.assertNotEqual(
+            snapshot.session.pending_transition_reference.proposal_id,
+            proposal.proposal_id,
+        )
+        before = self.storage.registry_path.read_bytes()
+        with self.assertRaisesRegex(ValueError, "AHK-TRANSITION-PUBLICATION"):
+            self.user_event("yes", adjacent="assistant-later")
+        self.assertEqual(self.storage.registry_path.read_bytes(), before)
         data = make_record(
             "continuation",
             record_id="transition-record",
@@ -949,6 +1033,14 @@ class OperationsTests(unittest.TestCase):
         )
         decision = evaluate_stop(event, snapshot, candidate=candidate)
         self.assertEqual(decision.kind, DecisionKind.ALLOW)
+        joined_decision = evaluate_stop(
+            replace(event, session_key=joined.session.session_key),
+            joined,
+            candidate=replace(
+                candidate, expected_session_revision=joined.session.targeted_revision
+            ),
+        )
+        self.assertEqual(joined_decision.kind, DecisionKind.ALLOW)
         result = self.storage.compare_and_swap(
             "session-1",
             snapshot.chain.targeted_revision,
@@ -957,6 +1049,11 @@ class OperationsTests(unittest.TestCase):
         )
         self.assertEqual(
             result.chain.current_record_reference.record_id, "transition-record"
+        )
+        self.assertIsNone(result.chain.publication_evidence)
+        self.assertEqual(
+            result.session.pending_transition_reference.assistant_turn_reference,
+            "assistant-later",
         )
         for change in (
             {"predecessor_path": (self.root / "wrong.md").as_posix()},
@@ -969,7 +1066,7 @@ class OperationsTests(unittest.TestCase):
             self.assertEqual(rejected.kind, DecisionKind.BLOCK)
 
     def test_model_command_rejects_changed_pending_scope_proposal(self):
-        self.register()
+        self.record_chain()
         self.proposal()
         current = self.storage.load_snapshot("session-1")
         pending = current.session.pending_transition_reference
@@ -981,15 +1078,15 @@ class OperationsTests(unittest.TestCase):
                 old_scopes=pending.old_scopes,
                 new_scopes=[different],
                 assistant_turn_reference="assistant-2",
-                expected_chain_revision=1,
+                expected_chain_revision=2,
                 expected_session_revision=current.session.targeted_revision,
             )
 
     def test_approval_hmac_binds_successor_authorization_and_old_new_definitions(self):
-        self.register()
+        self.record_chain()
         self.proposal()
         snapshot = self.user_event("yes")
-        proposal = snapshot.session.pending_transition_reference
+        proposal = snapshot.chain.publication_evidence
         self.assertEqual(proposal.to_authorization_id, snapshot.chain.authorization_id)
         from agent_handoff_toolkit.lineage import scope_definition_digest
 
@@ -1012,6 +1109,119 @@ class OperationsTests(unittest.TestCase):
             self.storage.secret, canonical_json_bytes(payload), hashlib.sha256
         ).hexdigest()
         self.assertEqual(proposal.evidence_hmac, expected)
+
+    def test_transition_requires_published_initial_record_without_partial_state(self):
+        self.register()
+        before = self.storage.registry_path.read_bytes()
+        with self.assertRaisesRegex(
+            ValueError, "AHK-TRANSITION-INITIAL.*publish the initial record first"
+        ):
+            self.proposal()
+        self.assertEqual(self.storage.registry_path.read_bytes(), before)
+
+    def test_approval_rejects_legacy_pending_proposal_without_initial_record(self):
+        self.record_chain()
+        snapshot = self.proposal()
+        self.storage.compare_and_swap(
+            "session-1",
+            snapshot.chain.targeted_revision,
+            snapshot.session.targeted_revision,
+            LifecycleMutation(
+                replace(
+                    snapshot.session,
+                    targeted_revision=snapshot.session.targeted_revision + 1,
+                    chain_revision=3,
+                ),
+                replace(
+                    snapshot.chain, targeted_revision=3, current_record_reference=None
+                ),
+            ),
+        )
+        before = self.storage.registry_path.read_bytes()
+        with self.assertRaisesRegex(ValueError, "AHK-TRANSITION-INITIAL"):
+            self.user_event("yes")
+        self.assertEqual(self.storage.registry_path.read_bytes(), before)
+
+    def test_cli_transition_before_initial_record_returns_corrective_issue(self):
+        self.register()
+        old = make_scope(
+            "issue-1323", remaining_work=True, remaining_code=True, status="in-progress"
+        )
+        old["scope_definition"] = json.loads(
+            base64.urlsafe_b64decode(DEFINITION + "==")
+        )
+        new = make_scope(
+            "other-root", remaining_work=True, remaining_code=True, status="in-progress"
+        )
+        encoded = [
+            base64.urlsafe_b64encode(canonical_json_bytes([scope])).decode().rstrip("=")
+            for scope in (old, new)
+        ]
+        status, _, errors = self.call_cli(
+            [
+                "propose-transition",
+                "--old-scopes-b64",
+                encoded[0],
+                "--new-scopes-b64",
+                encoded[1],
+                "--assistant-turn-reference",
+                "assistant-1",
+                "--expected-chain-revision",
+                "1",
+                "--expected-session-revision",
+                "2",
+            ]
+        )
+        self.assertEqual(status, 1)
+        self.assertEqual(
+            json.loads(errors),
+            {
+                "issue_codes": ["AHK-TRANSITION-INITIAL"],
+                "corrective_action": "publish the initial record first",
+            },
+        )
+
+    def test_registration_rejects_root_already_active_with_descendants(self):
+        root = self.register()
+        other = replace(root.chain, scope_digests=(*root.chain.scope_digests, "b" * 64))
+        with tempfile.TemporaryDirectory() as folder:
+            storage = LocalLifecycleStorage(
+                self.root, state_root=Path(folder) / "state"
+            )
+            session = storage.load_snapshot("existing").session
+            storage.compare_and_swap(
+                "existing",
+                0,
+                0,
+                LifecycleMutation(
+                    replace(
+                        session,
+                        targeted_revision=1,
+                        mode=EnforcementMode.TRACKED,
+                        authorization_id=other.authorization_id,
+                        chain_revision=1,
+                    ),
+                    other,
+                ),
+            )
+            fresh = storage.load_snapshot("fresh").session
+            storage.compare_and_swap(
+                "fresh",
+                0,
+                0,
+                LifecycleMutation(
+                    replace(
+                        fresh,
+                        targeted_revision=1,
+                        current_external_user_turn_reference="user-1",
+                        bootstrap_challenge="challenge-001",
+                    )
+                ),
+            )
+            before = storage.registry_path.read_bytes()
+            with self.assertRaisesRegex(ValueError, "join"):
+                self.register(LifecycleService(storage, "fresh"))
+            self.assertEqual(storage.registry_path.read_bytes(), before)
 
     def test_v1_adoption_rejects_scope_kind_not_named_by_proposal(self):
         data = make_record("continuation", record_id="unused", root="issue-new")

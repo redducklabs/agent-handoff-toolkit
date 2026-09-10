@@ -58,6 +58,22 @@ _FLAGS = {
 }
 
 
+class LifecycleOperationError(ValueError):
+    """A stable operation issue with a content-free corrective action."""
+
+    def __init__(self, code, corrective_action):
+        super().__init__(f"{code}: {corrective_action}")
+        self.code = code
+        self.corrective_action = corrective_action
+
+
+def _require_transition_record(chain):
+    if chain is not None and chain.current_record_reference is None:
+        raise LifecycleOperationError(
+            "AHK-TRANSITION-INITIAL", "publish the initial record first"
+        )
+
+
 @dataclass(frozen=True)
 class BootstrapCommand:
     operation: str
@@ -115,7 +131,7 @@ def parse_bootstrap_command(
         if (
             not isinstance(command, str)
             or len(command) > 8192
-            or re.fullmatch(r"[A-Za-z0-9._:/\\ -]+", command) is None
+            or re.fullmatch(r"[A-Za-z0-9._:/ -]+", command) is None
         ):
             return None
         tokens = command.split(" ")
@@ -126,7 +142,7 @@ def parse_bootstrap_command(
             or tokens[2] != "lifecycle"
         ):
             return None
-        runner_token = tokens[1].replace("\\", "/")
+        runner_token = tokens[1]
         if (
             runner_token != ".agent-handoff-toolkit/runner.py"
             and runner_token != runner_path.resolve().as_posix()
@@ -296,7 +312,7 @@ class LifecycleService:
         if any(
             chain.status == "active"
             and chain.locked_root_id == scope_id
-            and chain.scope_digests == digests
+            and chain.scope_digests[0] == digests[0]
             for chain in self.storage.load_registry().chains.values()
         ):
             raise ValueError("identical active root exists; use explicit join")
@@ -425,6 +441,8 @@ class LifecycleService:
         selected_record=None,
     ):
         snapshot = self._snapshot(expected_session_revision, expected_chain_revision)
+        if kind == "transition":
+            _require_transition_record(snapshot.chain)
         if snapshot.session.pending_decision_reference is not None:
             raise ValueError(
                 "resolve the pending decision before proposing scope changes"
@@ -509,6 +527,13 @@ class LifecycleService:
             if classification is AffirmationResult.REJECT:
                 proposal = None
             elif classification is AffirmationResult.APPROVE:
+                if proposal.kind == "transition":
+                    _require_transition_record(snapshot.chain)
+                    if snapshot.chain.publication_evidence is not None:
+                        raise LifecycleOperationError(
+                            "AHK-TRANSITION-PUBLICATION",
+                            "publish the approved successor record first",
+                        )
                 digests = tuple(
                     scope_definition_digest(scope) for scope in proposal.new_scopes
                 )
@@ -544,6 +569,7 @@ class LifecycleService:
                     evidence_hmac=signature,
                 )
                 if proposal.kind == "transition":
+                    proposal = replace(proposal, status="consumed")
                     chain = ChainState(
                         proposal.to_authorization_id,
                         proposal.new_scopes[0]["scope_id"],
@@ -553,8 +579,9 @@ class LifecycleService:
                         snapshot.chain.current_record_reference,
                         authorization_user_turn_reference=turn,
                         authorization_evidence_hmac=signature,
+                        publication_evidence=proposal,
                     )
-                    proposal = replace(proposal, status="consumed")
+                    proposal = None
         session = replace(
             snapshot.session,
             targeted_revision=expected_session_revision + 1,

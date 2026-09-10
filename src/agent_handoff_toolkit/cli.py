@@ -154,7 +154,11 @@ def _lifecycle_parser():
 def _lifecycle_main(argv):
     # Imports remain local so legacy informational hooks retain their behavior.
     from .lifecycle import RecordReference
-    from .lifecycle_operations import LifecycleService, canonical_record_path
+    from .lifecycle_operations import (
+        LifecycleOperationError,
+        LifecycleService,
+        canonical_record_path,
+    )
     from .lifecycle_storage import (
         LifecycleStorageError,
         LocalLifecycleStorage,
@@ -242,8 +246,41 @@ def _lifecycle_main(argv):
                     "proposal_turn_ref": None,
                     "evidence_hmac": updated.chain.authorization_evidence_hmac,
                 }
+            if (
+                updated.chain is not None
+                and updated.chain.publication_evidence is not None
+            ):
+                proof = updated.chain.publication_evidence
+                result["publication_evidence"] = {
+                    "authorization_evidence": {
+                        "kind": "approved-transition",
+                        "user_turn_ref": proof.approval_turn_reference,
+                        "proposal_turn_ref": proof.assistant_turn_reference,
+                        "evidence_hmac": proof.evidence_hmac,
+                    },
+                    "transition": {
+                        "from_authorization_id": proof.from_authorization_id,
+                        "to_authorization_id": proof.to_authorization_id,
+                        "old_root_scope_id": proof.old_scopes[0]["scope_id"],
+                        "new_root_scope_id": proof.new_scopes[0]["scope_id"],
+                        "proposal_turn_ref": proof.assistant_turn_reference,
+                        "approval_turn_ref": proof.approval_turn_reference,
+                        "evidence_hmac": proof.evidence_hmac,
+                    },
+                }
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))
         return 0
+    except LifecycleOperationError as error:
+        print(
+            json.dumps(
+                {
+                    "issue_codes": [error.code],
+                    "corrective_action": error.corrective_action,
+                }
+            ),
+            file=sys.stderr,
+        )
+        return 1
     except StaleLifecycleState:
         print('{"issue_codes":["AHK-STATE-STALE"]}', file=sys.stderr)
         return 1

@@ -127,6 +127,42 @@ class LifecycleStorageTests(unittest.TestCase):
             ):
                 RegistryEnvelope.from_bytes(value)
 
+    def test_duplicate_active_root_rejected_despite_different_descendant_digests(self):
+        first = register(self.storage, "first").chain
+        second = replace(
+            first,
+            authorization_id="auth-other",
+            scope_digests=(*first.scope_digests, "b" * 64),
+        )
+        before = self.storage.registry_path.read_bytes()
+        state = json.loads(before)
+        second_data = dict(
+            state["chains"][first.authorization_id],
+            authorization_id="auth-other",
+            scope_digests=list(second.scope_digests),
+        )
+        state["chains"]["auth-other"] = second_data
+        with self.assertRaisesRegex(LifecycleStorageError, "duplicate active root"):
+            RegistryEnvelope.from_bytes(json.dumps(state).encode())
+        session = self.storage.load_snapshot("second").session
+        with self.assertRaisesRegex(LifecycleStorageError, "duplicate active root"):
+            self.storage.compare_and_swap(
+                "second",
+                0,
+                0,
+                LifecycleMutation(
+                    replace(
+                        session,
+                        targeted_revision=1,
+                        mode=EnforcementMode.TRACKED,
+                        authorization_id=second.authorization_id,
+                        chain_revision=1,
+                    ),
+                    second,
+                ),
+            )
+        self.assertEqual(self.storage.registry_path.read_bytes(), before)
+
     def test_nested_validation_and_content_field_rejection(self):
         register(self.storage, "s")
         original = json.loads(self.storage.registry_path.read_bytes())

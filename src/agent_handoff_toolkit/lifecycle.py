@@ -447,6 +447,7 @@ class ChainState:
     successor_authorization_id: str | None = None
     authorization_user_turn_reference: str | None = None
     authorization_evidence_hmac: str | None = None
+    publication_evidence: AuthorizationProposal | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -481,6 +482,25 @@ class ChainState:
             )
         if self.authorization_evidence_hmac is not None:
             _digest(self.authorization_evidence_hmac, "authorization_evidence_hmac")
+        proof = self.publication_evidence
+        if proof is not None:
+            if (
+                not isinstance(proof, AuthorizationProposal)
+                or proof.kind != "transition"
+                or proof.status not in {"approved", "consumed"}
+                or proof.to_authorization_id != self.authorization_id
+                or self.current_record_reference is None
+                or self.status != "active"
+                or proof.new_scopes[0]["scope_id"] != self.locked_root_id
+                or tuple(scope_definition_digest(scope) for scope in proof.new_scopes)
+                != self.scope_digests
+                or proof.evidence_hmac != self.authorization_evidence_hmac
+                or proof.approval_turn_reference
+                != self.authorization_user_turn_reference
+            ):
+                raise ValueError(
+                    "publication evidence must bind this active successor chain"
+                )
         if self.successor_authorization_id is not None:
             object.__setattr__(
                 self,
@@ -1217,14 +1237,24 @@ def evaluate_stop(
         )
         return _blocked_stop(snapshot, (issue,))
 
-    proposal = session.pending_transition_reference
+    proposal = chain.publication_evidence
     trusted_transition = (
         proposal is not None
         and proposal.kind == "transition"
-        and proposal.status == "consumed"
+        and proposal.status in {"approved", "consumed"}
         and candidate.trusted_transition_hmac == proposal.evidence_hmac
         and predecessor_data.get("authorization_id") == proposal.from_authorization_id
         and candidate_data.get("authorization_id") == chain.authorization_id
+        and candidate_data.get("transition")
+        == {
+            "from_authorization_id": proposal.from_authorization_id,
+            "to_authorization_id": proposal.to_authorization_id,
+            "old_root_scope_id": proposal.old_scopes[0]["scope_id"],
+            "new_root_scope_id": proposal.new_scopes[0]["scope_id"],
+            "proposal_turn_ref": proposal.assistant_turn_reference,
+            "approval_turn_ref": proposal.approval_turn_reference,
+            "evidence_hmac": proposal.evidence_hmac,
+        }
     )
     validation_issues = validate_successor(
         candidate_data,
@@ -1234,6 +1264,14 @@ def evaluate_stop(
         approved_transition_hmac=proposal.evidence_hmac if trusted_transition else None,
     )
     extra_issues: list[LifecycleIssue] = []
+    if proposal is not None and not trusted_transition:
+        extra_issues.append(
+            _stop_issue(
+                "AHK-STOP-ROOT",
+                "The approved transition publication evidence does not match.",
+                "Render the first successor using the chain's approved transition evidence.",
+            )
+        )
     predecessor_record_id = predecessor_data.get("record_id")
     if (
         predecessor_record_id != chain.current_record_reference.record_id

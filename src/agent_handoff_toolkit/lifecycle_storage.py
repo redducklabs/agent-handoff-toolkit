@@ -95,6 +95,10 @@ def _model(value, model):
         value["current_record_reference"] = _model(
             value["current_record_reference"], RecordReference
         )
+    if model is ChainState and value["publication_evidence"] is not None:
+        value["publication_evidence"] = _model(
+            value["publication_evidence"], AuthorizationProposal
+        )
     if model is DecisionRequest:
         value["category"] = AuthorityCategory(value["category"])
     if model is ChainState and not isinstance(value["scope_digests"], list):
@@ -146,7 +150,7 @@ class RegistryEnvelope:
                         "only superseded chains identify successors"
                     )
                 if chain.status == "active":
-                    identity = (chain.locked_root_id, chain.scope_digests)
+                    identity = (chain.locked_root_id, chain.scope_digests[0])
                     if identity in active_roots:
                         raise LifecycleStorageError(
                             "duplicate active root and scope definition"
@@ -690,6 +694,15 @@ class LocalLifecycleStorage:
                 ):
                     raise LifecycleStorageError(
                         "scope changes require a successor authorization"
+                    )
+                if chain.publication_evidence != existing.publication_evidence and (
+                    existing.publication_evidence is None
+                    or chain.publication_evidence is not None
+                    or chain.current_record_reference
+                    == existing.current_record_reference
+                ):
+                    raise LifecycleStorageError(
+                        "publication evidence can close only when publishing its successor record"
                     )
                 if (
                     chain != existing
