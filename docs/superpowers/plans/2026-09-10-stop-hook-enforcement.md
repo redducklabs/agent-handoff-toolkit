@@ -267,7 +267,7 @@ git commit -m "feat: validate schema v2 lineage"
 
 **Interfaces:**
 - Consumes: `ValidationIssue`, `validate_successor`, and `render_terminal_response`.
-- Produces: enums `EventName`, `EnforcementMode`, `DecisionKind`, `AuthorityCategory`, and `AffirmationResult`; frozen models `NormalizedEvent`, `LifecycleIssue`, `LifecycleDecision`, `LifecycleMutation`, `DecisionRequest`, `ChainState`, `SessionState`, `LifecycleSnapshot`, and `TerminalCandidate`; pure functions `classify_affirmation`, `render_decision_response`, `issue_signature`, `evaluate_pre_tool`, `evaluate_user_prompt`, and `evaluate_stop`.
+- Produces: enums `EventName`, `EnforcementMode`, `DecisionKind`, `AuthorityCategory`, and `AffirmationResult`; frozen models `NormalizedEvent`, `LifecycleIssue`, `LifecycleDecision`, `LifecycleMutation`, `DecisionRequest`, `RecordReference`, `AuthorizationProposal`, `ChainState`, `SessionState`, `LifecycleSnapshot`, and `TerminalCandidate`; pure functions `classify_affirmation`, `render_decision_response`, `issue_signature`, `evaluate_pre_tool`, `evaluate_user_prompt`, and `evaluate_stop`. `ChainState.current_record_reference` is `RecordReference | None`; approved-but-unpublished transition proof resides in `ChainState.publication_evidence`, not session proposal state.
 
 - [ ] **Step 1: Write failing model and affirmation tests**
 
@@ -373,7 +373,7 @@ git commit -m "feat: add lifecycle enforcement state machine"
 
 **Interfaces:**
 - Consumes: Task 3 frozen lifecycle state models and Task 1 canonical JSON/HMAC validation.
-- Produces: `LifecycleStorageError`, `StaleLifecycleState`, `RegistryEnvelope`, `LocalLifecycleStorage`, `resolve_lifecycle_state_root(repo_root: Path) -> Path`, `load_snapshot(session_key: str) -> LifecycleSnapshot`, and `compare_and_swap(session_key: str, expected_chain_revision: int, expected_session_revision: int, mutation: LifecycleMutation) -> LifecycleSnapshot`.
+- Produces: `LifecycleStorageError`, `StaleLifecycleState`, `RegistryEnvelope`, `LocalLifecycleStorage`, `resolve_lifecycle_state_root(repo_root: Path) -> Path`, `load_snapshot(session_key: str) -> LifecycleSnapshot`, `load_chain(authorization_id: str) -> ChainState | None`, and `compare_and_swap(session_key: str, expected_chain_revision: int, expected_session_revision: int, mutation: LifecycleMutation) -> LifecycleSnapshot`.
 
 - [ ] **Step 1: Write failing deterministic envelope tests**
 
@@ -431,6 +431,10 @@ git commit -m "feat: persist authorization lifecycle state"
 - Create: `src/agent_handoff_toolkit/lifecycle_operations.py`
 - Create: `tests/test_lifecycle_operations.py`
 - Modify: `src/agent_handoff_toolkit/cli.py`
+- Modify: `src/agent_handoff_toolkit/lifecycle.py`
+- Modify: `src/agent_handoff_toolkit/lifecycle_storage.py`
+- Modify: `tests/test_lifecycle.py`
+- Modify: `tests/test_lifecycle_storage.py`
 
 **Interfaces:**
 - Consumes: Tasks 1–4.
