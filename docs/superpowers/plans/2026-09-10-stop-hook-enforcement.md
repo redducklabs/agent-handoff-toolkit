@@ -397,7 +397,7 @@ Prove leases do not expire by time; explicit join adds rather than replaces a le
 
 - [ ] **Step 7: Add local-secret and HMAC privacy tests**
 
-Create the HMAC secret with cryptographically secure randomness and owner-only permissions where supported. Assert state contains HMACs but no input strings; different installations produce different HMACs; malformed/permission-insecure secret files fail closed for tracked state.
+Create the HMAC secret with cryptographically secure randomness and owner-only permissions where supported. Assert state contains HMACs but no input strings; different installations produce different HMACs; malformed secrets fail closed everywhere; insecure POSIX mode bits fail closed; Windows verifies containment, non-link/reparse safety, and exclusive creation without claiming POSIX-mode equivalence.
 
 - [ ] **Step 8: Run storage/lifecycle suites and static checks**
 
@@ -651,7 +651,7 @@ Require exactly `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`,
 
 - [ ] **Step 2: Add failing installer ownership/upgrade tests**
 
-Add array identities for every managed hook array and verify install/sync preserves unrelated consumer hooks, upgrades exact v0.2.8-owned entries, refuses locally modified entries, installs each new runtime module, sets `record_schema_version: 2`, and leaves legacy records opaque.
+Add array identities only for hook arrays with a supported stable matcher. Manage matcher-less `Stop` and `UserPromptSubmit` arrays through exact positional owned-fragment semantics. Verify install/sync preserves unrelated consumer hooks, upgrades exact v0.2.8-owned entries, refuses locally modified entries, installs each new runtime module, sets `record_schema_version: 2`, and leaves legacy records opaque.
 
 - [ ] **Step 3: Update host fragments and manifest ownership**
 
