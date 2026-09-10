@@ -20,7 +20,12 @@ from .lineage import (
     validate_hex_digest,
     validate_identifier,
 )
-from .records import ValidationIssue, render_terminal_response, validate_successor
+from .records import (
+    ValidationIssue,
+    parse_markdown,
+    render_terminal_response,
+    validate_successor,
+)
 
 
 class EventName(str, Enum):
@@ -587,40 +592,24 @@ _DECISION_RESPONSE_RE = re.compile(
     r"Blocked action field: (?P<field>[^\n]+)\n"
     r"Reason: (?P<reason>[^\n]+)"
 )
-_OPERATIONAL_QUESTION_WORDS = {
-    "a",
-    "and",
-    "can",
-    "continue",
-    "continuing",
-    "create",
-    "creating",
-    "do",
-    "handoff",
-    "i",
-    "like",
-    "may",
-    "me",
-    "now",
-    "or",
-    "please",
-    "should",
-    "stop",
-    "stopping",
-    "the",
-    "to",
-    "want",
-    "we",
-    "would",
-    "you",
-}
-_OPERATIONAL_ACTION_WORDS = {
-    "continue",
-    "continuing",
-    "stop",
-    "stopping",
-    "handoff",
-}
+_OPERATIONAL_PREFIX = (
+    r"(?:(?:should|shall|can|may) (?:i|we)|"
+    r"(?:would you like|do you want) me to)"
+)
+_OPERATIONAL_ACTION = r"(?:continue|stop|pause|proceed|carry on|keep (?:working|going))"
+_OPERATION_ONLY_RE = re.compile(
+    rf"{_OPERATIONAL_PREFIX} {_OPERATIONAL_ACTION}"
+    r"(?: (?:with|on) (?:this|the|current|authorized) work)?"
+    r"(?: now| here)?"
+)
+_HANDOFF_ONLY_RE = re.compile(
+    rf"{_OPERATIONAL_PREFIX} (?:create|write|make|generate) "
+    r"(?:a |the )?handoff(?: .+)?"
+)
+_OPERATIONAL_MENU_RE = re.compile(
+    r"(?:continue|stop|pause)"
+    r"(?: (?:or )?(?:continue|stop|pause|create (?:a |the )?handoff))+"
+)
 
 
 def classify_affirmation(text: str) -> AffirmationResult:
@@ -665,15 +654,15 @@ def _decision_text_hmac(secret: bytes, label: str, value: str) -> str:
 
 def _is_operational_evasion(question: str) -> bool:
     normalized = unicodedata.normalize("NFKC", question).casefold()
-    words = set(re.findall(r"[a-z]+", normalized))
-    if words & {"handoff", "continue", "continuing", "proceed", "stop", "stopping"}:
-        return True
-    if "keep" in words and words & {"going", "working"}:
-        return True
-    if words & {"end", "finish"} and "here" in words:
-        return True
-    return bool(words & _OPERATIONAL_ACTION_WORDS) and words.issubset(
-        _OPERATIONAL_QUESTION_WORDS
+    normalized = re.sub(r"[,;:]+", " ", normalized)
+    normalized = " ".join(normalized.rstrip(".!?…").split())
+    return any(
+        pattern.fullmatch(normalized) is not None
+        for pattern in (
+            _OPERATION_ONLY_RE,
+            _HANDOFF_ONLY_RE,
+            _OPERATIONAL_MENU_RE,
+        )
     )
 
 
@@ -772,6 +761,7 @@ def evaluate_user_prompt(
     snapshot: LifecycleSnapshot,
     *,
     affirmation: AffirmationResult | None = None,
+    decision_resolved: bool = False,
 ) -> LifecycleDecision:
     """Reset correction state only for a real external user turn."""
 
@@ -781,11 +771,13 @@ def evaluate_user_prompt(
         raise ValueError("snapshot must be a LifecycleSnapshot")
     if affirmation is not None:
         _enum(affirmation, AffirmationResult, "affirmation")
+    if not isinstance(decision_resolved, bool):
+        raise ValueError("decision_resolved must be boolean")
     if not event.external_user_turn:
         return LifecycleDecision(DecisionKind.ALLOW)
     next_mode = snapshot.session.mode
     pending_decision = snapshot.session.pending_decision_reference
-    if next_mode is EnforcementMode.AWAITING_DECISION:
+    if next_mode is EnforcementMode.AWAITING_DECISION and decision_resolved:
         next_mode = EnforcementMode.TRACKED
         pending_decision = None
     next_session = replace(
@@ -1074,6 +1066,25 @@ def evaluate_stop(
         return _blocked_stop(snapshot, (issue,))
 
     candidate_data = _thaw_json(candidate.candidate)
+    try:
+        authoritative_candidate = parse_markdown(candidate.text)
+    except ValueError:
+        issue = _stop_issue(
+            "AHK-STOP-WORK",
+            "The candidate record text is not structurally valid.",
+            "Correct and render the candidate record before stopping.",
+            candidate_path=candidate.path,
+        )
+        return _blocked_stop(snapshot, (issue,))
+    if candidate_data != authoritative_candidate:
+        issue = _stop_issue(
+            "AHK-STOP-RESPONSE",
+            "The supplied candidate mapping differs from the candidate record text.",
+            "Parse the candidate text and evaluate that exact authoritative mapping.",
+            candidate_path=candidate.path,
+        )
+        return _blocked_stop(snapshot, (issue,))
+    candidate_data = authoritative_candidate
     predecessor_data = (
         _thaw_json(candidate.predecessor) if candidate.predecessor is not None else None
     )
@@ -1114,6 +1125,18 @@ def evaluate_stop(
                 "Rebuild the candidate from the current chain record.",
                 expected=chain.current_record_reference,
                 actual=predecessor_record_id,
+                candidate_path=candidate.path,
+            )
+        )
+    predecessor_authorization_id = predecessor_data.get("authorization_id")
+    if predecessor_authorization_id != chain.authorization_id:
+        extra_issues.append(
+            _stop_issue(
+                "AHK-STOP-PREDECESSOR",
+                "The predecessor authorization does not match the live chain.",
+                "Rebuild the candidate from the current live authorization chain.",
+                expected=chain.authorization_id,
+                actual=predecessor_authorization_id,
                 candidate_path=candidate.path,
             )
         )

@@ -37,6 +37,7 @@ from agent_handoff_toolkit.lineage import (  # noqa: E402
     scope_definition_digest,
 )
 from agent_handoff_toolkit.records import (  # noqa: E402
+    parse_markdown,
     render_record,
     render_terminal_response,
 )
@@ -212,20 +213,22 @@ def make_record(
 
 
 def make_terminal_candidate(record_type: str = "continuation") -> TerminalCandidate:
-    predecessor = make_record("continuation", record_id="record-1")
-    predecessor_text = render_record(predecessor)
+    predecessor_source = make_record("continuation", record_id="record-1")
+    predecessor_text = render_record(predecessor_source)
+    predecessor = parse_markdown(predecessor_text)
     predecessor_digest = record_digest(predecessor_text)
     reference = {
         "record_id": "record-1",
         "path": PREDECESSOR_PATH,
         "sha256": predecessor_digest,
     }
-    candidate = make_record(
+    candidate_source = make_record(
         record_type,
         record_id="record-2",
         predecessor=reference,
     )
-    candidate_text = render_record(candidate)
+    candidate_text = render_record(candidate_source)
+    candidate = parse_markdown(candidate_text)
     return TerminalCandidate(
         candidate=candidate,
         text=candidate_text,
@@ -252,8 +255,9 @@ def make_candidate_from_valid(
     source: TerminalCandidate, candidate_data: dict[str, object]
 ) -> TerminalCandidate:
     candidate_text = render_record(candidate_data)
+    parsed_candidate = parse_markdown(candidate_text)
     return TerminalCandidate(
-        candidate=candidate_data,
+        candidate=parsed_candidate,
         text=candidate_text,
         path=source.path,
         digest=record_digest(candidate_text),
@@ -512,11 +516,28 @@ class DecisionResponseTests(unittest.TestCase):
             "Would you like me to keep working?",
             "Should I proceed with the work?",
             "Should I write a handoff for issue 1?",
+            "Should I carry on?",
+            "Shall I pause?",
         ):
             with self.subTest(question=question), self.assertRaises(ValueError):
                 render_decision_response(
                     question, reason, make_request(question, reason), SECRET
                 )
+
+    def test_allows_a_real_object_action_that_uses_stop_as_its_verb(self) -> None:
+        question = "May I stop the production database before replacing its storage?"
+        reason = "The database shutdown is an external effect requiring approval."
+        request = make_request(
+            question,
+            reason,
+            category=AuthorityCategory.EXTERNAL_EFFECT,
+            blocked_action_field="action",
+            blocked_action_value="Stop the production database.",
+        )
+
+        response = render_decision_response(question, reason, request, SECRET)
+
+        self.assertTrue(verify_decision_response(response, request, SECRET))
 
     def test_rejects_mismatched_hmac_unsafe_empty_and_oversized_text(self) -> None:
         question = "Which deployment target should I use?"
@@ -650,7 +671,7 @@ class EventTransitionTests(unittest.TestCase):
             external_user_turn=True,
         )
 
-        decision = evaluate_user_prompt(event, snapshot)
+        decision = evaluate_user_prompt(event, snapshot, decision_resolved=True)
 
         self.assertEqual(decision.kind, DecisionKind.ALLOW)
         self.assertEqual(decision.mutation.session.correction_cycle_count, 0)
@@ -662,6 +683,36 @@ class EventTransitionTests(unittest.TestCase):
             "turn-3",
         )
         self.assertEqual(decision.mutation.session.targeted_revision, 3)
+
+    def test_external_nonanswer_resets_cycle_but_retains_pending_decision(self) -> None:
+        question = "Which deployment target should I use?"
+        reason = "The authorized action names two mutually exclusive targets."
+        request = make_request(question, reason)
+        snapshot = LifecycleSnapshot(
+            chain=make_chain(),
+            session=make_session(
+                mode=EnforcementMode.AWAITING_DECISION,
+                pending_decision_reference=request,
+                correction_cycle_count=2,
+                last_issue_signature=DIGEST_A,
+            ),
+        )
+        event = make_event(
+            EventName.USER_PROMPT_SUBMIT,
+            current_user_message="I do not know yet.",
+            current_user_reference="turn-3",
+            external_user_turn=True,
+        )
+
+        decision = evaluate_user_prompt(event, snapshot)
+
+        self.assertEqual(decision.kind, DecisionKind.ALLOW)
+        self.assertEqual(decision.mutation.session.correction_cycle_count, 0)
+        self.assertIsNone(decision.mutation.session.last_issue_signature)
+        self.assertEqual(
+            decision.mutation.session.mode, EnforcementMode.AWAITING_DECISION
+        )
+        self.assertIs(decision.mutation.session.pending_decision_reference, request)
 
     def test_model_continuation_does_not_reset_correction_cycle(self) -> None:
         session = make_session(
@@ -838,6 +889,60 @@ class StopEvaluationTests(unittest.TestCase):
         self.assertEqual(decision.mutation.chain.status, "complete")
         self.assertEqual(decision.mutation.session.mode, EnforcementMode.COMPLETE)
         self.assertEqual(decision.mutation.chain.locked_root_id, "issue-1")
+
+    def test_candidate_mapping_must_match_authoritative_record_text(self) -> None:
+        continuation = make_terminal_candidate("continuation")
+        audit = make_terminal_candidate("completion-audit")
+        mixed = make_terminal_candidate_with(
+            continuation,
+            candidate=audit.candidate,
+        )
+
+        decision = evaluate_stop(
+            self.stop_event(mixed.rendered_response),
+            self.snapshot,
+            candidate=mixed,
+        )
+
+        self.assertEqual(decision.kind, DecisionKind.BLOCK)
+        self.assertEqual(
+            {issue.code for issue in decision.issues}, {"AHK-STOP-RESPONSE"}
+        )
+        self.assertNotEqual(decision.mutation.session.mode, EnforcementMode.COMPLETE)
+
+    def test_predecessor_authorization_must_match_the_live_chain(self) -> None:
+        valid = make_terminal_candidate("continuation")
+        predecessor = mutable_json(valid.predecessor)
+        candidate_data = mutable_json(valid.candidate)
+        assert isinstance(predecessor, dict)
+        assert isinstance(candidate_data, dict)
+        predecessor["authorization_id"] = "auth-other"
+        predecessor_text = render_record(predecessor)
+        predecessor_digest = record_digest(predecessor_text)
+        candidate_data["authorization_id"] = "auth-other"
+        candidate_data["predecessor"]["sha256"] = predecessor_digest
+        candidate_text = render_record(candidate_data)
+        candidate = TerminalCandidate(
+            candidate=candidate_data,
+            text=candidate_text,
+            path=valid.path,
+            digest=record_digest(candidate_text),
+            rendered_response=render_terminal_response(valid.path, candidate_text),
+            predecessor=predecessor,
+            predecessor_path=valid.predecessor_path,
+            predecessor_source_digest=predecessor_digest,
+            expected_chain_revision=valid.expected_chain_revision,
+            expected_session_revision=valid.expected_session_revision,
+        )
+
+        decision = evaluate_stop(
+            self.stop_event(candidate.rendered_response),
+            self.snapshot,
+            candidate=candidate,
+        )
+
+        self.assertEqual(decision.kind, DecisionKind.BLOCK)
+        self.assertIn("AHK-STOP-PREDECESSOR", {issue.code for issue in decision.issues})
 
     def test_handwritten_or_contradictory_preamble_before_valid_response_blocks(
         self,
