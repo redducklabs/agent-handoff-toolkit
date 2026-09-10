@@ -63,6 +63,16 @@ or register an authorized root before any shell command. Unknown tool contracts
 fail closed and require registration. This prevents alternate write mechanisms
 from bypassing tracked-mode entry.
 
+There is one control-plane exception: the gate recognizes the exact vendored
+`lifecycle register-root`, `resume`, `join`, or `adopt-v1` launcher grammar together
+with a one-use challenge issued for the current user turn. This is not a general
+shell read-only classifier. The parser accepts only the fixed Python/runner path,
+fixed subcommand and flags, bounded identifier/digest values, and no shell
+operators, redirections, substitutions, control characters, or trailing commands.
+It rejects the tool call before execution if any byte falls outside that grammar.
+This allows the session to enter tracked mode without creating a shell-write
+bypass.
+
 The adapters normalize host payloads into core events containing only the fields
 the core needs:
 
@@ -72,7 +82,8 @@ the core needs:
 - transcript reference;
 - `stop_hook_active`;
 - latest assistant-message text for `Stop`;
-- current user-message reference for `UserPromptSubmit`.
+- current user-message reference for `UserPromptSubmit`;
+- bounded tool name, capability classification, and input needed by `PreToolUse`.
 
 Host-specific output adapters map a core continuation decision to the supported
 blocking JSON shape. A successful decision exits silently. A policy violation
@@ -104,6 +115,38 @@ successor must retain every inherited immutable scope field and digest. Changing
 scope's kind, parent, or meaning requires an approved transition even when its ID
 is unchanged.
 
+### Canonical lineage formats
+
+Record, authorization, scope, and turn-reference IDs use 1–128 characters from
+`[A-Za-z0-9][A-Za-z0-9._:-]*`. A SHA-256 or HMAC value is exactly 64 lowercase
+hexadecimal characters. Text fields are trimmed, LF-normalized UTF-8 without
+unsafe control or line-separator characters and have field-specific byte limits.
+
+`scope_definition` is an object with exactly `title` and `outcome`, each bounded
+non-empty text. Its digest is SHA-256 over compact canonical JSON containing
+`scope_id`, `scope_kind`, `parent_scope_id`, and `scope_definition`, using sorted
+keys, UTF-8 characters preserved, separators `,` and `:`, and no trailing newline.
+Whitespace inside normalized text values remains semantic; object key order and
+presentation whitespace do not.
+
+`predecessor` is `null` only for the first v2 record in a chain. Otherwise it has
+exactly `record_id`, normalized absolute `path`, and `sha256`. The digest is over
+the predecessor's LF-normalized complete record bytes.
+
+`authorization_evidence` has exactly `kind`, `user_turn_ref`,
+`proposal_turn_ref`, and `evidence_hmac`. `kind` is `initial-user-turn`,
+`approved-transition`, or `v1-adoption`; `proposal_turn_ref` is null only for an
+initial user turn. The trusted lifecycle adapter produces the HMAC over the kind,
+authorization IDs, turn references, role and adjacency result, and relevant
+scope-definition digests. It does not store message text.
+
+`transition` is null or has exactly `from_authorization_id`,
+`to_authorization_id`, `old_root_scope_id`, `new_root_scope_id`,
+`proposal_turn_ref`, `approval_turn_ref`, and `evidence_hmac`. The evidence must
+match a consumed adjacent approval in the registry. Record validation alone
+reports it as structurally present but cannot claim transcript authenticity
+without registry reconciliation.
+
 `authorized_root_scope_id` must identify the sole root and the
 `highest_authorized` scope. A successor without an approved transition must retain
 the predecessor's `authorization_id`, root ID, and complete inherited scope chain.
@@ -126,6 +169,18 @@ Lifecycle enforcement uses a repository-level authorization registry plus a
 small, atomic per-session state object. Neither stores prompt, reply, transcript,
 credential, or customer content.
 
+The shared registry transaction envelope contains `registry_version`, one global
+monotonic `revision`, `chains`, and `sessions`. Each chain stores its authorization
+ID, state (`active`, `superseded`, or `complete`), immutable root/scope-definition
+digests, current record reference, revision, successor authorization ID, and
+session references. Each session stores the bounded fields listed below. Map keys
+are sorted during canonical serialization; every update validates the complete
+envelope before atomic publication. The global revision is a storage-integrity
+sequence only; it is never the authorization compare-and-swap key. A mutation
+reloads the current envelope under the lock, compares the expected revision only
+to the targeted chain and session revisions, applies the change to that current
+envelope, then increments the global storage revision.
+
 The shared registry contains authorization IDs, immutable root/scope-definition
 digests, current record identities and digests, monotonically increasing
 revisions, completion state, and active session leases. It may contain multiple
@@ -145,11 +200,24 @@ Per-session state is limited to:
 - last failure issue signature and consecutive count.
 
 The storage interface is injected into the core. The local adapter defaults to
-repository-private state beneath Git metadata when available and a platform cache
-keyed by the repository digest otherwise. State and registry publication use
-exclusive temporary files, flush/fsync, file locking, revision checks, and atomic
-replacement. Corrupt, unreadable, or concurrently changed tracked state blocks the
-operation.
+repository-private state beneath the resolved common Git metadata directory when
+available and a platform cache keyed by the repository digest otherwise. Linked
+worktrees resolve to the same common registry while retaining distinct session
+leases. Registry and per-session entries live in one canonical transaction
+envelope so one locked atomic replacement advances them together; they are not
+published as independently replaceable files. Publication uses an exclusive lock,
+revision check, temporary file, flush/fsync, and atomic replacement. Corrupt,
+unreadable, or concurrently changed tracked state blocks the operation.
+
+Leases do not expire based on wall-clock time. A compliant continuation or audit
+stop changes or releases the current session lease; an explicit join adds a
+second-session lease without replacing existing leases. No takeover operation
+exists. Joining a complete chain is rejected. A transition atomically marks the
+old chain `superseded`, creates the new chain, and points every old-chain session
+at the successor. A stale session receives a reconciliation failure and cannot
+publish against the old revision. Because compare-and-swap checks the targeted
+chain/session revisions rather than the global storage revision, unrelated
+authorization chains remain independently writable under the same envelope lock.
 
 Session start does not copy the transcript into state. `UserPromptSubmit` recognizes
 only a canonical `Continue from handoff: <absolute-path>` reference or an explicit
@@ -169,6 +237,12 @@ interpreted arbitrary natural language. Identifiers and explicit scope named in
 the initiating turn are checked where deterministic extraction is possible.
 Optional semantic evaluation may flag suspected misinterpretation but is not the
 sole hard gate.
+
+Active v1 adoption uses the same contextual exchange as a root transition. The
+model first registers a proposal naming the one selected v1 path and declared
+root. The adjacent user affirmation is consumed by `UserPromptSubmit`; only then
+does the one-use adoption challenge permit `lifecycle adopt-v1`. A `--confirmed`
+flag or model assertion cannot substitute for this evidence.
 
 ## Contextual authorization transitions
 
@@ -222,6 +296,13 @@ assistant response, and `Stop` requires byte-exact equality. Requests outside th
 structural categories are rejected; semantic uncertainty remains subject to
 optional advisory evaluation and user review.
 
+The lifecycle command receives the proposed decision question through standard
+input, renders the complete canonical response in the same process, and persists
+only its HMAC plus the structured category and action fields. At `Stop`, the
+adapter extracts the question from `last_assistant_message`, recomputes the HMAC,
+and compares the entire rendered response. The question text is never copied into
+the registry, session state, fixture, or log.
+
 The next `UserPromptSubmit` event resolves or retains the request. No continuation
 may be finalized while a decision capable of changing its first action remains
 open.
@@ -256,9 +337,14 @@ cannot revert itself to untracked mode.
 ## Canonical response verification
 
 The renderer remains the only source of terminal continuation, audit, and decision
-responses. Schema v2 does not permit a handwritten preamble. Stop validation
-regenerates the complete expected assistant message from the candidate record or
-decision state and requires byte-exact equality after line-ending normalization.
+responses. Schema v2 does not permit a handwritten preamble. For record outcomes,
+the stop adapter extracts the sole absolute record pointer from the canonical final
+link/block in `last_assistant_message`, rejects ambiguous or unsafe paths, opens
+only that containment-checked candidate, and verifies its ID/digest/lineage against
+the live registry. No directory scan or "newest record" heuristic is allowed. Stop
+validation then regenerates the complete expected assistant message from that
+candidate record or decision state and requires byte-exact equality after
+line-ending normalization.
 Generated record responses may include a bounded metadata-derived summary, but no
 free prose. Validation rejects:
 
@@ -365,6 +451,8 @@ The vendored runner adds lifecycle commands used by models and acceptance tests:
 ```text
 handoff-toolkit lifecycle inspect
 handoff-toolkit lifecycle register-root ...
+handoff-toolkit lifecycle resume ...
+handoff-toolkit lifecycle join ...
 handoff-toolkit lifecycle propose-transition ...
 handoff-toolkit lifecycle request-decision ...
 handoff-toolkit lifecycle adopt-v1 ...
@@ -374,9 +462,11 @@ handoff-toolkit hook --platform claude|codex --event stop
 ```
 
 Commands validate all identifiers and paths, print bounded diagnostics, and never
-accept raw prompt or transcript content as arguments. Commands that mutate runtime
-state use compare-and-swap against the expected state digest to prevent concurrent
-or stale model actions.
+accept raw user prompts, replies, or transcripts as arguments. The
+`request-decision` command accepts only the new model-authored question on standard
+input and does not retain it. Commands that mutate runtime state use
+compare-and-swap against the expected state digest to prevent concurrent or stale
+model actions.
 
 ## Installation and trust
 
