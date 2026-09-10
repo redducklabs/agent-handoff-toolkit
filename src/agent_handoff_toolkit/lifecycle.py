@@ -17,6 +17,7 @@ from .lineage import (
     canonical_json_bytes,
     normalize_text,
     record_digest,
+    scope_definition_digest,
     validate_hex_digest,
     validate_identifier,
 )
@@ -24,6 +25,7 @@ from .records import (
     ValidationIssue,
     parse_markdown,
     render_terminal_response,
+    validate_markdown,
     validate_successor,
 )
 
@@ -350,14 +352,101 @@ class DecisionRequest:
 
 
 @dataclass(frozen=True)
+class RecordReference:
+    record_id: str
+    path: str
+    sha256: str
+
+    def __post_init__(self):
+        _identifier(self.record_id, "record_id")
+        _digest(self.sha256, "sha256")
+        _text(self.path, limit=4096, label="record path")
+        if (
+            not re.fullmatch(r"(?:[A-Z]:/|/)[^\\\n<>]+\.md", self.path)
+            or self.path.startswith("//")
+            or any(part in {"", ".", ".."} for part in self.path.split("/")[1:])
+        ):
+            raise ValueError("record path must be canonical absolute Markdown")
+
+
+@dataclass(frozen=True)
+class AuthorizationProposal:
+    proposal_id: str
+    kind: str
+    assistant_turn_reference: str
+    from_authorization_id: str | None
+    to_authorization_id: str
+    old_scopes: tuple[Mapping[str, object], ...]
+    new_scopes: tuple[Mapping[str, object], ...]
+    selected_record: RecordReference | None = None
+    status: str = "pending"
+    approval_turn_reference: str | None = None
+    evidence_hmac: str | None = None
+
+    def __post_init__(self):
+        _identifier(self.proposal_id, "proposal_id")
+        _identifier(self.assistant_turn_reference, "assistant_turn_reference")
+        _identifier(self.to_authorization_id, "to_authorization_id")
+        if self.to_authorization_id == self.from_authorization_id:
+            raise ValueError("proposal must create a new authorization")
+        if self.from_authorization_id is not None:
+            _identifier(self.from_authorization_id, "from_authorization_id")
+        if self.kind not in {"transition", "v1-adoption"} or self.status not in {
+            "pending",
+            "approved",
+            "consumed",
+        }:
+            raise ValueError("invalid authorization proposal kind or status")
+        for name in ("old_scopes", "new_scopes"):
+            scopes = tuple(getattr(self, name))
+            if len(scopes) > 64 or (name == "new_scopes" and not scopes):
+                raise ValueError("invalid proposal scope count")
+            frozen = []
+            for scope in scopes:
+                if set(scope) != {
+                    "scope_id",
+                    "scope_kind",
+                    "parent_scope_id",
+                    "scope_definition",
+                }:
+                    raise ValueError("proposal scope contains unexpected fields")
+                scope_definition_digest(scope)
+                frozen.append(
+                    _frozen_mapping(scope, limit=2048, label="proposal scope")
+                )
+            object.__setattr__(self, name, tuple(frozen))
+        if self.kind == "v1-adoption" and not isinstance(
+            self.selected_record, RecordReference
+        ):
+            raise ValueError("adoption requires one selected record")
+        if self.kind == "transition" and (
+            self.from_authorization_id is None
+            or not self.old_scopes
+            or self.selected_record is not None
+        ):
+            raise ValueError("transition requires old authority and scopes")
+        if self.status == "pending":
+            if (
+                self.approval_turn_reference is not None
+                or self.evidence_hmac is not None
+            ):
+                raise ValueError("pending proposal cannot contain approval evidence")
+        else:
+            _identifier(self.approval_turn_reference, "approval_turn_reference")
+            _digest(self.evidence_hmac, "evidence_hmac")
+
+
+@dataclass(frozen=True)
 class ChainState:
     authorization_id: str
     locked_root_id: str
     scope_digests: tuple[str, ...]
     targeted_revision: int
     status: str
-    current_record_reference: str
+    current_record_reference: RecordReference | None
     successor_authorization_id: str | None = None
+    authorization_user_turn_reference: str | None = None
+    authorization_evidence_hmac: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -381,11 +470,17 @@ class ChainState:
         )
         if self.status not in _CHAIN_STATUSES:
             raise ValueError("chain status is not recognized")
-        object.__setattr__(
-            self,
-            "current_record_reference",
-            _identifier(self.current_record_reference, "current_record_reference"),
-        )
+        if self.current_record_reference is not None and not isinstance(
+            self.current_record_reference, RecordReference
+        ):
+            raise ValueError("current_record_reference must be a RecordReference")
+        if self.authorization_user_turn_reference is not None:
+            _identifier(
+                self.authorization_user_turn_reference,
+                "authorization_user_turn_reference",
+            )
+        if self.authorization_evidence_hmac is not None:
+            _digest(self.authorization_evidence_hmac, "authorization_evidence_hmac")
         if self.successor_authorization_id is not None:
             object.__setattr__(
                 self,
@@ -405,7 +500,7 @@ class SessionState:
     authorization_id: str | None = None
     chain_revision: int | None = None
     pending_decision_reference: DecisionRequest | None = None
-    pending_transition_reference: str | None = None
+    pending_transition_reference: AuthorizationProposal | None = None
     correction_cycle_count: int = 0
     last_issue_signature: str | None = None
     current_external_user_turn_reference: str | None = None
@@ -437,8 +532,13 @@ class SessionState:
             self.pending_decision_reference, DecisionRequest
         ):
             raise ValueError("pending_decision_reference must be a DecisionRequest")
+        if self.pending_transition_reference is not None and not isinstance(
+            self.pending_transition_reference, AuthorizationProposal
+        ):
+            raise ValueError(
+                "pending_transition_reference must be an AuthorizationProposal"
+            )
         for field_name in (
-            "pending_transition_reference",
             "current_external_user_turn_reference",
             "bootstrap_challenge",
         ):
@@ -1092,6 +1192,8 @@ def evaluate_stop(
         )
         return _blocked_stop(snapshot, (issue,))
     candidate_data = authoritative_candidate
+    if chain.current_record_reference is None:
+        return _evaluate_initial_record(snapshot, candidate, candidate_data)
     predecessor_data = (
         _thaw_json(candidate.predecessor) if candidate.predecessor is not None else None
     )
@@ -1115,16 +1217,29 @@ def evaluate_stop(
         )
         return _blocked_stop(snapshot, (issue,))
 
+    proposal = session.pending_transition_reference
+    trusted_transition = (
+        proposal is not None
+        and proposal.kind == "transition"
+        and proposal.status == "consumed"
+        and candidate.trusted_transition_hmac == proposal.evidence_hmac
+        and predecessor_data.get("authorization_id") == proposal.from_authorization_id
+        and candidate_data.get("authorization_id") == chain.authorization_id
+    )
     validation_issues = validate_successor(
         candidate_data,
         predecessor_data,
         expected_predecessor_path=candidate.predecessor_path,
         predecessor_sha256=candidate.predecessor_source_digest,
-        approved_transition_hmac=candidate.trusted_transition_hmac,
+        approved_transition_hmac=proposal.evidence_hmac if trusted_transition else None,
     )
     extra_issues: list[LifecycleIssue] = []
     predecessor_record_id = predecessor_data.get("record_id")
-    if predecessor_record_id != chain.current_record_reference:
+    if (
+        predecessor_record_id != chain.current_record_reference.record_id
+        or candidate.predecessor_path != chain.current_record_reference.path
+        or candidate.predecessor_source_digest != chain.current_record_reference.sha256
+    ):
         extra_issues.append(
             _stop_issue(
                 "AHK-STOP-PREDECESSOR",
@@ -1136,7 +1251,10 @@ def evaluate_stop(
             )
         )
     predecessor_authorization_id = predecessor_data.get("authorization_id")
-    if predecessor_authorization_id != chain.authorization_id:
+    expected_predecessor_authorization = (
+        proposal.from_authorization_id if trusted_transition else chain.authorization_id
+    )
+    if predecessor_authorization_id != expected_predecessor_authorization:
         extra_issues.append(
             _stop_issue(
                 "AHK-STOP-PREDECESSOR",
@@ -1149,8 +1267,8 @@ def evaluate_stop(
         )
     candidate_root = candidate_data.get("authorized_root_scope_id")
     if (
-        candidate.trusted_transition_hmac is None
-        and candidate_root != chain.locked_root_id
+        candidate_root != chain.locked_root_id
+        or candidate_data.get("authorization_id") != chain.authorization_id
     ):
         extra_issues.append(
             _stop_issue(
@@ -1169,7 +1287,19 @@ def evaluate_stop(
             for scope in predecessor_scopes
             if isinstance(scope, Mapping)
         )
-        if predecessor_scope_digests != chain.scope_digests:
+        expected_scope_digests = (
+            tuple(scope_definition_digest(scope) for scope in proposal.old_scopes)
+            if trusted_transition
+            else chain.scope_digests
+        )
+        candidate_scope_digests = tuple(
+            scope.get("scope_definition_digest")
+            for scope in candidate_data.get("active_scopes", [])
+        )
+        if (
+            predecessor_scope_digests != expected_scope_digests
+            or candidate_scope_digests != chain.scope_digests
+        ):
             extra_issues.append(
                 _stop_issue(
                     "AHK-STOP-SCOPE",
@@ -1226,10 +1356,78 @@ def evaluate_stop(
         scope_digests=scope_digests,
         targeted_revision=chain.targeted_revision + 1,
         status="complete" if completed else "active",
-        current_record_reference=record_id,
+        current_record_reference=RecordReference(
+            record_id, candidate.path, candidate.digest
+        ),
+        authorization_user_turn_reference=chain.authorization_user_turn_reference,
+        authorization_evidence_hmac=chain.authorization_evidence_hmac,
     )
     return _allow_stop(
         snapshot,
         chain=next_chain,
+        mode=EnforcementMode.COMPLETE if completed else EnforcementMode.TRACKED,
+    )
+
+
+def _evaluate_initial_record(snapshot, candidate, data):
+    """Install the first record only against the already registered authority."""
+    chain = snapshot.chain
+    proposal = snapshot.session.pending_transition_reference
+    evidence = data.get("authorization_evidence", {})
+    kind = "initial-user-turn"
+    proposal_turn = None
+    if proposal and proposal.status == "consumed":
+        kind = (
+            "v1-adoption" if proposal.kind == "v1-adoption" else "approved-transition"
+        )
+        proposal_turn = proposal.assistant_turn_reference
+    expected_evidence = {
+        "kind": kind,
+        "user_turn_ref": chain.authorization_user_turn_reference,
+        "proposal_turn_ref": proposal_turn,
+        "evidence_hmac": chain.authorization_evidence_hmac,
+    }
+    valid = (
+        not validate_markdown(candidate.text)
+        and data.get("schema_version") == 2
+        and data.get("authorization_id") == chain.authorization_id
+        and data.get("authorized_root_scope_id") == chain.locked_root_id
+        and tuple(
+            scope.get("scope_definition_digest")
+            for scope in data.get("active_scopes", [])
+        )
+        == chain.scope_digests
+        and data.get("predecessor") is None
+        and candidate.predecessor is None
+        and evidence == expected_evidence
+        and record_digest(candidate.text) == candidate.digest
+        and render_terminal_response(candidate.path, candidate.text).replace(
+            "\r\n", "\n"
+        )
+        == candidate.rendered_response.replace("\r\n", "\n")
+    )
+    if not valid:
+        return _blocked_stop(
+            snapshot,
+            (
+                _stop_issue(
+                    "AHK-STOP-ROOT",
+                    "Initial record differs from registered authority.",
+                    "Render the first record with the registered root, immutable definitions, and user-turn evidence.",
+                ),
+            ),
+        )
+    completed = data["record_type"] == "completion-audit"
+    updated = replace(
+        chain,
+        targeted_revision=chain.targeted_revision + 1,
+        status="complete" if completed else "active",
+        current_record_reference=RecordReference(
+            data["record_id"], candidate.path, candidate.digest
+        ),
+    )
+    return _allow_stop(
+        snapshot,
+        chain=updated,
         mode=EnforcementMode.COMPLETE if completed else EnforcementMode.TRACKED,
     )

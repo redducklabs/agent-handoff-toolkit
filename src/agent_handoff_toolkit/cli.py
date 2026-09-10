@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -16,6 +18,9 @@ from .records import render_record, render_tail, validate_markdown
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="handoff-toolkit")
     subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers.add_parser(
+        "lifecycle", help="inspect and control authorization lifecycle"
+    )
 
     validate = subparsers.add_parser("validate", help="validate a Markdown record")
     validate.add_argument("record", type=Path)
@@ -87,10 +92,179 @@ def _configure_output_encoding() -> None:
             reconfigure(encoding="utf-8", errors="strict")
 
 
+class _LifecycleParser(argparse.ArgumentParser):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, allow_abbrev=False, **kwargs)
+
+    def error(self, message):
+        # argparse diagnostics include rejected argument values; never expose them.
+        raise ValueError("invalid lifecycle arguments; use lifecycle --help")
+
+
+def _lifecycle_parser():
+    parser = _LifecycleParser(prog="handoff-toolkit lifecycle")
+    commands = parser.add_subparsers(dest="operation", required=True)
+    commands.add_parser("inspect", help="print bounded lifecycle IDs and status")
+    register = commands.add_parser(
+        "register-root", help="consume the live turn challenge and register a root"
+    )
+    register.add_argument("--scope-id", required=True)
+    register.add_argument("--scope-kind", required=True)
+    register.add_argument("--scope-definition-b64", required=True)
+    resume = commands.add_parser(
+        "resume", help="resume one explicit absolute v2 continuation"
+    )
+    resume.add_argument("--record", required=True)
+    join = commands.add_parser("join", help="join one active authorization chain")
+    join.add_argument("--authorization-id", required=True)
+    adopt = commands.add_parser(
+        "adopt-v1", help="adopt the selected v1 record after trusted adjacent approval"
+    )
+    adopt.add_argument("--record", required=True)
+    for command in (register, resume, join, adopt):
+        command.add_argument("--challenge", required=True)
+        command.add_argument("--expected-session-revision", type=int, required=True)
+    join.add_argument("--expected-chain-revision", type=int, required=True)
+    proposal = commands.add_parser(
+        "propose-transition", help="register an immutable proposal without approving it"
+    )
+    proposal.add_argument("--old-scopes-b64", required=True)
+    proposal.add_argument("--new-scopes-b64", required=True)
+    proposal.add_argument("--assistant-turn-reference", required=True)
+    proposal.add_argument(
+        "--kind", choices=("transition", "v1-adoption"), default="transition"
+    )
+    proposal.add_argument("--record")
+    proposal.add_argument("--record-id")
+    proposal.add_argument("--record-sha256")
+    decision = commands.add_parser(
+        "request-decision",
+        help="render a decision using only the model-authored question on stdin",
+    )
+    decision.add_argument("--category", required=True)
+    decision.add_argument("--blocked-action-field", required=True)
+    decision.add_argument("--blocked-action-value", required=True)
+    decision.add_argument("--reason", required=True)
+    for command in (proposal, decision):
+        command.add_argument("--expected-chain-revision", type=int, required=True)
+        command.add_argument("--expected-session-revision", type=int, required=True)
+    return parser
+
+
+def _lifecycle_main(argv):
+    # Imports remain local so legacy informational hooks retain their behavior.
+    from .lifecycle import RecordReference
+    from .lifecycle_operations import LifecycleService, canonical_record_path
+    from .lifecycle_storage import (
+        LifecycleStorageError,
+        LocalLifecycleStorage,
+        StaleLifecycleState,
+    )
+    from .lineage import canonical_json_bytes, record_digest
+    from .records import parse_markdown
+
+    try:
+        if len(argv) > 40 or any(len(value.encode("utf-8")) > 16384 for value in argv):
+            raise ValueError("lifecycle arguments exceed bounds")
+        flags = [value.split("=", 1)[0] for value in argv if value.startswith("--")]
+        if len(flags) != len(set(flags)):
+            raise ValueError("duplicate lifecycle flag")
+        args = vars(_lifecycle_parser().parse_args(argv))
+        operation = args.pop("operation")
+        session_id = os.environ.get("AHK_SESSION_ID")
+        if not session_id:
+            raise ValueError("missing host session binding")
+        state_root = os.environ.get("AHK_STATE_ROOT")
+        storage = LocalLifecycleStorage(
+            _repository_root(Path.cwd()),
+            state_root=Path(state_root) if state_root else None,
+        )
+        service = LifecycleService(storage, session_id)
+        if operation == "inspect":
+            result = service.inspect()
+        elif operation == "request-decision":
+            reconfigure = getattr(sys.stdin, "reconfigure", None)
+            if callable(reconfigure):
+                reconfigure(encoding="utf-8", errors="strict")
+            response = service.request_decision(question=sys.stdin.read(401), **args)
+            sys.stdout.write(response + "\n")
+            return 0
+        else:
+            if operation in {"resume", "adopt-v1"}:
+                path = canonical_record_path(args.pop("record"))
+                if operation == "adopt-v1":
+                    pending = storage.load_snapshot(
+                        session_id
+                    ).session.pending_transition_reference
+                    if (
+                        pending is None
+                        or pending.kind != "v1-adoption"
+                        or pending.status != "approved"
+                        or pending.selected_record.path != path
+                    ):
+                        raise ValueError("selected adoption record is not approved")
+                with Path(path).open("r", encoding="utf-8") as source:
+                    text = source.read(131073)
+                args.update(record_path=path, record_text=text)
+                if operation == "resume":
+                    args.update(
+                        record_metadata=parse_markdown(text),
+                        record_digest=record_digest(text),
+                    )
+            if operation == "propose-transition":
+                for name in ("old_scopes", "new_scopes"):
+                    value = args.pop(name + "_b64")
+                    raw = base64.b64decode(
+                        value + "=" * (-len(value) % 4), altchars=b"-_", validate=True
+                    )
+                    scopes = json.loads(raw.decode("utf-8"))
+                    if (
+                        canonical_json_bytes(scopes) != raw
+                        or base64.urlsafe_b64encode(raw).decode().rstrip("=") != value
+                    ):
+                        raise ValueError("proposal scope JSON must be canonical")
+                    args[name] = scopes
+                record = args.pop("record")
+                record_id = args.pop("record_id")
+                digest = args.pop("record_sha256")
+                if args["kind"] == "v1-adoption":
+                    args["selected_record"] = RecordReference(
+                        record_id, canonical_record_path(record), digest
+                    )
+                elif any(item is not None for item in (record, record_id, digest)):
+                    raise ValueError("transition cannot select a v1 record")
+            updated = getattr(service, operation.replace("-", "_"))(**args)
+            result = service.inspect()
+            if operation == "register-root":
+                result["authorization_evidence"] = {
+                    "kind": "initial-user-turn",
+                    "user_turn_ref": updated.chain.authorization_user_turn_reference,
+                    "proposal_turn_ref": None,
+                    "evidence_hmac": updated.chain.authorization_evidence_hmac,
+                }
+        print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+        return 0
+    except StaleLifecycleState:
+        print('{"issue_codes":["AHK-STATE-STALE"]}', file=sys.stderr)
+        return 1
+    except (LifecycleStorageError, OSError):
+        print('{"issue_codes":["AHK-RUNTIME"]}', file=sys.stderr)
+        return 2
+    except (ValueError, TypeError, KeyError, UnicodeError):
+        print('{"issue_codes":["AHK-INPUT"]}', file=sys.stderr)
+        return 1
+    except Exception:
+        print('{"issue_codes":["AHK-RUNTIME"]}', file=sys.stderr)
+        return 2
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run explicit fail-closed commands or the automatic fail-open hook."""
 
     _configure_output_encoding()
+    arguments = list(argv) if argv is not None else sys.argv[1:]
+    if arguments and arguments[0] == "lifecycle":
+        return _lifecycle_main(arguments[1:])
     args = _parser().parse_args(argv)
 
     if args.command == "hook":

@@ -20,6 +20,7 @@ from agent_handoff_toolkit.lifecycle import (
     ChainState,
     EnforcementMode,
     LifecycleMutation,
+    RecordReference,
 )
 from agent_handoff_toolkit.lifecycle_storage import (
     LifecycleStorageError,
@@ -32,7 +33,14 @@ from agent_handoff_toolkit.lifecycle_storage import (
 
 def register(storage, session, auth="auth-a", root="root-a"):
     snapshot = storage.load_snapshot(session)
-    chain = ChainState(auth, root, ("a" * 64,), 1, "active", "record-1")
+    chain = ChainState(
+        auth,
+        root,
+        ("a" * 64,),
+        1,
+        "active",
+        RecordReference("record-1", "D:/repo/record-1.md", "a" * 64),
+    )
     return storage.compare_and_swap(
         session,
         0,
@@ -68,7 +76,9 @@ def race_worker(repo, state, session, barrier, queue):
                 replace(
                     snapshot.chain,
                     targeted_revision=snapshot.chain.targeted_revision + 1,
-                    current_record_reference="record-2",
+                    current_record_reference=RecordReference(
+                        "record-2", "D:/repo/record-2.md", "b" * 64
+                    ),
                 ),
             ),
         )
@@ -258,9 +268,7 @@ class LifecycleStorageTests(unittest.TestCase):
     def test_transition_supersedes_redirects_and_rejects_old_revision(self):
         a = register(self.storage, "a")
         b = self.join("b", a.chain)
-        successor = ChainState(
-            "auth-next", "root-next", ("b" * 64,), 1, "active", "record-next"
-        )
+        successor = ChainState("auth-next", "root-next", ("b" * 64,), 1, "active", None)
         self.storage.compare_and_swap(
             "a",
             1,
@@ -282,7 +290,7 @@ class LifecycleStorageTests(unittest.TestCase):
         )
         redirected = self.storage.load_snapshot("b")
         self.assertEqual(redirected.chain.authorization_id, "auth-next")
-        self.assertEqual(redirected.session.pending_transition_reference, "auth-next")
+        self.assertIsNone(redirected.session.pending_transition_reference)
         with self.assertRaises(StaleLifecycleState):
             self.storage.compare_and_swap(
                 "b", 1, 1, LifecycleMutation(replace(b.session, targeted_revision=2))

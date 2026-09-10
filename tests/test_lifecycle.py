@@ -22,6 +22,7 @@ from agent_handoff_toolkit.lifecycle import (  # noqa: E402
     LifecycleMutation,
     LifecycleSnapshot,
     NormalizedEvent,
+    RecordReference,
     SessionState,
     TerminalCandidate,
     classify_affirmation,
@@ -92,7 +93,13 @@ def make_chain(**overrides: object) -> ChainState:
         "scope_digests": (LOCKED_SCOPE_DIGEST,),
         "targeted_revision": 4,
         "status": "active",
-        "current_record_reference": "record-1",
+        "current_record_reference": RecordReference(
+            "record-1",
+            PREDECESSOR_PATH,
+            record_digest(
+                render_record(make_record("continuation", record_id="record-1"))
+            ),
+        ),
     }
     values.update(overrides)
     return ChainState(**values)  # type: ignore[arg-type]
@@ -887,7 +894,9 @@ class StopEvaluationTests(unittest.TestCase):
         )
 
         self.assertEqual(decision.kind, DecisionKind.ALLOW)
-        self.assertEqual(decision.mutation.chain.current_record_reference, "record-2")
+        self.assertEqual(
+            decision.mutation.chain.current_record_reference.record_id, "record-2"
+        )
         self.assertEqual(decision.mutation.chain.targeted_revision, 5)
         self.assertEqual(decision.mutation.chain.status, "active")
         self.assertEqual(decision.mutation.session.chain_revision, 5)

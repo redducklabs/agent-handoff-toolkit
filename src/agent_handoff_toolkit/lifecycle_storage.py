@@ -23,12 +23,14 @@ from types import MappingProxyType
 
 from .lifecycle import (
     AuthorityCategory,
+    AuthorizationProposal,
     ChainState,
     DecisionRequest,
     EnforcementMode,
     LifecycleMutation,
     LifecycleSnapshot,
     SessionState,
+    RecordReference,
 )
 from .lineage import canonical_json_bytes, validate_hex_digest
 
@@ -51,12 +53,23 @@ def _revision(value):
 
 
 def _plain(value):
-    if isinstance(value, (ChainState, SessionState, DecisionRequest)):
+    if isinstance(
+        value,
+        (
+            ChainState,
+            SessionState,
+            DecisionRequest,
+            RecordReference,
+            AuthorizationProposal,
+        ),
+    ):
         return {item.name: _plain(getattr(value, item.name)) for item in fields(value)}
     if isinstance(value, (EnforcementMode, AuthorityCategory)):
         return value.value
     if isinstance(value, tuple):
         return [_plain(item) for item in value]
+    if isinstance(value, Mapping):
+        return {key: _plain(item) for key, item in value.items()}
     return value
 
 
@@ -72,6 +85,16 @@ def _model(value, model):
             value["pending_decision_reference"] = _model(
                 value["pending_decision_reference"], DecisionRequest
             )
+        if value["pending_transition_reference"] is not None:
+            value["pending_transition_reference"] = _model(
+                value["pending_transition_reference"], AuthorizationProposal
+            )
+    if model is AuthorizationProposal and value["selected_record"] is not None:
+        value["selected_record"] = _model(value["selected_record"], RecordReference)
+    if model is ChainState and value["current_record_reference"] is not None:
+        value["current_record_reference"] = _model(
+            value["current_record_reference"], RecordReference
+        )
     if model is DecisionRequest:
         value["category"] = AuthorityCategory(value["category"])
     if model is ChainState and not isinstance(value["scope_digests"], list):
@@ -633,6 +656,18 @@ class LocalLifecycleStorage:
         except OSError as error:
             raise LifecycleStorageError("cannot publish lifecycle state") from error
 
+    def load_registry(self) -> RegistryEnvelope:
+        """Return a validated immutable view under the registry lock."""
+        try:
+            with self._locked():
+                return self._load()
+        except OSError as error:
+            raise LifecycleStorageError("cannot read lifecycle registry") from error
+
+    def load_chain(self, authorization_id: str) -> ChainState | None:
+        """Look up one authorization without scanning record files."""
+        return self.load_registry().chains.get(authorization_id)
+
     def _apply(self, envelope, current, mutation):
         session, chain = mutation.session, mutation.chain
         if session.targeted_revision != current.session.targeted_revision + 1:
@@ -698,7 +733,7 @@ class LocalLifecycleStorage:
                         authorization_id=chain.authorization_id,
                         chain_revision=chain.targeted_revision,
                         targeted_revision=prior.targeted_revision + 1,
-                        pending_transition_reference=chain.authorization_id,
+                        pending_transition_reference=session.pending_transition_reference,
                         pending_decision_reference=None,
                         mode=EnforcementMode.TRACKED,
                     )
