@@ -64,6 +64,10 @@ class LineageTests(unittest.TestCase):
                 with self.assertRaises(LineageError):
                     canonical_json_bytes(value)
 
+    def test_canonical_json_rejects_lone_surrogate(self):
+        with self.assertRaises(LineageError):
+            canonical_json_bytes({"x": chr(0xD800)})
+
     def test_identifiers_boundaries_and_invalid_values(self):
         valid = "a" + "x" * 127
         self.assertEqual(validate_identifier(valid, label="id"), valid)

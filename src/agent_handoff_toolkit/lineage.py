@@ -33,9 +33,9 @@ def canonical_json_bytes(value: object) -> bytes:
             separators=(",", ":"),
             allow_nan=False,
         )
+        return encoded.encode("utf-8")
     except (TypeError, ValueError, OverflowError, UnicodeError) as error:
         raise LineageError("value is not supported canonical JSON") from error
-    return encoded.encode("utf-8")
 
 
 def normalize_text(value: str, *, limit: int, label: str) -> str:
