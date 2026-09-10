@@ -488,7 +488,16 @@ def resolve_lifecycle_state_root(repo_root: Path) -> Path:
         cache = _mkdir_private(cache)
         _private_directory(cache)
         with _directory_guard(cache), _exclusive_lock(cache / "registry.lock"):
-            secret = _secret(cache / "secret.key")
+            secret_path = cache / "secret.key"
+            if not secret_path.exists() and any(
+                entry.name != "registry.lock" for entry in cache.iterdir()
+            ):
+                # Without this key, existing repository directory names cannot
+                # be recovered. A new key would silently abandon tracked state.
+                raise LifecycleStorageError(
+                    "established fallback state has no HMAC secret"
+                )
+            secret = _secret(secret_path)
         digest = hmac.new(
             secret,
             b"repository\0" + os.path.normcase(str(repo)).encode("utf-8"),
@@ -517,7 +526,7 @@ class LocalLifecycleStorage:
                 path: _identity(path) for path in _parts(self.state_root)
             }
             self.registry_path = self.state_root / "registry.json"
-            with self._guard(), _exclusive_lock(self.state_root / "registry.lock"):
+            with self._locked():
                 secret_path = self.state_root / "secret.key"
                 if self.registry_path.exists() and not secret_path.exists():
                     raise LifecycleStorageError("existing registry has no HMAC secret")
@@ -536,6 +545,16 @@ class LocalLifecycleStorage:
             ):
                 raise LifecycleStorageError("local HMAC secret changed")
             yield
+
+    @contextmanager
+    def _locked(self):
+        with self._guard(), _exclusive_lock(self.state_root / "registry.lock"):
+            # POSIX flock pins the lock file, not its pathname or parent.
+            # Reconcile the directory identity after waiting for that lock and
+            # again before exposing any result read under it.
+            self._verify_identity()
+            yield
+            self._verify_identity()
 
     def _verify_identity(self):
         _private_directory(self.state_root)
@@ -574,7 +593,7 @@ class LocalLifecycleStorage:
         """Read by raw host session ID; returned session identity is its HMAC."""
         try:
             key = self.session_key(session_key)
-            with self._guard(), _exclusive_lock(self.state_root / "registry.lock"):
+            with self._locked():
                 return self._snapshot(self._load(), key)
         except OSError as error:
             raise LifecycleStorageError("cannot read lifecycle state") from error
@@ -596,7 +615,7 @@ class LocalLifecycleStorage:
                 or mutation.session.session_key != key
             ):
                 raise LifecycleStorageError("mutation session identity mismatch")
-            with self._guard(), _exclusive_lock(self.state_root / "registry.lock"):
+            with self._locked():
                 envelope = self._load()
                 current = self._snapshot(envelope, key)
                 target = current.chain or envelope.chains.get(

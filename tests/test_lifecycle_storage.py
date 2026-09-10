@@ -382,6 +382,49 @@ class LifecycleStorageTests(unittest.TestCase):
             LocalLifecycleStorage(self.repo, state_root=self.state)
         self.assertFalse((self.state / "secret.key").exists())
 
+    def test_tracked_fallback_rejects_missing_parent_secret_without_new_root(self):
+        cache = self.root / "fallback-cache"
+        with patch.dict(
+            os.environ, {"LOCALAPPDATA": str(cache), "XDG_STATE_HOME": str(cache)}
+        ):
+            storage = LocalLifecycleStorage(self.repo)
+            tracked = register(storage, "tracked-session")
+            original_root = storage.state_root
+            envelope = storage.registry_path.read_bytes()
+            parent_secret = original_root.parent / "secret.key"
+            parent_secret.unlink()
+            with self.assertRaises(LifecycleStorageError):
+                LocalLifecycleStorage(self.repo).load_snapshot("tracked-session")
+            self.assertFalse(parent_secret.exists())
+            self.assertEqual(storage.registry_path.read_bytes(), envelope)
+            self.assertEqual(storage.load_snapshot("tracked-session"), tracked)
+            self.assertEqual(
+                [path for path in original_root.parent.iterdir() if path.is_dir()],
+                [original_root],
+            )
+
+    @unittest.skipIf(os.name == "nt", "POSIX rename during real lock acquisition")
+    def test_posix_parent_substitution_after_lock_does_not_return_untracked(self):
+        from agent_handoff_toolkit import lifecycle_storage
+
+        register(self.storage, "tracked-session")
+        original = self.storage.registry_path.read_bytes()
+        moved = self.root / "state-moved-after-lock"
+        lock = lifecycle_storage._lock_descriptor
+
+        def substitute(descriptor, *, windows):
+            lock(descriptor, windows=windows)
+            self.state.rename(moved)
+            self.state.mkdir(mode=0o700)
+
+        with patch.object(
+            lifecycle_storage, "_lock_descriptor", side_effect=substitute
+        ):
+            with self.assertRaises(LifecycleStorageError):
+                self.storage.load_snapshot("tracked-session")
+        self.assertEqual(list(self.state.iterdir()), [])
+        self.assertEqual((moved / "registry.json").read_bytes(), original)
+
     def test_lock_adapters_select_correct_exclusive_and_unlock_operations(self):
         from agent_handoff_toolkit.lifecycle_storage import (
             _lock_descriptor,
