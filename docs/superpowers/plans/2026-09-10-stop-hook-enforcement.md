@@ -139,7 +139,7 @@ git commit -m "feat: add authorization lineage primitives"
 
 **Interfaces:**
 - Consumes: Task 1 lineage primitives.
-- Produces: v1/v2 schema dispatch; `validate_successor(candidate: Mapping[str, object], predecessor: Mapping[str, object], *, expected_predecessor_path: str, approved_transition_hmac: str | None = None) -> list[ValidationIssue]`; `render_terminal_response(record_path: str | os.PathLike[str], text: str) -> str`; public exports for `record_digest`, `scope_definition_digest`, `validate_successor`, and `render_terminal_response`.
+- Produces: v1/v2 schema dispatch; `validate_successor(candidate: Mapping[str, object], predecessor: Mapping[str, object], *, expected_predecessor_path: str, predecessor_sha256: str, approved_transition_hmac: str | None = None) -> list[ValidationIssue]`; `render_terminal_response(record_path: str | os.PathLike[str], text: str) -> str`; public exports for `record_digest`, `scope_definition_digest`, `validate_successor`, and `render_terminal_response`.
 
 - [ ] **Step 1: Add failing v2 field-shape tests**
 
@@ -205,18 +205,20 @@ Cover direct predecessor ID/path/digest equality, authorization ID preservation,
 def test_successor_rejects_invented_narrower_completed_root(self) -> None:
     predecessor = make_v2_continuation(root="issue-1323", children=("task-7a",))
     audit = make_v2_audit(root="local-task-7a", predecessor=predecessor)
-    self.assertIn("lineage-root", {issue.code for issue in validate_successor(audit, predecessor, expected_predecessor_path=PATH)})
+    predecessor_sha = record_digest(render_record(predecessor))
+    self.assertIn("lineage-root", {issue.code for issue in validate_successor(audit, predecessor, expected_predecessor_path=PATH, predecessor_sha256=predecessor_sha)})
 
 def test_successor_rejects_same_id_with_changed_scope_meaning(self) -> None:
     candidate = successor_of(predecessor)
     candidate["active_scopes"][0]["scope_definition"]["outcome"] = "Only finish the local unit."
     candidate["active_scopes"][0]["scope_definition_digest"] = scope_definition_digest(candidate["active_scopes"][0])
-    self.assertIn("lineage-definition", issue_codes(validate_successor(candidate, predecessor, expected_predecessor_path=PATH)))
+    predecessor_sha = record_digest(render_record(predecessor))
+    self.assertIn("lineage-definition", issue_codes(validate_successor(candidate, predecessor, expected_predecessor_path=PATH, predecessor_sha256=predecessor_sha)))
 ```
 
 - [ ] **Step 5: Implement `validate_successor`**
 
-Validate structure first; compare canonical normalized absolute paths without resolving/opening them inside the pure function; require unfinished inherited scopes to remain; permit immutable changes only when the candidate transition HMAC equals the trusted `approved_transition_hmac`; require a completion audit's completed root to equal the predecessor's locked root.
+Validate structure first; compare canonical normalized absolute paths without resolving/opening them inside the pure function; compare the candidate's predecessor digest to required `predecessor_sha256` computed by the caller from the original LF-normalized predecessor record bytes; require unfinished inherited scopes to remain; permit immutable changes only when the candidate transition HMAC equals the trusted `approved_transition_hmac`; require a completion audit's completed root to equal the predecessor's locked root.
 
 - [ ] **Step 6: Add v2 whole-response rendering tests**
 
