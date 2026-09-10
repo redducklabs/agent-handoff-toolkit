@@ -602,13 +602,18 @@ _OPERATION_ONLY_RE = re.compile(
     r"(?: (?:with|on) (?:this|the|current|authorized) work)?"
     r"(?: now| here)?"
 )
+_PREFIX_FREE_OPERATION_ONLY_RE = re.compile(rf"{_OPERATIONAL_ACTION}(?: now| here)?")
 _HANDOFF_ONLY_RE = re.compile(
     rf"{_OPERATIONAL_PREFIX} (?:create|write|make|generate) "
     r"(?:a |the )?handoff(?: .+)?"
 )
-_OPERATIONAL_MENU_RE = re.compile(
+_OPERATIONAL_MENU = (
     r"(?:continue|stop|pause)"
     r"(?: (?:or )?(?:continue|stop|pause|create (?:a |the )?handoff))+"
+)
+_OPERATIONAL_MENU_RE = re.compile(_OPERATIONAL_MENU)
+_PREFIXED_OPERATIONAL_MENU_RE = re.compile(
+    rf"{_OPERATIONAL_PREFIX} {_OPERATIONAL_MENU}"
 )
 
 
@@ -660,8 +665,10 @@ def _is_operational_evasion(question: str) -> bool:
         pattern.fullmatch(normalized) is not None
         for pattern in (
             _OPERATION_ONLY_RE,
+            _PREFIX_FREE_OPERATION_ONLY_RE,
             _HANDOFF_ONLY_RE,
             _OPERATIONAL_MENU_RE,
+            _PREFIXED_OPERATIONAL_MENU_RE,
         )
     )
 

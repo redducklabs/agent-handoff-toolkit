@@ -539,6 +539,24 @@ class DecisionResponseTests(unittest.TestCase):
 
         self.assertTrue(verify_decision_response(response, request, SECRET))
 
+    def test_rejects_prefix_free_single_process_action_question(self) -> None:
+        question = "Continue?"
+        reason = "No authorized decision is actually required."
+
+        with self.assertRaises(ValueError):
+            render_decision_response(
+                question, reason, make_request(question, reason), SECRET
+            )
+
+    def test_rejects_prefixed_process_action_menu(self) -> None:
+        question = "Should I continue or stop?"
+        reason = "No authorized decision is actually required."
+
+        with self.assertRaises(ValueError):
+            render_decision_response(
+                question, reason, make_request(question, reason), SECRET
+            )
+
     def test_rejects_mismatched_hmac_unsafe_empty_and_oversized_text(self) -> None:
         question = "Which deployment target should I use?"
         reason = "The authorized action names two mutually exclusive targets."
