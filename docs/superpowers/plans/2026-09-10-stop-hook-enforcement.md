@@ -303,6 +303,8 @@ class AuthorityCategory(str, Enum):
 
 `NormalizedEvent` includes host, event, session key, turn reference, repository root, transcript reference, `stop_hook_active`, latest assistant message, current user message and reference, tool name, bounded tool input, and capability. Raw message fields are transient and excluded from every serialization method.
 
+`evaluate_user_prompt` accepts keyword-only `affirmation: AffirmationResult | None = None` and `decision_resolved: bool = False`. A real external user turn resets the correction counter, but only explicit trusted `decision_resolved=True` clears a pending decision; Task 6 supplies that evidence.
+
 - [ ] **Step 4: Write failing decision-request tests**
 
 Require a stable ID, authorization ID, category, one blocked exact-action field/value, question HMAC, and reason HMAC. Reject questions offering only continue/stop/handoff. Verify `render_decision_response(question, request)` emits one canonical question response and that `verify_decision_response(message, request, secret)` compares its HMAC without persisting question text.
