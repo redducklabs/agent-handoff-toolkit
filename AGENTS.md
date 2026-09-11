@@ -23,6 +23,7 @@ Read `docs/agent-handoff/contract.md` before changing record behavior, templates
 - Resolved SDD review-package warning: relative scratch-package paths resolve against the command's working directory. Run the generator from the intended linked worktree or use its verified absolute workspace path; otherwise it targets the primary checkout where the plan workspace does not exist.
 - In a tag-only or shallow release checkout, `git fetch origin main` may not create `origin/main`. Run `git fetch origin main:refs/remotes/origin/main` before creating a main-based worktree.
 - Run Ruff through the repository configuration in `pyproject.toml`; unconfigured broad rules incorrectly reject the intentional catch-all boundary that makes automatic hooks fail open.
+- Resolved Windows verification warning: a default temporary directory beneath an unrelated Git checkout makes non-Git lifecycle tests inherit that checkout and may create test state in its metadata. Before verification, select a fresh temporary parent outside every Git checkout, confirm `git -C <parent> rev-parse --show-toplevel` fails, and set process-local `TEMP` and `TMP` to that parent for the test command.
 
 These repository-local rules apply to both Codex and Claude Code. Keep
 `AGENTS.md` and `CLAUDE.md` semantically identical.
