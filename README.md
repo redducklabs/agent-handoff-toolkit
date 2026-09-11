@@ -40,7 +40,9 @@ handoff-toolkit context-health --percent <0-100> --session-id <id>
 handoff-toolkit hook --platform claude|codex --event post-tool-use
 ```
 
-Automatic hooks fail open so they cannot break an agent session. Explicit commands fail closed and return a non-zero exit code for invalid input.
+Advisory automatic hooks fail open so they cannot break an agent session.
+Tracked lifecycle hooks (`UserPromptSubmit`, `PreToolUse`, and `Stop`) fail closed.
+Explicit commands fail closed and return a non-zero exit code for invalid input.
 
 ## Consumer installation
 

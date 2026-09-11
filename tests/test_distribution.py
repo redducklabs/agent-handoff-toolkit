@@ -897,7 +897,7 @@ class DistributionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(actual, expected)
 
-    def test_runner_fails_closed_for_lifecycle_hook_when_runtime_import_fails(
+    def test_runner_classifies_all_hook_import_failures_at_the_bootstrap_boundary(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -905,21 +905,61 @@ class DistributionTests(unittest.TestCase):
             runner = consumer / ".agent-handoff-toolkit" / "runner.py"
             runner.parent.mkdir()
             shutil.copyfile(ROOT / "distribution" / "runner.py", runner)
-            result = run_installed_command(
-                "python .agent-handoff-toolkit/runner.py hook "
-                "--platform codex --event stop",
-                consumer,
-                "{}",
+            installed_source = runner.parent / "src" / "agent_handoff_toolkit"
+            shutil.copytree(ROOT / "src" / "agent_handoff_toolkit", installed_source)
+            (installed_source / "cli.py").write_text(
+                "def broken(:\n", encoding="utf-8", newline="\n"
             )
 
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(
-            json.loads(result.stdout),
-            {
-                "decision": "block",
-                "reason": "AHK-HOOK-RUNTIME: Repair lifecycle runtime and retry.",
-            },
-        )
+            for platform in ("claude", "codex"):
+                for event in ("user-prompt-submit", "pre-tool-use", "stop"):
+                    result = run_installed_command(
+                        "python .agent-handoff-toolkit/runner.py hook "
+                        f"--platform {platform} --event {event}",
+                        consumer,
+                        "{}",
+                    )
+                    with self.subTest(platform=platform, event=event):
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        output = json.loads(result.stdout)
+                        if event == "pre-tool-use":
+                            self.assertEqual(
+                                output,
+                                {
+                                    "hookSpecificOutput": {
+                                        "hookEventName": "PreToolUse",
+                                        "permissionDecision": "deny",
+                                        "permissionDecisionReason": "AHK-HOOK-RUNTIME: Repair lifecycle runtime and retry.",
+                                    }
+                                },
+                            )
+                        else:
+                            self.assertEqual(
+                                output,
+                                {
+                                    "decision": "block",
+                                    "reason": "AHK-HOOK-RUNTIME: Repair lifecycle runtime and retry.",
+                                },
+                            )
+
+                for event in ("session-start", "post-tool-use"):
+                    result = run_installed_command(
+                        "python .agent-handoff-toolkit/runner.py hook "
+                        f"--platform {platform} --event {event}",
+                        consumer,
+                        "{}",
+                    )
+                    with self.subTest(platform=platform, event=event):
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(result.stdout, "")
+
+            explicit = run_installed_command(
+                "python .agent-handoff-toolkit/runner.py validate missing.md", consumer
+            )
+
+        self.assertEqual(explicit.returncode, 2)
+        self.assertEqual(explicit.stdout, "")
+        self.assertEqual(explicit.stderr, "error: installed runtime unavailable\n")
 
     def test_manifest_install_then_sync_check_is_current(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1021,38 +1061,51 @@ class DistributionTests(unittest.TestCase):
                 ),
             )
 
-            replacements = {
-                "distribution/consumer-instructions.md": (
-                    "Treat every handoff record that existed before the current pinned "
-                    "release was\n  adopted in the consumer",
-                    "Treat every pre-toolkit handoff",
-                ),
-                "src/agent_handoff_toolkit/__init__.py": ("0.3.0", "0.2.8"),
-                "src/agent_handoff_toolkit/hooks.py": (
-                    "deprecated legacy handoffs",
-                    "deprecated pre-toolkit handoffs",
-                ),
-            }
-            for relative, (current, previous) in replacements.items():
-                path = previous_source / relative
-                path.write_text(
-                    path.read_text(encoding="utf-8").replace(current, previous),
-                    encoding="utf-8",
-                    newline="\n",
-                )
-
-            previous_manifest_path = previous_source / "distribution/manifest.json"
-            previous_manifest = json.loads(
-                previous_manifest_path.read_text(encoding="utf-8")
+            historical_manifest = subprocess.run(
+                ["git", "show", "55aacd7:distribution/manifest.json"],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=True,
             )
-            previous_manifest["toolkit_version"] = "0.2.8"
-            previous_manifest["record_schema_version"] = 1
+            previous_manifest = json.loads(historical_manifest.stdout)
+            self.assertEqual(previous_manifest["toolkit_version"], "0.2.8")
+            self.assertEqual(previous_manifest["record_schema_version"], 1)
+            self.assertEqual(len(previous_manifest["artifacts"]), 15)
+            sources = {
+                artifact["source"] for artifact in previous_manifest["artifacts"]
+            }
+            self.assertNotIn("src/agent_handoff_toolkit/lineage.py", sources)
+            self.assertNotIn("src/agent_handoff_toolkit/hook_adapters.py", sources)
+            claude_fragment = next(
+                artifact
+                for artifact in previous_manifest["artifacts"]
+                if artifact["source"] == "adapters/claude/settings.fragment.json"
+            )
+            self.assertEqual(
+                claude_fragment["array_identities"],
+                [{"pointer": "/hooks/PostToolUse", "fields": ["matcher"]}],
+            )
+            codex_fragment = next(
+                artifact
+                for artifact in previous_manifest["artifacts"]
+                if artifact["source"] == "adapters/codex/hooks.fragment.json"
+            )
+            self.assertNotIn("array_identities", codex_fragment)
             for artifact in previous_manifest["artifacts"]:
-                source = previous_source / Path(
-                    *PurePosixPath(artifact["source"]).parts
+                source_name = artifact["source"]
+                source = previous_source / Path(*PurePosixPath(source_name).parts)
+                historical_source = subprocess.run(
+                    ["git", "show", f"55aacd7:{source_name}"],
+                    cwd=ROOT,
+                    capture_output=True,
+                    check=True,
                 )
-                artifact["sha256"] = normalized_sha256(source.read_bytes())
-            previous_manifest_path.write_text(
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_bytes(historical_source.stdout)
+                artifact["sha256"] = normalized_sha256(historical_source.stdout)
+            (previous_source / "distribution" / "manifest.json").write_text(
                 json.dumps(previous_manifest, indent=2) + "\n",
                 encoding="utf-8",
                 newline="\n",
@@ -1082,6 +1135,28 @@ class DistributionTests(unittest.TestCase):
             )
             self.assertEqual(installed.returncode, 0, installed.stderr)
 
+            claude_path = consumer / ".claude" / "settings.json"
+            claude = json.loads(claude_path.read_text(encoding="utf-8"))
+            unrelated_claude = {
+                "matcher": "Read",
+                "hooks": [{"type": "command", "command": "python consumer.py"}],
+            }
+            claude["hooks"]["PostToolUse"].insert(0, unrelated_claude)
+            claude_path.write_text(json.dumps(claude), encoding="utf-8", newline="\n")
+            codex_path = consumer / ".codex" / "hooks.json"
+            codex = json.loads(codex_path.read_text(encoding="utf-8"))
+            unrelated_codex = {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "python consumer.py",
+                        "commandWindows": "python consumer.py",
+                    }
+                ]
+            }
+            codex["hooks"]["SessionStart"].insert(0, unrelated_codex)
+            codex_path.write_text(json.dumps(codex), encoding="utf-8", newline="\n")
+
             legacy_record = consumer / "handoffs/legacy.md"
             legacy_record.parent.mkdir(exist_ok=True)
             legacy_bytes = b"opaque legacy record\r\n"
@@ -1099,6 +1174,18 @@ class DistributionTests(unittest.TestCase):
             self.assertIn("CURRENT", current.stdout)
             self.assertEqual(legacy_record.read_bytes(), legacy_bytes)
             self.assertIn(
+                unrelated_claude,
+                json.loads(claude_path.read_text(encoding="utf-8"))["hooks"][
+                    "PostToolUse"
+                ],
+            )
+            self.assertIn(
+                unrelated_codex,
+                json.loads(codex_path.read_text(encoding="utf-8"))["hooks"][
+                    "SessionStart"
+                ],
+            )
+            self.assertIn(
                 "Project-owned rule.",
                 (consumer / "AGENTS.md").read_text(encoding="utf-8"),
             )
@@ -1110,6 +1197,51 @@ class DistributionTests(unittest.TestCase):
             self.assertEqual(state["release"], "v0.3.0")
             self.assertEqual(state["toolkit_version"], "0.3.0")
             self.assertEqual(state["record_schema_version"], 2)
+            installed_source = (
+                consumer / ".agent-handoff-toolkit" / "src" / "agent_handoff_toolkit"
+            )
+            for module in (
+                "lineage.py",
+                "lifecycle.py",
+                "lifecycle_storage.py",
+                "lifecycle_operations.py",
+                "hook_adapters.py",
+            ):
+                self.assertTrue((installed_source / module).is_file())
+
+            conflicted = root / "conflicted"
+            conflicted.mkdir()
+            conflict_install = subprocess.run(
+                [
+                    sys.executable,
+                    "distribution/runner.py",
+                    "install",
+                    "--target",
+                    str(conflicted),
+                    "--release",
+                    "v0.2.8",
+                    "--apply",
+                ],
+                cwd=previous_source,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+            self.assertEqual(conflict_install.returncode, 0, conflict_install.stderr)
+            conflict_settings = conflicted / ".claude" / "settings.json"
+            modified = json.loads(conflict_settings.read_text(encoding="utf-8"))
+            modified["hooks"]["PostToolUse"][0]["hooks"][0]["command"] = (
+                "python local.py"
+            )
+            conflict_settings.write_text(
+                json.dumps(modified), encoding="utf-8", newline="\n"
+            )
+            conflict = run_source_cli(
+                "sync", "--check", target=conflicted, release="v0.3.0"
+            )
+            self.assertEqual(conflict.returncode, 2)
+            self.assertIn("managed-json-modified", conflict.stdout)
 
     def test_hook_fragment_commands_execute_against_the_installed_layout(self) -> None:
         payloads = {

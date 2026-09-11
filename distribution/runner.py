@@ -7,8 +7,8 @@ from pathlib import Path
 import sys
 
 
-def _bootstrap_lifecycle_failure(arguments: list[str]) -> str | None:
-    """Return host hook evidence when the installed runtime cannot import."""
+def _bootstrap_hook_failure(arguments: list[str]) -> str | None:
+    """Classify a bounded hook invocation when the installed runtime cannot import."""
 
     if len(arguments) != 5 or arguments[0] != "hook":
         return None
@@ -17,6 +17,8 @@ def _bootstrap_lifecycle_failure(arguments: list[str]) -> str | None:
     platform, event = arguments[2], arguments[4]
     if platform not in {"claude", "codex"}:
         return None
+    if event in {"session-start", "post-tool-use"}:
+        return ""
     if event not in {"user-prompt-submit", "pre-tool-use", "stop"}:
         return None
     reason = "AHK-HOOK-RUNTIME: Repair lifecycle runtime and retry."
@@ -43,12 +45,13 @@ def main() -> int:
 
     try:
         from agent_handoff_toolkit.cli import main as cli_main
-    except ImportError:
-        fallback = _bootstrap_lifecycle_failure(sys.argv[1:])
-        if fallback is None:
-            raise
-        sys.stdout.write(fallback)
-        return 0
+    except Exception:
+        fallback = _bootstrap_hook_failure(sys.argv[1:])
+        if fallback is not None:
+            sys.stdout.write(fallback)
+            return 0
+        sys.stderr.write("error: installed runtime unavailable\n")
+        return 2
 
     return cli_main()
 
