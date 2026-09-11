@@ -11,6 +11,7 @@ import sys
 import tempfile
 from typing import Sequence
 
+from .acceptance import format_result, run_acceptance
 from .hooks import MAX_HOOK_INPUT_BYTES, observe_context, run_hook
 from .records import render_record, render_tail, validate_markdown
 
@@ -35,6 +36,12 @@ def _parser() -> argparse.ArgumentParser:
     hook = subparsers.add_parser("hook", help="run a host lifecycle or advisory hook")
     hook.add_argument("--platform", choices=("claude", "codex"), required=True)
     hook.add_argument("--event", required=True)
+
+    acceptance = subparsers.add_parser(
+        "acceptance", help="run an opt-in, content-redacting host smoke check"
+    )
+    acceptance.add_argument("--platform", choices=("claude", "codex"), required=True)
+    acceptance.add_argument("--scratch", type=Path, required=True)
 
     context = subparsers.add_parser(
         "context-health", help="record an explicit context percentage"
@@ -342,6 +349,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 return 2
             return 0
+
+    if args.command == "acceptance":
+        result = run_acceptance(args.platform, scratch=args.scratch)
+        sys.stdout.write(format_result(result) + "\n")
+        return result.exit_code
 
     if args.command in {"install", "sync"}:
         try:

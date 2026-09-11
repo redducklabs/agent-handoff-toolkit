@@ -131,6 +131,29 @@ Structural checks prove schema, ownership, merge, and runtime properties. They
 do not prove that prose is semantically complete or truthful; that remains a
 review responsibility for each new or materially replaced record.
 
+## Opt-in host smoke command
+
+After reviewing the installed hook configuration, run one host-specific smoke
+check from the pinned release checkout with an empty disposable directory:
+
+```powershell
+python distribution/runner.py acceptance --platform claude --scratch <empty-scratch-directory>
+python distribution/runner.py acceptance --platform codex --scratch <empty-scratch-directory>
+```
+
+The command initializes and installs into only the named scratch directory,
+uses synthetic runtime-only scenario data, reduces captured host output in
+memory, searches only that scratch/runtime path for the generated sentinel,
+and removes the exact directory in `finally`. Its output contains only the
+platform, pass/fail properties, and lifecycle issue codes; it never prints or
+persists a prompt, reply, transcript, record body, credential, or consumer
+content. Do not run this command in ordinary public CI.
+
+`pass` requires observed trusted hook discovery, an initial blocked stop with
+an issue code, a corrected stop, no retained synthetic content, and compatible
+host block capacity. If a host executable is unavailable or trusted hook
+discovery cannot be observed, its result is `unverified`, not `pass`.
+
 ## Pilot migrations
 
 Before bulk adoption, select one repository with mature handoffs and one with little or no handoff policy. In each pilot:

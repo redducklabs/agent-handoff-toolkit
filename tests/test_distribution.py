@@ -72,6 +72,9 @@ EXPECTED_INSTALL_TARGETS = {
     "src/agent_handoff_toolkit/cli.py": {
         ".agent-handoff-toolkit/src/agent_handoff_toolkit/cli.py"
     },
+    "src/agent_handoff_toolkit/acceptance.py": {
+        ".agent-handoff-toolkit/src/agent_handoff_toolkit/acceptance.py"
+    },
     "src/agent_handoff_toolkit/hooks.py": {
         ".agent-handoff-toolkit/src/agent_handoff_toolkit/hooks.py"
     },
@@ -1039,6 +1042,7 @@ class DistributionTests(unittest.TestCase):
             self.assertFalse((installed_source / "operations.py").exists())
             self.assertFalse((installed_source / "state.py").exists())
             for module in (
+                "acceptance.py",
                 "lineage.py",
                 "lifecycle.py",
                 "lifecycle_storage.py",

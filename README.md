@@ -38,11 +38,18 @@ handoff-toolkit render <record.json> --output <record.md>
 handoff-toolkit render-tail <continuation.md>
 handoff-toolkit context-health --percent <0-100> --session-id <id>
 handoff-toolkit hook --platform claude|codex --event post-tool-use
+handoff-toolkit acceptance --platform claude|codex --scratch <empty-scratch-directory>
 ```
 
 Advisory automatic hooks fail open so they cannot break an agent session.
 Tracked lifecycle hooks (`UserPromptSubmit`, `PreToolUse`, and `Stop`) fail closed.
 Explicit commands fail closed and return a non-zero exit code for invalid input.
+
+`acceptance` is an opt-in local host smoke check. It creates and removes the
+named empty scratch repository, keeps host output only in memory, and prints
+only reduced platform properties and lifecycle issue codes. It is not part of
+ordinary public CI. A host without observed trusted hook discovery is reported
+as `unverified`, not `pass`.
 
 ## Consumer installation
 
