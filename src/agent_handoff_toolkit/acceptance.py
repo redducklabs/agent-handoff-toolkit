@@ -76,6 +76,7 @@ class AcceptancePrerequisiteError(ValueError):
 
 
 Runner = Callable[..., HostRun]
+EvidenceVerifier = Callable[[Path, str], bool]
 
 
 class _JsonlReducer:
@@ -422,6 +423,7 @@ def run_acceptance(
     scratch: Path | None = None,
     runner: Runner = _run_process,
     source_root: Path | None = None,
+    evidence_verifier: EvidenceVerifier | None = None,
 ) -> AcceptanceResult:
     """Exercise a disposable installed host integration using observer evidence only."""
 
@@ -484,6 +486,12 @@ def run_acceptance(
         discovered, blocked, issue_received, corrected, codes = _read_evidence(
             trace, run_id
         )
+        trusted = False
+        if evidence_verifier is not None:
+            try:
+                trusted = evidence_verifier(trace, run_id)
+            except Exception:
+                trusted = False
         corrected = corrected and host.returncode == 0 and not host.timed_out
         retained_content = not _contains_sentinel(scratch_path, sentinel)
         result = AcceptanceResult(
@@ -495,7 +503,7 @@ def run_acceptance(
             retained_content=retained_content,
             block_cap_compatible=blocked and corrected,
             issue_codes=codes,
-            observed=discovered,
+            observed=discovered and trusted,
         )
         return result
     except (OSError, ValueError, subprocess.SubprocessError):

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -40,13 +42,16 @@ class FakeRunner:
         host_returncode: int = 0,
         issue_code: str = "AHK-STOP-WORK",
         retain_input: bool = False,
+        forge_trace: bool = False,
     ) -> None:
         self.observer_events = observer_events
         self.host_returncode = host_returncode
         self.issue_code = issue_code
         self.retain_input = retain_input
+        self.forge_trace = forge_trace
         self.calls: list[tuple[tuple[str, ...], Path]] = []
         self.environments: list[dict[str, str]] = []
+        self.observer_invocations: list[str] = []
 
     def __call__(self, command, *, cwd, input_text, env) -> HostRun:
         self.calls.append((tuple(command), cwd))
@@ -98,6 +103,7 @@ if event.replace("-", "") == "stop":
                 / "observe_hook.py"
             )
             for event in self.observer_events:
+                self.observer_invocations.append(event)
                 subprocess.run(
                     [sys.executable, str(observer), command[0], event],
                     cwd=cwd,
@@ -107,10 +113,48 @@ if event.replace("-", "") == "stop":
                     env=env,
                     check=False,
                 )
+        if self.forge_trace:
+            observer = (
+                cwd
+                / ".agent-handoff-toolkit"
+                / "acceptance-runtime"
+                / "observe_hook.py"
+            )
+            run_id = re.search(
+                r"^run_id = ('[^']+')$",
+                observer.read_text(encoding="utf-8"),
+                re.MULTILINE,
+            )
+            if run_id is None:
+                raise AssertionError("observer did not contain a run identifier")
+            trace = observer.with_name("lifecycle-trace.jsonl")
+            trace.write_text(
+                "\n".join(
+                    json.dumps(
+                        {"run_id": ast.literal_eval(run_id.group(1)), **entry},
+                        separators=(",", ":"),
+                    )
+                    for entry in (
+                        {"event": "userpromptsubmit", "outcome": "observed"},
+                        {
+                            "event": "stop",
+                            "outcome": "block",
+                            "issue_code": "AHK-STOP-WORK",
+                        },
+                        {"event": "stop", "outcome": "allow"},
+                    )
+                )
+                + "\n",
+                encoding="utf-8",
+            )
         return HostRun(self.host_returncode, False)
 
 
 GREEN_EVENTS = ("userpromptsubmit", "stop", "stop")
+
+
+def trusted_observer_verifier(runner: FakeRunner):
+    return lambda trace, run_id: runner.observer_invocations == list(GREEN_EVENTS)
 
 
 class AcceptanceResultTests(unittest.TestCase):
@@ -165,20 +209,34 @@ class AcceptanceHarnessTests(unittest.TestCase):
     def test_full_ordered_observer_trace_is_a_passing_result(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             scratch = Path(directory) / "consumer"
+            runner = FakeRunner(observer_events=GREEN_EVENTS)
             result = run_acceptance(
                 "codex",
                 scratch=scratch,
                 source_root=ROOT,
-                runner=FakeRunner(observer_events=GREEN_EVENTS),
+                runner=runner,
+                evidence_verifier=trusted_observer_verifier(runner),
             )
 
         self.assertEqual(result.status, "pass")
         self.assertEqual(result.issue_codes, ("AHK-STOP-WORK",))
         self.assertFalse(scratch.exists())
 
+    def test_host_forged_trace_cannot_create_a_passing_result(self) -> None:
+        result = run_acceptance(
+            "codex", source_root=ROOT, runner=FakeRunner(forge_trace=True)
+        )
+
+        self.assertEqual(result.status, "unverified")
+
     def test_claude_uses_nonpersistent_disposable_host_locations(self) -> None:
         runner = FakeRunner(observer_events=GREEN_EVENTS)
-        result = run_acceptance("claude", source_root=ROOT, runner=runner)
+        result = run_acceptance(
+            "claude",
+            source_root=ROOT,
+            runner=runner,
+            evidence_verifier=trusted_observer_verifier(runner),
+        )
 
         host_command = runner.calls[-1][0]
         host_environment = runner.environments[-1]
@@ -191,10 +249,12 @@ class AcceptanceHarnessTests(unittest.TestCase):
         self.assertNotIn("AHK_ACCEPTANCE_RUN_ID", host_environment)
 
     def test_nonzero_host_outcome_cannot_correct_a_trace(self) -> None:
+        runner = FakeRunner(observer_events=GREEN_EVENTS, host_returncode=1)
         result = run_acceptance(
             "codex",
             source_root=ROOT,
-            runner=FakeRunner(observer_events=GREEN_EVENTS, host_returncode=1),
+            runner=runner,
+            evidence_verifier=trusted_observer_verifier(runner),
         )
 
         self.assertEqual(result.status, "fail")
@@ -205,6 +265,7 @@ class AcceptanceHarnessTests(unittest.TestCase):
             "claude",
             source_root=ROOT,
             runner=FakeRunner(observer_events=tuple(reversed(GREEN_EVENTS))),
+            evidence_verifier=lambda trace, run_id: True,
         )
 
         self.assertEqual(result.status, "fail")
@@ -217,6 +278,7 @@ class AcceptanceHarnessTests(unittest.TestCase):
             runner=FakeRunner(
                 observer_events=GREEN_EVENTS, issue_code="AHK-MODEL-CLAIM"
             ),
+            evidence_verifier=lambda trace, run_id: True,
         )
 
         self.assertEqual(result.status, "fail")
@@ -227,6 +289,7 @@ class AcceptanceHarnessTests(unittest.TestCase):
             "claude",
             source_root=ROOT,
             runner=FakeRunner(observer_events=GREEN_EVENTS, retain_input=True),
+            evidence_verifier=lambda trace, run_id: True,
         )
 
         self.assertEqual(result.status, "fail")
