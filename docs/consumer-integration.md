@@ -137,8 +137,8 @@ After reviewing the installed hook configuration, run one host-specific smoke
 check from the pinned release checkout with an empty disposable directory:
 
 ```powershell
-python distribution/runner.py acceptance --platform claude --scratch <empty-scratch-directory>
-python distribution/runner.py acceptance --platform codex --scratch <empty-scratch-directory>
+python distribution/runner.py acceptance --platform claude --scratch <empty-scratch-directory> --release-source <pinned-release-checkout>
+python distribution/runner.py acceptance --platform codex --scratch <empty-scratch-directory> --release-source <pinned-release-checkout>
 ```
 
 The command initializes and installs into only the named scratch directory,
@@ -153,6 +153,9 @@ content. Do not run this command in ordinary public CI.
 an issue code, a corrected stop, no retained synthetic content, and compatible
 host block capacity. If a host executable is unavailable or trusted hook
 discovery cannot be observed, its result is `unverified`, not `pass`.
+An installed runner requires the explicit, local pinned release checkout for
+the disposable installation; an unavailable or unsafe release source exits
+with a bounded prerequisite error rather than attempting an unverified run.
 
 ## Pilot migrations
 

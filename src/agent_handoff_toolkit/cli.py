@@ -11,7 +11,7 @@ import sys
 import tempfile
 from typing import Sequence
 
-from .acceptance import format_result, run_acceptance
+from .acceptance import AcceptancePrerequisiteError, format_result, run_acceptance
 from .hooks import MAX_HOOK_INPUT_BYTES, observe_context, run_hook
 from .records import render_record, render_tail, validate_markdown
 
@@ -42,6 +42,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     acceptance.add_argument("--platform", choices=("claude", "codex"), required=True)
     acceptance.add_argument("--scratch", type=Path, required=True)
+    acceptance.add_argument("--release-source", type=Path)
 
     context = subparsers.add_parser(
         "context-health", help="record an explicit context percentage"
@@ -351,7 +352,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
 
     if args.command == "acceptance":
-        result = run_acceptance(args.platform, scratch=args.scratch)
+        try:
+            result = run_acceptance(
+                args.platform,
+                scratch=args.scratch,
+                source_root=args.release_source,
+            )
+        except AcceptancePrerequisiteError:
+            sys.stderr.write("error: acceptance release source unavailable\n")
+            return 2
         sys.stdout.write(format_result(result) + "\n")
         return result.exit_code
 

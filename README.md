@@ -49,7 +49,9 @@ Explicit commands fail closed and return a non-zero exit code for invalid input.
 named empty scratch repository, keeps host output only in memory, and prints
 only reduced platform properties and lifecycle issue codes. It is not part of
 ordinary public CI. A host without observed trusted hook discovery is reported
-as `unverified`, not `pass`.
+as `unverified`, not `pass`. When invoking the command from an installed
+consumer runtime, supply `--release-source <pinned-release-checkout>` so the
+disposable consumer can be installed from a verified local release source.
 
 ## Consumer installation
 

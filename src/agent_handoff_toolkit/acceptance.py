@@ -6,16 +6,19 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
-import re
+import queue
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from typing import Callable, Mapping, Sequence
 import uuid
 
 
-_ISSUE_CODE = re.compile(r"\bAHK-[A-Z0-9-]+\b")
+_EXPECTED_ISSUES = frozenset({"AHK-STOP-WORK"})
 _REQUIRED_PROPERTIES = (
     "discovered",
     "blocked",
@@ -24,15 +27,18 @@ _REQUIRED_PROPERTIES = (
     "retained_content",
     "block_cap_compatible",
 )
+_MAX_HOST_OUTPUT_BYTES = 65536
+_MAX_TRACE_BYTES = 8192
+_HOST_TIMEOUT_SECONDS = 25
 
 
 @dataclass(frozen=True)
 class HostRun:
-    """Captured process streams that must remain in memory only."""
+    """Only process outcome and bounded stream-reduction facts are retained."""
 
     returncode: int
-    stdout: str
-    stderr: str
+    timed_out: bool
+    jsonl_events: int = 0
 
 
 @dataclass(frozen=True)
@@ -64,30 +70,124 @@ class AcceptanceResult:
         return 0 if self.status == "pass" else 1
 
 
+class AcceptancePrerequisiteError(ValueError):
+    """A release checkout is required to make an installed disposable consumer."""
+
+
 Runner = Callable[..., HostRun]
 
 
+class _JsonlReducer:
+    """Drain host streams without retaining text or trusting model events."""
+
+    def __init__(self) -> None:
+        self._tail = b""
+        self._bytes_seen = 0
+        self.jsonl_events = 0
+
+    def feed(self, chunk: bytes) -> None:
+        self._bytes_seen += len(chunk)
+        if self._bytes_seen > _MAX_HOST_OUTPUT_BYTES:
+            return
+        data = self._tail + chunk
+        lines = data.split(b"\n")
+        self._tail = lines.pop()[-4096:]
+        for line in lines:
+            try:
+                value = json.loads(line)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            if isinstance(value, dict):
+                self.jsonl_events += 1
+
+
+def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/pid", str(process.pid), "/t", "/f"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    else:
+        process.kill()
+
+
 def _run_process(
-    command: Sequence[str], *, cwd: Path, input_text: str, env: Mapping[str, str]
+    command: Sequence[str],
+    *,
+    cwd: Path,
+    input_text: str,
+    env: Mapping[str, str],
+    timeout_seconds: float = _HOST_TIMEOUT_SECONDS,
 ) -> HostRun:
-    completed = subprocess.run(
+    """Run a host while incrementally discarding stdout/stderr content."""
+
+    creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    process = subprocess.Popen(
         list(command),
         cwd=cwd,
-        input=input_text,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         env=dict(env),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-        timeout=25,
+        creationflags=creationflags if os.name == "nt" else 0,
+        start_new_session=os.name != "nt",
     )
-    return HostRun(completed.returncode, completed.stdout, completed.stderr)
+    assert process.stdin is not None
+    assert process.stdout is not None
+    process.stdin.write(input_text.encode("utf-8"))
+    process.stdin.close()
+
+    chunks: queue.Queue[bytes | None] = queue.Queue()
+
+    def drain() -> None:
+        try:
+            while chunk := process.stdout.read(4096):
+                chunks.put(chunk)
+        finally:
+            process.stdout.close()
+            chunks.put(None)
+
+    reader = threading.Thread(target=drain, daemon=True)
+    reader.start()
+    reducer = _JsonlReducer()
+    deadline = time.monotonic() + timeout_seconds
+    timed_out = False
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            timed_out = True
+            _terminate_process_tree(process)
+            break
+        try:
+            chunk = chunks.get(timeout=remaining)
+        except queue.Empty:
+            timed_out = True
+            _terminate_process_tree(process)
+            break
+        if chunk is None:
+            break
+        reducer.feed(chunk)
+    process.wait(timeout=2)
+    reader.join(timeout=2)
+    return HostRun(process.returncode or 0, timed_out, reducer.jsonl_events)
 
 
-def _host_command(platform: str) -> tuple[str, ...]:
+def _host_command(platform: str, settings: Path) -> tuple[str, ...]:
     if platform == "claude":
-        return ("claude", "-p", "--model", "haiku")
+        return (
+            "claude",
+            "-p",
+            "--model",
+            "haiku",
+            "--no-session-persistence",
+            "--settings",
+            str(settings),
+        )
     if platform == "codex":
         return (
             "codex",
@@ -106,61 +206,175 @@ def _scenario_input(sentinel: str) -> str:
 
     return (
         "Run the installed lifecycle acceptance scenario for identifier "
-        f"{sentinel}. Attempt one invalid tracked stop, receive its AHK issue, "
-        "then submit a corrected stop. Emit lifecycle booleans and issue codes only."
+        f"{sentinel}. Attempt one invalid tracked stop, receive its lifecycle "
+        "feedback, then submit a corrected stop."
     )
 
 
-def _json_objects(raw: str) -> list[Mapping[str, object]]:
-    objects: list[Mapping[str, object]] = []
-    for line in raw.splitlines() or (raw,):
-        try:
-            value = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(value, dict):
-            objects.append(value)
-    return objects
-
-
-def _event_value(objects: Sequence[Mapping[str, object]], name: str) -> bool:
-    for value in objects:
-        candidate = value.get(name)
-        if isinstance(candidate, bool) and candidate:
-            return True
-    return False
-
-
-def _event_codes(raw: str, objects: Sequence[Mapping[str, object]]) -> tuple[str, ...]:
-    codes = set(_ISSUE_CODE.findall(raw))
-    for value in objects:
-        candidate = value.get("issue_codes")
-        if isinstance(candidate, list):
-            codes.update(
-                item
-                for item in candidate
-                if isinstance(item, str) and _ISSUE_CODE.fullmatch(item)
-            )
-    return tuple(sorted(codes))
+def _is_safe_regular_file(candidate: Path, root: Path) -> bool:
+    try:
+        candidate.relative_to(root)
+        if candidate.is_symlink() or candidate.is_junction():
+            return False
+        return stat.S_ISREG(candidate.stat(follow_symlinks=False).st_mode)
+    except (OSError, ValueError):
+        return False
 
 
 def _contains_sentinel(root: Path, sentinel: str) -> bool:
-    for candidate in root.rglob("*"):
-        if not candidate.is_file():
+    """Treat unreadable, escaping, or linked runtime entries as unsafe retention."""
+
+    if root.is_symlink() or root.is_junction():
+        return True
+    root = root.resolve()
+    try:
+        candidates = tuple(root.rglob("*"))
+    except OSError:
+        return True
+    overlap = ""
+    for candidate in candidates:
+        if candidate.is_symlink() or candidate.is_junction():
+            return True
+        if candidate.is_dir():
             continue
+        if not _is_safe_regular_file(candidate, root):
+            return True
         try:
             with candidate.open("r", encoding="utf-8", errors="replace") as source:
                 while chunk := source.read(8192):
-                    if sentinel in chunk:
+                    if sentinel in overlap + chunk:
                         return True
+                    overlap = (overlap + chunk)[-(len(sentinel) - 1) :]
         except OSError:
             return True
     return False
 
 
-def _empty_result(platform: str, issue_codes: tuple[str, ...] = ()) -> AcceptanceResult:
+def _release_source(root: Path | None) -> Path:
+    candidate = (root or Path(__file__).resolve().parents[2]).resolve()
+    runner = candidate / "distribution" / "runner.py"
+    manifest = candidate / "distribution" / "manifest.json"
+    if not _is_safe_regular_file(runner, candidate) or not _is_safe_regular_file(
+        manifest, candidate
+    ):
+        raise AcceptancePrerequisiteError("acceptance release source unavailable")
+    return candidate
+
+
+def _observer_script(runner: Path) -> str:
+    return f"""import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+runner = {str(runner)!r}
+platform, event = sys.argv[1:3]
+raw = sys.stdin.buffer.read()
+completed = subprocess.run([sys.executable, runner, "hook", "--platform", platform, "--event", event], input=raw, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+combined = completed.stdout + completed.stderr
+allowed = "AHK-STOP-WORK"
+entry = {{"run_id": os.environ["AHK_ACCEPTANCE_RUN_ID"], "event": event, "outcome": "other"}}
+if event.replace("-", "") == "userpromptsubmit" and completed.returncode == 0:
+    entry["outcome"] = "observed"
+elif event == "stop":
+    if b'"decision":"block"' in combined and allowed.encode() in combined:
+        entry.update(outcome="block", issue_code=allowed)
+    elif completed.returncode == 0 and not combined:
+        entry["outcome"] = "allow"
+Path(os.environ["AHK_ACCEPTANCE_TRACE"]).open("a", encoding="utf-8", newline="\\n").write(json.dumps(entry, separators=(",", ":")) + "\\n")
+sys.stdout.buffer.write(completed.stdout)
+sys.stderr.buffer.write(completed.stderr)
+sys.exit(completed.returncode)
+"""
+
+
+def _configure_observer(
+    platform: str, scratch: Path, runtime: Path, run_id: str
+) -> tuple[Path, Path]:
+    """Install a disposable hook observer that records no model content."""
+
+    trace = runtime / "lifecycle-trace.jsonl"
+    observer = runtime / "observe_hook.py"
+    runner = scratch / ".agent-handoff-toolkit" / "runner.py"
+    observer.write_text(_observer_script(runner), encoding="utf-8", newline="\n")
+    config = scratch / (
+        ".claude/settings.json" if platform == "claude" else ".codex/hooks.json"
+    )
+    value = json.loads(config.read_text(encoding="utf-8"))
+    hooks = value.get("hooks")
+    if not isinstance(hooks, dict):
+        raise ValueError("installed hook configuration is invalid")
+    for event, entries in hooks.items():
+        if not isinstance(entries, list):
+            raise ValueError("installed hook configuration is invalid")
+        for entry in entries:
+            if not isinstance(entry, dict) or not isinstance(entry.get("hooks"), list):
+                raise ValueError("installed hook configuration is invalid")
+            for hook in entry["hooks"]:
+                if not isinstance(hook, dict) or not isinstance(
+                    hook.get("command"), str
+                ):
+                    raise ValueError("installed hook configuration is invalid")
+                command = subprocess.list2cmdline(
+                    [sys.executable, str(observer), platform, event.lower()]
+                )
+                hook["command"] = command
+                if "commandWindows" in hook:
+                    hook["commandWindows"] = command
+    config.write_text(json.dumps(value), encoding="utf-8", newline="\n")
+    trace.touch()
+    return trace, config
+
+
+def _read_evidence(
+    trace: Path, run_id: str
+) -> tuple[bool, bool, bool, bool, tuple[str, ...]]:
+    if not _is_safe_regular_file(trace, trace.parent):
+        return False, False, False, False, ()
+    try:
+        raw = trace.read_bytes()
+    except OSError:
+        return False, False, False, False, ()
+    if len(raw) > _MAX_TRACE_BYTES:
+        return False, False, False, False, ()
+    entries: list[dict[str, str]] = []
+    for line in raw.splitlines():
+        try:
+            value = json.loads(line)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return False, False, False, False, ()
+        if not (
+            isinstance(value, dict)
+            and set(value).issubset({"run_id", "event", "outcome", "issue_code"})
+            and value.get("run_id") == run_id
+            and isinstance(value.get("event"), str)
+            and isinstance(value.get("outcome"), str)
+        ):
+            return False, False, False, False, ()
+        entries.append(value)
+    expected_issue = next(iter(_EXPECTED_ISSUES))
+    expected = [
+        ("userpromptsubmit", "observed", None),
+        ("stop", "block", expected_issue),
+        ("stop", "allow", None),
+    ]
+    normalized = [
+        (
+            entry["event"].replace("-", "").lower(),
+            entry["outcome"],
+            entry.get("issue_code"),
+        )
+        for entry in entries
+    ]
+    if normalized != expected:
+        return bool(entries), False, False, False, ()
+    return True, True, True, True, (expected_issue,)
+
+
+def _empty_result(platform: str) -> AcceptanceResult:
     return AcceptanceResult(
-        platform, False, False, False, False, False, False, issue_codes, False
+        platform, False, False, False, False, False, False, (), False
     )
 
 
@@ -171,10 +385,9 @@ def run_acceptance(
     runner: Runner = _run_process,
     source_root: Path | None = None,
 ) -> AcceptanceResult:
-    """Exercise one installed host integration and discard all raw process content."""
+    """Exercise a disposable installed host integration using observer evidence only."""
 
-    _host_command(platform)
-    root = (source_root or Path(__file__).resolve().parents[2]).resolve()
+    root = _release_source(source_root)
     temporary: tempfile.TemporaryDirectory[str] | None = None
     if scratch is None:
         temporary = tempfile.TemporaryDirectory(prefix="handoff-acceptance-")
@@ -182,6 +395,7 @@ def run_acceptance(
     else:
         scratch_path = scratch.resolve()
     sentinel = f"synthetic-{uuid.uuid4().hex}"
+    run_id = uuid.uuid4().hex
     result = _empty_result(platform)
     owns_scratch = False
 
@@ -190,6 +404,8 @@ def run_acceptance(
             raise ValueError("scratch path must not already exist")
         scratch_path.mkdir(parents=True)
         owns_scratch = True
+        runtime = scratch_path / ".agent-handoff-toolkit" / "acceptance-runtime"
+        runtime.mkdir(parents=True)
         git = runner(
             ("git", "init", "--quiet"), cwd=scratch_path, input_text="", env=os.environ
         )
@@ -208,29 +424,42 @@ def run_acceptance(
             input_text="",
             env=os.environ,
         )
-        if git.returncode != 0 or install.returncode != 0:
+        if (
+            git.returncode != 0
+            or install.returncode != 0
+            or git.timed_out
+            or install.timed_out
+        ):
             return result
-
+        trace, settings = _configure_observer(platform, scratch_path, runtime, run_id)
         host = runner(
-            _host_command(platform),
+            _host_command(platform, settings),
             cwd=scratch_path,
             input_text=_scenario_input(sentinel),
-            env={**os.environ, "NO_COLOR": "1"},
+            env={
+                **os.environ,
+                "NO_COLOR": "1",
+                "AHK_ACCEPTANCE_RUN_ID": run_id,
+                "AHK_ACCEPTANCE_TRACE": str(trace),
+                "CLAUDE_CONFIG_DIR": str(runtime / "claude-home"),
+                "CODEX_HOME": str(runtime / "codex-home"),
+            },
         )
-        raw = host.stdout + host.stderr
-        objects = _json_objects(raw)
-        codes = _event_codes(raw, objects)
-        discovered = _event_value(objects, "hook_discovered")
+        discovered, blocked, issue_received, corrected, codes = _read_evidence(
+            trace, run_id
+        )
+        corrected = corrected and host.returncode == 0 and not host.timed_out
+        retained_content = not _contains_sentinel(scratch_path, sentinel)
         result = AcceptanceResult(
             platform=platform,
             discovered=discovered,
-            blocked=_event_value(objects, "blocked"),
-            issue_received=bool(codes),
-            corrected=_event_value(objects, "corrected"),
-            retained_content=not _contains_sentinel(scratch_path, sentinel),
-            block_cap_compatible=_event_value(objects, "block_cap_compatible"),
+            blocked=blocked,
+            issue_received=issue_received,
+            corrected=corrected,
+            retained_content=retained_content,
+            block_cap_compatible=blocked and corrected,
             issue_codes=codes,
-            observed=host.returncode != 127 and discovered,
+            observed=discovered,
         )
         return result
     except (OSError, ValueError, subprocess.SubprocessError):
