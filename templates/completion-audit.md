@@ -2,15 +2,31 @@
 
 <!-- agent-handoff-metadata
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "record_type": "completion-audit",
   "timestamp": "<replace with ISO-8601 timestamp including timezone>",
+  "record_id": "record-audit-template-001",
+  "authorization_id": "authorization-template-001",
+  "authorized_root_scope_id": "root-scope",
+  "predecessor": null,
+  "authorization_evidence": {
+    "kind": "initial-user-turn",
+    "user_turn_ref": "user-turn-template-001",
+    "proposal_turn_ref": null,
+    "evidence_hmac": "1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "transition": null,
   "active_scopes": [
     {
-      "scope_id": "<completed-highest-authorized-scope-id>",
+      "scope_id": "root-scope",
       "scope_kind": "standalone",
       "parent_scope_id": null,
       "highest_authorized": true,
+      "scope_definition": {
+        "title": "Authorized root scope",
+        "outcome": "Complete the authorized root outcome."
+      },
+      "scope_definition_digest": "e357f77f7628a29ab0aa330f77283171baa314a09891675adf3858e54ff975e9",
       "remaining_work": false,
       "remaining_code": false,
       "remaining_code_detail": "<explain why no code remains in this scope>",
@@ -24,7 +40,7 @@
       "reason": "<why this check has not run>"
     }
   ],
-  "completed_scope_id": "<completed-highest-authorized-scope-id>",
+  "completed_scope_id": "root-scope",
   "authorization_basis": "<how this completed outcome was authorized>"
 }
 -->

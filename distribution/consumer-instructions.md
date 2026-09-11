@@ -15,6 +15,16 @@ before creating or changing a continuation or completion audit.
   from or mark individual legacy files.
 - Treat verification results, exact next actions, and other canonical sections
   as generated content derived from record metadata, not handwritten prose.
+- For schema v2, run `lifecycle inspect` before creating a tracked record. Use
+  `lifecycle register-root`, `lifecycle resume`, and `lifecycle join` only for
+  their defined lifecycle states; an existing handoff does not authorize a new
+  root or immutable scope definition without an approved transition.
+- Explicitly validate the direct candidate against the locked root and lineage.
+  The renderer-only terminal response is the only permitted tracked final response;
+  do not add a handwritten preamble or summary.
+- Register a legitimate decision request only when user authority is required for
+  a blocked exact action. Comply with corrective Stop feedback: an attempted
+  message may already be displayed, but it is not a compliant terminal outcome.
 - Validate new or materially replaced records with
   `python .agent-handoff-toolkit/runner.py validate <record>`.
 - Render a continuation's required final tail with

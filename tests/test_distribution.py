@@ -443,6 +443,82 @@ class DistributionTests(unittest.TestCase):
         )
         self.assertIn("each `exact_action` item", contract)
         self.assertIn("must not be a no-action assertion", contract)
+        normalized_skill = " ".join(text.lower().split())
+        self.assertIn("render_terminal_response", normalized_skill)
+        self.assertIn(
+            "use `render-tail` only for schema-v1 compatibility", text.lower()
+        )
+        self.assertIn("nothing before or after", normalized_skill)
+
+    def test_schema_v2_workflow_documentation_states_enforced_lifecycle_rules(
+        self,
+    ) -> None:
+        sources = {
+            "contract": ROOT / "docs" / "agent-handoff" / "contract.md",
+            "skill": ROOT / "skills" / "agent-handoff" / "SKILL.md",
+            "consumer": ROOT / "distribution" / "consumer-instructions.md",
+        }
+        normalized = {
+            name: " ".join(path.read_text(encoding="utf-8").lower().split())
+            for name, path in sources.items()
+        }
+
+        for phrase in (
+            "normative for schema version 2",
+            "schema version 1 compatibility appendix",
+            "record_id",
+            "authorization_id",
+            "authorized_root_scope_id",
+            "authorization_evidence",
+            "scope_definition_digest",
+            "root immutability",
+            "approved transition",
+            "four permitted stop outcomes",
+            "byte-exact equality",
+            "handwritten preamble",
+            "may already be displayed",
+            "informational hooks fail open",
+            "tracked lifecycle hooks fail closed",
+            "does not mechanically prove",
+            "no model call is required",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, normalized["contract"])
+
+        for phrase in (
+            "lifecycle inspect",
+            "lifecycle register-root",
+            "lifecycle resume",
+            "lifecycle join",
+            "explicitly validate the candidate",
+            "renderer is the only source",
+            "legitimate decision request",
+            "corrective stop feedback",
+            "already be displayed",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, normalized["skill"])
+
+        for phrase in (
+            "lifecycle inspect",
+            "lifecycle register-root",
+            "lifecycle resume",
+            "lifecycle join",
+            "renderer-only terminal response",
+            "corrective stop feedback",
+            "already be displayed",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, normalized["consumer"])
+
+    def test_repository_policies_are_identical_and_split_hook_failures(self) -> None:
+        agents = (ROOT / "AGENTS.md").read_bytes().replace(b"\r\n", b"\n")
+        claude = (ROOT / "CLAUDE.md").read_bytes().replace(b"\r\n", b"\n")
+
+        self.assertEqual(agents, claude)
+        normalized = b" ".join(agents.lower().split()).decode("utf-8")
+        self.assertIn("informational hooks fail open", normalized)
+        self.assertIn("tracked lifecycle hooks fail closed", normalized)
 
     def test_continuation_output_contract_is_a_concise_handoff_pointer(self) -> None:
         required_phrases = (
@@ -468,6 +544,9 @@ class DistributionTests(unittest.TestCase):
                     self.assertIn(phrase, text)
 
     def test_templates_match_the_contract_section_shapes(self) -> None:
+        sys.path.insert(0, str(ROOT / "src"))
+        from agent_handoff_toolkit.records import validate_markdown
+
         continuation = (ROOT / "templates" / "continuation.md").read_text(
             encoding="utf-8"
         )
@@ -480,6 +559,12 @@ class DistributionTests(unittest.TestCase):
                 "schema_version",
                 "record_type",
                 "timestamp",
+                "record_id",
+                "authorization_id",
+                "authorized_root_scope_id",
+                "predecessor",
+                "authorization_evidence",
+                "transition",
                 "active_scopes",
                 "next_session_gates",
                 "verification",
@@ -487,7 +572,7 @@ class DistributionTests(unittest.TestCase):
                 "next_session_prompt",
             },
         )
-        self.assertEqual(continuation_metadata["schema_version"], 1)
+        self.assertEqual(continuation_metadata["schema_version"], 2)
         self.assertEqual(continuation_metadata["record_type"], "continuation")
         self.assertEqual(continuation_metadata["next_session_gates"], [])
         self.assertEqual(
@@ -497,6 +582,25 @@ class DistributionTests(unittest.TestCase):
         continuation_scope = continuation_metadata["active_scopes"][0]
         self.assertIs(continuation_scope["highest_authorized"], True)
         self.assertIs(continuation_scope["remaining_work"], True)
+        self.assertEqual(
+            set(continuation_scope["scope_definition"]), {"title", "outcome"}
+        )
+        self.assertRegex(
+            continuation_scope["scope_definition_digest"], r"^[0-9a-f]{64}$"
+        )
+        remaining_scope_section = (
+            continuation.split("## Remaining code by active scope\n", 1)[1]
+            .split("## Next-session prompt\n", 1)[0]
+            .strip()
+        )
+        remaining_scope_match = re.fullmatch(
+            r"```json\n(?P<scopes>.*?)\n```", remaining_scope_section, re.DOTALL
+        )
+        self.assertIsNotNone(remaining_scope_match)
+        self.assertEqual(
+            json.loads(remaining_scope_match.group("scopes")),
+            continuation_metadata["active_scopes"],
+        )
         self.assertEqual(
             continuation[continuation_match.end() :].lstrip().splitlines()[0],
             "# Session continuation",
@@ -510,6 +614,11 @@ class DistributionTests(unittest.TestCase):
         self.assertEqual(
             prompt_match.group("prompt"), continuation_metadata["next_session_prompt"]
         )
+        materialized_continuation = continuation.replace(
+            "<replace with ISO-8601 timestamp including timezone>",
+            "2026-09-11T12:00:00Z",
+        )
+        self.assertEqual(validate_markdown(materialized_continuation), [])
 
         sentinel = (
             "> Audit record — not a handoff. Do not use this file to start or "
@@ -526,17 +635,25 @@ class DistributionTests(unittest.TestCase):
                 "schema_version",
                 "record_type",
                 "timestamp",
+                "record_id",
+                "authorization_id",
+                "authorized_root_scope_id",
+                "predecessor",
+                "authorization_evidence",
+                "transition",
                 "active_scopes",
                 "verification",
                 "completed_scope_id",
                 "authorization_basis",
             },
         )
-        self.assertEqual(audit_metadata["schema_version"], 1)
+        self.assertEqual(audit_metadata["schema_version"], 2)
         self.assertEqual(audit_metadata["record_type"], "completion-audit")
         audit_scope = audit_metadata["active_scopes"][0]
         self.assertIs(audit_scope["highest_authorized"], True)
         self.assertIs(audit_scope["remaining_work"], False)
+        self.assertEqual(set(audit_scope["scope_definition"]), {"title", "outcome"})
+        self.assertRegex(audit_scope["scope_definition_digest"], r"^[0-9a-f]{64}$")
         self.assertEqual(audit_metadata["completed_scope_id"], audit_scope["scope_id"])
         self.assertEqual(
             audit[audit_match.end() :].lstrip().splitlines()[0],
@@ -545,6 +662,11 @@ class DistributionTests(unittest.TestCase):
         self.assertEqual(level_two_headings(audit), AUDIT_SECTIONS)
         self.assertNotIn("## Exact next action", audit)
         self.assertNotIn("## Next-session prompt", audit)
+        materialized_audit = audit.replace(
+            "<replace with ISO-8601 timestamp including timezone>",
+            "2026-09-11T12:00:00Z",
+        )
+        self.assertEqual(validate_markdown(materialized_audit), [])
 
     def test_hook_fragments_use_the_supported_event_matrix(self) -> None:
         python_command = load_manifest()["runtime"]["python_command"]

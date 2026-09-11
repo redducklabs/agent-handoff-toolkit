@@ -1,6 +1,8 @@
 # Agent handoff contract
 
-This document is normative for schema version 1.
+This document is normative for schema version 2. Schema-v2 records are the current
+format; the schema version 1 compatibility appendix defines limited treatment for
+historical records.
 
 ## Record decision
 
@@ -17,6 +19,34 @@ Status is `pending`, `in-progress`, `blocked`, or `complete`. A scope with statu
 Exactly one active scope is highest-authorized. Every non-root parent reference resolves within the scope list, and the graph is acyclic. The highest-authorized scope has no parent.
 
 A continuation requires `remaining_work: true` at the highest-authorized scope. A completion audit requires `remaining_work: false` there. `remaining_code: true` implies `remaining_work: true` for the same scope. A true `remaining_work` or `remaining_code` value on a descendant requires the corresponding value to be true on every ancestor. `remaining_code_detail` must explain both `true` and `false` answers. Code, review/UAT/decision work, and completed work remain distinct.
+
+## Schema-v2 lineage and root immutability
+
+Every schema-v2 record contains `record_id`, `authorization_id`,
+`authorized_root_scope_id`, `predecessor`, `authorization_evidence`, and
+`transition`. `record_id` identifies this record; `authorization_id` identifies
+its chain. `authorized_root_scope_id` identifies the sole locked,
+highest-authorized root and is immutable for a non-transition successor.
+
+`predecessor` is `null` only for an initial authorization; otherwise it contains
+the direct predecessor's record ID, normalized absolute path, and SHA-256 digest.
+`authorization_evidence` records the bounded user-turn reference and evidence
+HMAC for the initial authorization, v1 adoption, or approved transition. A
+successor must directly reference the live predecessor; no directory scan or
+newest-record heuristic is authorization.
+
+Each schema-v2 scope additionally contains an immutable `scope_definition`
+(`title` and `outcome`) and matching `scope_definition_digest`. The digest covers
+the scope ID, kind, parent, and normalized definition. Status and remaining-work
+fields remain progress fields, but a successor cannot alter an inherited scope's
+definition, kind, parent, or digest without an approved transition.
+
+A transition records old and new authorization IDs and roots plus the proposal
+turn, adjacent approval turn, and evidence HMAC. A model command cannot assert
+approval. The immediately following user response must approve the exact proposal;
+ambiguous, qualified, negative, or non-adjacent replies leave the proposal pending.
+This root immutability preserves inherited authority while allowing explicit,
+approved transition evidence.
 
 ## Question gate
 
@@ -109,10 +139,53 @@ For a continuation, the response tail contains exactly:
 
 The complete generated tail, including its fence and link, is limited to 300 words and 2,400 characters. It must not reproduce the handoff document. The detailed record remains the source of truth; the tail is only a concise pointer and executable start. Completion responses label their link **Audit record (not a handoff)** and do not generate a restart prompt.
 
-A continuation response may summarize completed and remaining work before the generated tail, but the generated tail supplies its sole user-action statement. A no-action statement such as `None`, `Nothing to do`, or `No action required` is valid only when the highest authorized scope is complete and the response links an audit rather than a continuation.
+A schema-v2 terminal response is entirely generated: the renderer is the only
+source, there is no handwritten preamble, and the normalized terminal message
+must have byte-exact equality with the rendered response. For a continuation, the
+response is the canonical generated continuation response; for an audit it is only
+the canonical audit link. A no-action statement such as `None`, `Nothing to do`,
+or `No action required` is valid only when the highest authorized scope is complete
+and the response links an audit rather than a continuation.
+
+## Lifecycle enforcement
+
+Tracked sessions have four permitted stop outcomes: continue working, await a
+legitimate decision request, create a valid continuation, or complete the
+authorized root with an audit. Executable work remaining is not a decision
+request. A decision request must name one bounded question, blocked action, and
+recognized authority category; it cannot change the root or scope definition.
+
+`Stop` verifies the direct candidate, lineage, locked root, open-decision state,
+and the renderer's complete response. An attempted assistant message may already
+be displayed before `Stop` runs. The hook cannot retract that transient
+display, but it returns corrective continuation feedback and requires a corrected
+response or a visibly failed policy outcome.
+
+Informational hooks fail open. Tracked lifecycle hooks fail closed on
+`UserPromptSubmit` and `Stop`, including corrupt tracked state, unreadable
+candidates, missing owned runtime files, and lifecycle validation exceptions.
+An untracked tool-free informational response may fail open. Successful lifecycle
+checks emit no routine model context.
 
 ## Enforcement boundary
 
-The validator enforces record type, section shape, scope consistency, verification classifications, empty gates, and actionable field presence. It cannot prove that recorded facts are true, that all source code was inspected, that tracker hierarchy is current, or that the chosen action is correct. The skill requires those checks; tooling must not claim otherwise.
+The validator enforces record type, section shape, scope consistency, lineage,
+verification classifications, empty gates, and actionable field presence. It does
+not mechanically prove that recorded facts are true, arbitrary natural-language
+scope interpretation is correct, all source code was inspected, tracker hierarchy
+is current, or completion is semantically true. The skill requires those checks;
+tooling must not claim otherwise.
 
-Automatic host hooks are advisory and fail open. Explicit CLI commands fail visibly and return a non-zero status for invalid input.
+No model call is required for enforcement. Deterministic lifecycle state, lineage,
+validation, rendering, and bounded transcript-reference checks are the hard gate;
+optional evaluators cannot approve a transition or replace evidence. Explicit CLI
+validation fails visibly and returns a non-zero status for invalid input.
+
+## Schema version 1 compatibility appendix
+
+Schema-v1 records remain parseable and render with their established v1 tail. They
+do not acquire invented lineage or root evidence. A lifecycle command may adopt a
+v1 record only through the explicit v1-adoption path and corresponding
+authorization evidence; new and materially replaced records use schema version 2.
+This appendix preserves historical compatibility without weakening schema-v2 root
+immutability or tracked lifecycle enforcement.

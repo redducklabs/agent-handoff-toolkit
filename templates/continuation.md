@@ -1,14 +1,30 @@
 <!-- agent-handoff-metadata
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "record_type": "continuation",
   "timestamp": "<replace with ISO-8601 timestamp including timezone>",
+  "record_id": "record-template-001",
+  "authorization_id": "authorization-template-001",
+  "authorized_root_scope_id": "root-scope",
+  "predecessor": null,
+  "authorization_evidence": {
+    "kind": "initial-user-turn",
+    "user_turn_ref": "user-turn-template-001",
+    "proposal_turn_ref": null,
+    "evidence_hmac": "1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "transition": null,
   "active_scopes": [
     {
-      "scope_id": "<highest-authorized-scope-id>",
+      "scope_id": "root-scope",
       "scope_kind": "standalone",
       "parent_scope_id": null,
       "highest_authorized": true,
+      "scope_definition": {
+        "title": "Authorized root scope",
+        "outcome": "Complete the authorized root outcome."
+      },
+      "scope_definition_digest": "e357f77f7628a29ab0aa330f77283171baa314a09891675adf3858e54ff975e9",
       "remaining_work": true,
       "remaining_code": true,
       "remaining_code_detail": "<explain why code does or does not remain>",
@@ -96,7 +112,12 @@
     "remaining_code": true,
     "remaining_code_detail": "<explain why code does or does not remain>",
     "remaining_work": true,
-    "scope_id": "<highest-authorized-scope-id>",
+    "scope_definition": {
+      "outcome": "Complete the authorized root outcome.",
+      "title": "Authorized root scope"
+    },
+    "scope_definition_digest": "e357f77f7628a29ab0aa330f77283171baa314a09891675adf3858e54ff975e9",
+    "scope_id": "root-scope",
     "scope_kind": "standalone",
     "status": "in-progress"
   }
