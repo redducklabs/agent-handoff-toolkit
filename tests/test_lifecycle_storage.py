@@ -90,6 +90,101 @@ def race_worker(repo, state, session, barrier, queue):
 
 
 class LifecycleStorageTests(unittest.TestCase):
+    def test_derived_control_binding_is_turn_revision_scoped_and_one_use(self):
+        state = self.storage.load_snapshot("host-private-id")
+        state = self.storage.compare_and_swap(
+            "host-private-id",
+            0,
+            0,
+            LifecycleMutation(
+                replace(
+                    state.session,
+                    targeted_revision=1,
+                    current_external_user_turn_reference="turn-1",
+                    bootstrap_challenge="bootstrap-1",
+                )
+            ),
+        )
+        key = state.session.session_key
+        capability = self.storage.control_capability(state.session)
+        self.assertEqual(self.storage.load_control_snapshot(key, capability, 1), state)
+        for malformed in (None, "", False):
+            with self.subTest(malformed=malformed), self.assertRaises(ValueError):
+                self.storage.compare_and_swap_control(
+                    key,
+                    malformed,
+                    0,
+                    1,
+                    LifecycleMutation(replace(state.session, targeted_revision=2)),
+                )
+        for wrong_key, wrong_cap, revision in (
+            ("host-private-id", capability, 1),
+            ("a" * 64, capability, 1),
+            (key, "0" * 64, 1),
+            (key, capability, 2),
+        ):
+            with self.assertRaises(ValueError):
+                self.storage.load_control_snapshot(wrong_key, wrong_cap, revision)
+        updated = self.storage.compare_and_swap_control(
+            key,
+            capability,
+            0,
+            1,
+            LifecycleMutation(replace(state.session, targeted_revision=2)),
+        )
+        self.assertNotEqual(
+            capability, self.storage.control_capability(updated.session)
+        )
+        with self.assertRaises(ValueError):
+            self.storage.load_control_snapshot(key, capability, 1)
+        self.assertNotIn(b"host-private-id", self.storage.registry_path.read_bytes())
+        # Digest-looking raw host identifiers remain raw on the raw-ID API.
+        self.assertNotEqual(self.storage.load_snapshot(key).session.session_key, key)
+
+    def test_completed_reentry_preserves_chain_and_requires_fresh_external_binding(
+        self,
+    ):
+        state = register(self.storage, "raw-session")
+        complete = replace(state.chain, status="complete", targeted_revision=2)
+        state = self.storage.compare_and_swap(
+            "raw-session",
+            1,
+            1,
+            LifecycleMutation(
+                replace(
+                    state.session,
+                    mode=EnforcementMode.COMPLETE,
+                    targeted_revision=2,
+                    chain_revision=2,
+                ),
+                complete,
+            ),
+        )
+        fresh = replace(
+            state.session,
+            mode=EnforcementMode.UNTRACKED,
+            targeted_revision=3,
+            chain_revision=None,
+            authorization_id=None,
+            current_external_user_turn_reference="new-user",
+            bootstrap_challenge="fresh-challenge",
+        )
+        with self.assertRaises(LifecycleStorageError):
+            self.storage.compare_and_swap(
+                "raw-session",
+                2,
+                2,
+                LifecycleMutation(
+                    replace(fresh, current_external_user_turn_reference=None)
+                ),
+            )
+        result = self.storage.compare_and_swap(
+            "raw-session", 2, 2, LifecycleMutation(fresh)
+        )
+        self.assertIsNone(result.chain)
+        self.assertEqual(result.session.mode, EnforcementMode.UNTRACKED)
+        self.assertEqual(self.storage.load_chain(complete.authorization_id), complete)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name).resolve()

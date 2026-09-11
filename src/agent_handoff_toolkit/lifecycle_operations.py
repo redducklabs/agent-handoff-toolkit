@@ -19,6 +19,7 @@ from .lineage import (
     record_digest as source_digest,
     scope_definition_digest,
     validate_identifier,
+    validate_hex_digest,
     validate_scope_definition,
 )
 from .lifecycle import (
@@ -41,20 +42,22 @@ from .records import parse_markdown, validate_markdown
 SCOPE_KINDS = {"unit", "issue", "phase", "epic", "rollout", "standalone"}
 _FLAGS = {
     "register-root": (
+        "session-key",
         "challenge",
         "scope-id",
         "scope-kind",
         "scope-definition-b64",
         "expected-session-revision",
     ),
-    "resume": ("challenge", "record", "expected-session-revision"),
+    "resume": ("session-key", "challenge", "record", "expected-session-revision"),
     "join": (
+        "session-key",
         "challenge",
         "authorization-id",
         "expected-chain-revision",
         "expected-session-revision",
     ),
-    "adopt-v1": ("challenge", "record", "expected-session-revision"),
+    "adopt-v1": ("session-key", "challenge", "record", "expected-session-revision"),
 }
 
 
@@ -144,8 +147,8 @@ def parse_bootstrap_command(
             return None
         runner_token = tokens[1]
         if (
-            runner_token != ".agent-handoff-toolkit/runner.py"
-            and runner_token != runner_path.resolve().as_posix()
+            runner_token != runner_path.resolve().as_posix()
+            or not Path(runner_token).is_absolute()
         ):
             return None
         if Path(runner_token).resolve() != runner_path.resolve():
@@ -167,6 +170,8 @@ def parse_bootstrap_command(
                 value = canonical_record_path(value)
             elif flag == "scope-definition-b64":
                 decode_scope_definition(value)
+            elif flag == "session-key":
+                validate_hex_digest(value, label="derived session key")
             else:
                 validate_identifier(value, label=flag)
             arguments[flag.replace("-", "_")] = value
@@ -214,12 +219,39 @@ class LifecycleService:
     def __init__(self, storage: LocalLifecycleStorage, session_id: str):
         self.storage = storage
         self.session_id = session_id
+        self._control = None
+
+    @classmethod
+    def for_control(cls, storage, derived_key, capability, expected_session_revision):
+        storage.load_control_snapshot(
+            derived_key, capability, expected_session_revision
+        )
+        service = cls(storage, None)
+        service._control = (derived_key, capability, expected_session_revision)
+        return service
+
+    def _load_snapshot(self):
+        if self._control is not None:
+            return self.storage.load_control_snapshot(*self._control)
+        return self.storage.load_snapshot(self.session_id)
+
+    def consume_control(self):
+        if self._control is None:
+            raise ValueError("control binding required")
+        snapshot = self._load_snapshot()
+        return self._commit(
+            snapshot,
+            replace(
+                snapshot.session,
+                targeted_revision=snapshot.session.targeted_revision + 1,
+            ),
+        )
 
     def _snapshot(self, expected_session_revision, expected_chain_revision=None):
         for revision in (expected_session_revision, expected_chain_revision):
             if revision is not None and (type(revision) is not int or revision < 0):
                 raise ValueError("invalid expected revision")
-        snapshot = self.storage.load_snapshot(self.session_id)
+        snapshot = self._load_snapshot()
         if snapshot.session.targeted_revision != expected_session_revision:
             raise StaleLifecycleState("targeted session revision changed")
         if (
@@ -243,23 +275,46 @@ class LifecycleService:
         if (
             snapshot.session.current_external_user_turn_reference is None
             or snapshot.session.bootstrap_challenge is None
-            or not hmac.compare_digest(snapshot.session.bootstrap_challenge, challenge)
+            or not hmac.compare_digest(
+                self._control[1]
+                if self._control
+                else snapshot.session.bootstrap_challenge,
+                challenge,
+            )
         ):
             raise ValueError("invalid or expired bootstrap challenge")
         return snapshot
 
     def _commit(self, snapshot, session, chain=None, expected_chain_revision=None):
-        return self.storage.compare_and_swap(
-            self.session_id,
+        revision = (
             expected_chain_revision
             if expected_chain_revision is not None
-            else (snapshot.chain.targeted_revision if snapshot.chain else 0),
+            else (snapshot.chain.targeted_revision if snapshot.chain else 0)
+        )
+        if self._control is not None:
+            key, capability, _ = self._control
+            updated = self.storage.compare_and_swap_control(
+                key,
+                capability,
+                revision,
+                snapshot.session.targeted_revision,
+                LifecycleMutation(session, chain),
+            )
+            self._control = (
+                key,
+                self.storage.control_capability(updated.session),
+                updated.session.targeted_revision,
+            )
+            return updated
+        return self.storage.compare_and_swap(
+            self.session_id,
+            revision,
             snapshot.session.targeted_revision,
             LifecycleMutation(session, chain),
         )
 
     def inspect(self):
-        snapshot = self.storage.load_snapshot(self.session_id)
+        snapshot = self._load_snapshot()
         session, chain = snapshot.session, snapshot.chain
         proposal = session.pending_transition_reference
         return {

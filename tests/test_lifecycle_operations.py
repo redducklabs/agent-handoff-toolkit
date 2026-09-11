@@ -52,7 +52,8 @@ from test_lifecycle import make_record, make_scope  # noqa: E402
 
 
 DEFINITION = "eyJvdXRjb21lIjoiQ29tcGxldGUgYWxsIGF1dGhvcml6ZWQgaXNzdWUgd29yay4iLCJ0aXRsZSI6Iklzc3VlIDEzMjMifQ"
-PREFIX = "python .agent-handoff-toolkit/runner.py lifecycle "
+RUNNER = (Path.cwd() / ".agent-handoff-toolkit" / "runner.py").as_posix()
+PREFIX = f"python {RUNNER} lifecycle "
 COMMANDS = {
     "register-root": f"--scope-id issue-1323 --scope-kind issue --scope-definition-b64 {DEFINITION}",
     "resume": "--record D:/repo/handoffs/current.md",
@@ -62,10 +63,17 @@ COMMANDS = {
 
 
 def command(operation):
-    return f"{PREFIX}{operation} --challenge challenge-001 {COMMANDS[operation]} --expected-session-revision 0"
+    return f"{PREFIX}{operation} --session-key {'a' * 64} --challenge challenge-001 {COMMANDS[operation]} --expected-session-revision 0"
 
 
 class BootstrapTests(unittest.TestCase):
+    def test_relative_runner_is_rejected_even_when_process_cwd_matches(self):
+        absolute = command("register-root")
+        self.assertIsNone(
+            self.parse(absolute.replace(RUNNER, ".agent-handoff-toolkit/runner.py"))
+        )
+        self.assertIsNotNone(self.parse(absolute))
+
     def parse(self, value, challenge="challenge-001"):
         return parse_bootstrap_command(
             value, Path.cwd() / ".agent-handoff-toolkit" / "runner.py", challenge
@@ -200,6 +208,68 @@ class BootstrapTests(unittest.TestCase):
 
 
 class OperationsTests(unittest.TestCase):
+    def test_cli_uses_derived_binding_ignoring_raw_session_environment(self):
+        state = self.storage.load_snapshot("session-1")
+        capability = self.storage.control_capability(state.session)
+        output, errors = io.StringIO(), io.StringIO()
+        args = [
+            "lifecycle",
+            "inspect",
+            "--session-key",
+            state.session.session_key,
+            "--challenge",
+            capability,
+            "--expected-session-revision",
+            "1",
+        ]
+        with (
+            patch(
+                "agent_handoff_toolkit.lifecycle_storage.LocalLifecycleStorage",
+                return_value=self.storage,
+            ),
+            patch.dict(os.environ, {"AHK_SESSION_ID": "wrong-session"}),
+            patch("sys.stdout", output),
+            patch("sys.stderr", errors),
+        ):
+            self.assertEqual(main(args), 0)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["session_key"], state.session.session_key)
+        self.assertEqual(result["session_revision"], 2)
+        self.assertNotEqual(result["challenge"], capability)
+        self.assertEqual(errors.getvalue(), "")
+        with (
+            patch(
+                "agent_handoff_toolkit.lifecycle_storage.LocalLifecycleStorage",
+                return_value=self.storage,
+            ),
+            patch("sys.stdout", io.StringIO()),
+            patch("sys.stderr", io.StringIO()),
+        ):
+            self.assertNotEqual(main(args), 0)
+
+    def test_control_service_register_and_inspect_rotate_derived_capability(self):
+        snapshot = self.storage.load_snapshot("session-1")
+        key = snapshot.session.session_key
+        capability = self.storage.control_capability(snapshot.session)
+        service = LifecycleService.for_control(self.storage, key, capability, 1)
+        updated = service.register_root(
+            challenge=capability,
+            scope_id="issue-1323",
+            scope_kind="issue",
+            scope_definition_b64=DEFINITION,
+            expected_session_revision=1,
+        )
+        self.assertEqual(updated.session.mode, EnforcementMode.TRACKED)
+        with self.assertRaises(ValueError):
+            LifecycleService.for_control(self.storage, key, capability, 1)
+        next_capability = self.storage.control_capability(updated.session)
+        inspection = LifecycleService.for_control(self.storage, key, next_capability, 2)
+        inspection.consume_control()
+        self.assertEqual(inspection.inspect()["session_revision"], 3)
+        self.assertEqual(
+            inspection.inspect()["authorization_id"], updated.chain.authorization_id
+        )
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -616,12 +686,30 @@ class OperationsTests(unittest.TestCase):
             )
 
     def call_cli(self, arguments, stdin="", session_id="session-1"):
+        arguments = list(arguments)
+        snapshot = self.storage.load_snapshot(session_id)
+        bindings = {
+            "--session-key": snapshot.session.session_key,
+            "--challenge": self.storage.control_capability(snapshot.session),
+        }
+        for flag, value in bindings.items():
+            if flag not in arguments:
+                arguments.extend((flag, value))
+            elif arguments[arguments.index(flag) + 1] in {
+                "a" * 64,
+                "challenge-001",
+                snapshot.session.bootstrap_challenge,
+            }:
+                arguments[arguments.index(flag) + 1] = value
+        if "--expected-session-revision" not in arguments:
+            arguments.extend(
+                ("--expected-session-revision", str(snapshot.session.targeted_revision))
+            )
         output, errors = io.StringIO(), io.StringIO()
         with (
             patch.dict(
                 os.environ,
                 {
-                    "AHK_SESSION_ID": session_id,
                     "AHK_STATE_ROOT": str(self.root / "state"),
                 },
             ),
@@ -841,7 +929,7 @@ class OperationsTests(unittest.TestCase):
         private_content = "Synthetic initiating content " + secrets.token_hex(16)
         snapshot = self.user_event(private_content, adjacent=None)
         args = command("register-root").split(" lifecycle ")[1].split()
-        args[2] = snapshot.session.bootstrap_challenge
+        args[args.index("--challenge") + 1] = snapshot.session.bootstrap_challenge
         args[-1] = str(snapshot.session.targeted_revision)
         status, output, errors = self.call_cli(args)
         self.assertEqual(status, 0)
@@ -856,6 +944,7 @@ class OperationsTests(unittest.TestCase):
 
     def test_real_cli_forces_utf8_for_decision_stdin_and_stdout(self):
         self.register()
+        snapshot = self.storage.load_snapshot("session-1")
         question = "Which café " + secrets.token_hex(8) + "?"
         result = subprocess.run(
             [
@@ -864,6 +953,10 @@ class OperationsTests(unittest.TestCase):
                 "agent_handoff_toolkit",
                 "lifecycle",
                 "request-decision",
+                "--session-key",
+                snapshot.session.session_key,
+                "--challenge",
+                self.storage.control_capability(snapshot.session),
                 "--category",
                 "missing-input",
                 "--blocked-action-field",
@@ -885,7 +978,6 @@ class OperationsTests(unittest.TestCase):
                 **os.environ,
                 "PYTHONPATH": str(ROOT / "src"),
                 "PYTHONIOENCODING": "cp1252",
-                "AHK_SESSION_ID": "session-1",
                 "AHK_STATE_ROOT": str(self.root / "state"),
             },
         )

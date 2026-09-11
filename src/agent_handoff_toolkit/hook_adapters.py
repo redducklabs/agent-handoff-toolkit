@@ -32,13 +32,13 @@ from .lifecycle import (
     TerminalCandidate,
     _blocked_stop,
     classify_affirmation,
-    evaluate_pre_tool,
     evaluate_stop,
     evaluate_user_prompt,
 )
 from .lifecycle_operations import (
     LifecycleService,
     canonical_record_path,
+    decode_scope_definition,
     parse_bootstrap_command,
 )
 from .lifecycle_storage import (
@@ -48,8 +48,8 @@ from .lifecycle_storage import (
     _directory_guard,
     _open_directory,
 )
-from .lineage import record_digest, validate_identifier
-from .records import parse_markdown, render_terminal_response
+from .lineage import record_digest, scope_definition_digest, validate_identifier
+from .records import parse_markdown, render_resume_prompt, render_terminal_response
 
 MAX_INPUT_BYTES = 128 * 1024
 MAX_REASON_BYTES = 1200
@@ -65,6 +65,7 @@ _ALIASES = {
 }
 _ACTIONS = {
     "AHK-PRE-ROOT": "Register, resume, join, or adopt using the current bootstrap challenge.",
+    "AHK-CONTROL-BINDING": "Use the current derived session capability and revision.",
     "AHK-STOP-WORK": "Perform the authorized action or render a valid successor record.",
     "AHK-STOP-ROOT": "Render the locked root and registered authorization evidence.",
     "AHK-STOP-SCOPE": "Restore the inherited ordered scope definitions.",
@@ -155,7 +156,6 @@ def decode_payload(raw: str) -> Mapping[str, object]:
     payload = json.loads(raw, object_pairs_hook=pairs)
     if not isinstance(payload, dict):
         raise ValueError("hook input must be an object")
-    _bounded_json(payload)
     return payload
 
 
@@ -176,8 +176,12 @@ def normalize_event(
     root = Path(repo_root).resolve()
     if not cwd.is_absolute() or not cwd.resolve().is_relative_to(root):
         raise ValueError("hook cwd is outside repository")
-    transcript = _string(payload.get("transcript_path"), 4096)
-    if not Path(transcript).is_absolute():
+    if "transcript_path" not in payload:
+        raise ValueError("missing transcript field")
+    transcript = payload.get("transcript_path")
+    if platform != "codex" or transcript is not None:
+        transcript = _string(transcript, 4096)
+    if transcript is not None and not Path(transcript).is_absolute():
         raise ValueError("transcript reference must be absolute")
     turn = payload.get("turn_id")
     if platform == "codex" or "turn_id" in payload:
@@ -402,55 +406,167 @@ def _candidate(event, snapshot, root):
     )
 
 
-def _pre_tool(event, snapshot, root):
-    session = snapshot.session
-    parsed = None
+def _control_command(runner, session, capability, operation, fields=()):
+    prefix = f"python {runner.as_posix()} lifecycle {operation} --session-key {session.session_key} --challenge {capability}"
+    return (
+        prefix
+        + "".join(f" --{key} {value}" for key, value in fields)
+        + f" --expected-session-revision {session.targeted_revision}"
+    )
+
+
+def _repair_bootstrap(command, runner, session, capability):
     if (
-        session.mode is EnforcementMode.UNTRACKED
-        and event.tool_name in _SHELL[event.host]
-        and session.bootstrap_challenge
+        not isinstance(command, str)
+        or re.fullmatch(r"[A-Za-z0-9._:/ -]+", command) is None
     ):
-        runner = root / ".agent-handoff-toolkit" / "runner.py"
-        command = event.tool_input.get("command")
-        parsed = parse_bootstrap_command(command, runner, session.bootstrap_challenge)
-        if parsed is not None:
-            _check_path(runner)
-            if (
-                parsed.arguments["expected_session_revision"]
-                != session.targeted_revision
-            ):
-                parsed = None
-    decision = evaluate_pre_tool(event, snapshot, bootstrap_allowed=parsed is not None)
-    if decision.kind is DecisionKind.BLOCK:
-        decision = LifecycleDecision(DecisionKind.BLOCK, (_issue("AHK-PRE-ROOT"),))
-    output = render_hook_execution(event.host, event.event, decision)
-    if decision.kind is DecisionKind.BLOCK and session.bootstrap_challenge:
-        prefix = "python .agent-handoff-toolkit/runner.py lifecycle "
-        suffix = f" --expected-session-revision {session.targeted_revision}"
-        operations = {
-            "register-root": " --scope-id ROOT --scope-kind issue --scope-definition-b64 BASE64URL",
-            "resume": " --record /ABSOLUTE/RECORD.md",
-            "join": " --authorization-id AUTH --expected-chain-revision REV",
-            "adopt-v1": " --record /ABSOLUTE/RECORD.md",
-        }
-        reason = (
-            "AHK-PRE-ROOT: Fill the capitalized placeholders for one command; run from the repository root.\n"
-            + "\n".join(
-                prefix
-                + operation
-                + " --challenge "
-                + session.bootstrap_challenge
-                + arguments
-                + suffix
-                for operation, arguments in operations.items()
-            )
+        return None
+    tokens = command.split(" ")
+    if len(tokens) < 4 or tokens[0] != "python" or tokens[2] != "lifecycle":
+        return None
+    tokens[1] = runner.as_posix()
+    if "--session-key" not in tokens:
+        tokens[4:4] = ["--session-key", session.session_key]
+    for flag, value in (
+        ("--session-key", session.session_key),
+        ("--challenge", capability),
+        ("--expected-session-revision", str(session.targeted_revision)),
+    ):
+        if tokens.count(flag) != 1 or tokens.index(flag) + 1 >= len(tokens):
+            return None
+        tokens[tokens.index(flag) + 1] = value
+    corrected = " ".join(tokens)
+    parsed = parse_bootstrap_command(corrected, runner, capability)
+    return (corrected, parsed) if parsed is not None else None
+
+
+def _pre_tool(event, snapshot, root, storage):
+    session = snapshot.session
+    command = (
+        event.tool_input.get("command")
+        if event.tool_name in _SHELL[event.host]
+        else None
+    )
+    control = (
+        isinstance(command, str)
+        and re.match(r"^python \S+ lifecycle(?: |$)", command) is not None
+    )
+    if session.mode is not EnforcementMode.UNTRACKED and not control:
+        return HookExecution()
+    if event.tool_capability == "intrinsic-read-only":
+        return HookExecution()
+    if session.current_external_user_turn_reference is None:
+        return render_hook_execution(
+            event.host,
+            event.event,
+            LifecycleDecision(DecisionKind.BLOCK, (_issue("AHK-PRE-ROOT"),)),
         )
-        if len(reason.encode()) > MAX_REASON_BYTES:
-            raise ValueError("bootstrap corrective data exceeds bound")
-        value = json.loads(output.stdout)
-        value["hookSpecificOutput"]["permissionDecisionReason"] = reason
-        output = HookExecution(stdout=json.dumps(value, separators=(",", ":")))
-    return output
+    runner = root / ".agent-handoff-toolkit" / "runner.py"
+    info = _check_path(runner)
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or re.fullmatch(r"(?:[A-Z]:/|/)[A-Za-z0-9._/-]+", runner.as_posix()) is None
+    ):
+        raise ValueError("unsafe owned runner")
+    capability = storage.control_capability(session)
+    repaired = _repair_bootstrap(command, runner, session, capability)
+    code = "AHK-PRE-ROOT"
+    note = "Use the current bound control command."
+    if session.mode is not EnforcementMode.UNTRACKED:
+        code = "AHK-CONTROL-BINDING"
+        tokens = command.split(" ")
+        flags = {
+            "--session-key": session.session_key,
+            "--challenge": capability,
+            "--expected-session-revision": str(session.targeted_revision),
+        }
+        if (
+            len(tokens) > 3
+            and tokens[1] == runner.as_posix()
+            and all(
+                tokens.count(flag) == 1
+                and tokens.index(flag) + 1 < len(tokens)
+                and tokens[tokens.index(flag) + 1] == value
+                for flag, value in flags.items()
+            )
+        ):
+            return HookExecution()
+        corrected = _control_command(runner, session, capability, "inspect")
+    elif repaired is not None:
+        corrected, parsed = repaired
+        if parsed.operation == "register-root":
+            arguments = parsed.arguments
+            digest = scope_definition_digest(
+                {
+                    "scope_id": arguments["scope_id"],
+                    "scope_kind": arguments["scope_kind"],
+                    "parent_scope_id": None,
+                    "scope_definition": decode_scope_definition(
+                        arguments["scope_definition_b64"]
+                    ),
+                }
+            )
+            duplicate = next(
+                (
+                    chain
+                    for chain in storage.load_registry().chains.values()
+                    if chain.status == "active"
+                    and chain.locked_root_id == arguments["scope_id"]
+                    and chain.scope_digests[0] == digest
+                ),
+                None,
+            )
+            if duplicate is not None:
+                corrected = _control_command(
+                    runner,
+                    session,
+                    capability,
+                    "join",
+                    (
+                        ("authorization-id", duplicate.authorization_id),
+                        ("expected-chain-revision", duplicate.targeted_revision),
+                    ),
+                )
+        if corrected == command:
+            return HookExecution()
+    else:
+        pending = session.pending_transition_reference
+        if pending and pending.kind == "v1-adoption" and pending.status == "approved":
+            corrected = _control_command(
+                runner,
+                session,
+                capability,
+                "adopt-v1",
+                (("record", pending.selected_record.path),),
+            )
+        else:
+            corrected = _control_command(
+                runner,
+                session,
+                capability,
+                "register-root",
+                (
+                    ("scope-id", "{scope_id}"),
+                    ("scope-kind", "{scope_kind}"),
+                    ("scope-definition-b64", "{scope_definition_b64}"),
+                ),
+            )
+            note = "Derive the three semantic slots from the initiating user request; tooling does not supply them."
+    reason = f"{code}: {note}\nCommand: {corrected}"
+    if len(reason.encode()) > MAX_REASON_BYTES:
+        raise ValueError("control feedback exceeds bound")
+    return HookExecution(
+        stdout=json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": reason,
+                }
+            },
+            separators=(",", ":"),
+        )
+    )
 
 
 def _user_prompt(event, snapshot, storage, raw_id, root):
@@ -482,6 +598,17 @@ def _user_prompt(event, snapshot, storage, raw_id, root):
         return HookExecution()
     if event.current_user_reference == session.current_external_user_turn_reference:
         return HookExecution()
+    if session.mode is EnforcementMode.COMPLETE:
+        reset = evaluate_user_prompt(event, snapshot)
+        mutation = replace(
+            reset.mutation,
+            session=replace(
+                reset.mutation.session,
+                bootstrap_challenge="challenge-" + secrets.token_hex(16),
+            ),
+        )
+        snapshot = _commit(storage, raw_id, snapshot, mutation)
+        session = snapshot.session
     proposal = session.pending_transition_reference
     preceding = None
     if (
@@ -519,10 +646,12 @@ def _user_prompt(event, snapshot, storage, raw_id, root):
     if request is not None and _decision_resolved(event.current_user_message, request):
         decision = evaluate_user_prompt(event, updated, decision_resolved=True)
         updated = _commit(storage, raw_id, updated, decision.mutation)
-    match = re.fullmatch(r"Continue from handoff: ([^\n]+)", event.current_user_message)
+    match = re.match(r"Continue from handoff: ([^\n]+)\n", event.current_user_message)
     if match and updated.session.mode is EnforcementMode.UNTRACKED:
         path = match.group(1)
         text, data, digest = _read_record(path, root)
+        if event.current_user_message != render_resume_prompt(path, text):
+            return HookExecution()
         updated = service.resume(
             challenge=updated.session.bootstrap_challenge,
             record_path=path,
@@ -593,7 +722,7 @@ def run_lifecycle_hook(platform, name, raw, repo_root, storage=None):
         event = normalize_event(platform, name, payload, repo_root)
         event = replace(event, session_key=snapshot.session.session_key)
         if event_kind is EventName.PRE_TOOL_USE:
-            return _pre_tool(event, snapshot, root)
+            return _pre_tool(event, snapshot, root, storage)
         if event_kind is EventName.USER_PROMPT_SUBMIT:
             return _user_prompt(event, snapshot, storage, raw_id, root)
         if snapshot.session.correction_cycle_count >= 3:

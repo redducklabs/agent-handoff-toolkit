@@ -188,7 +188,7 @@ class NormalizedEvent:
     session_key: str
     turn_reference: str
     repository_root: str
-    transcript_reference: str
+    transcript_reference: str | None
     stop_hook_active: bool
     latest_assistant_message: str | None = None
     current_user_message: str | None = None
@@ -217,7 +217,7 @@ class NormalizedEvent:
         object.__setattr__(
             self,
             "transcript_reference",
-            _text(
+            _optional_text(
                 self.transcript_reference,
                 limit=4096,
                 label="transcript_reference",
@@ -908,6 +908,19 @@ def evaluate_user_prompt(
         raise ValueError("decision_resolved must be boolean")
     if not event.external_user_turn:
         return LifecycleDecision(DecisionKind.ALLOW)
+    if snapshot.session.mode is EnforcementMode.COMPLETE:
+        return LifecycleDecision(
+            DecisionKind.ALLOW,
+            mutation=LifecycleMutation(
+                SessionState(
+                    session_key=snapshot.session.session_key,
+                    targeted_revision=snapshot.session.targeted_revision + 1,
+                    mode=EnforcementMode.UNTRACKED,
+                    current_external_user_turn_reference=event.current_user_reference
+                    or event.turn_reference,
+                )
+            ),
+        )
     next_mode = snapshot.session.mode
     pending_decision = snapshot.session.pending_decision_reference
     if next_mode is EnforcementMode.AWAITING_DECISION and decision_resolved:

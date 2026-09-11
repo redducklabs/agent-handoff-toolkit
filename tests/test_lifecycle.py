@@ -606,6 +606,24 @@ class DecisionResponseTests(unittest.TestCase):
 
 
 class EventTransitionTests(unittest.TestCase):
+    def test_external_user_reenters_completed_session_as_fresh_untracked(self):
+        snapshot = LifecycleSnapshot(
+            make_chain(status="complete"), make_session(mode=EnforcementMode.COMPLETE)
+        )
+        event = make_event(
+            EventName.USER_PROMPT_SUBMIT,
+            external_user_turn=True,
+            current_user_reference="fresh-user",
+        )
+        result = evaluate_user_prompt(event, snapshot)
+        self.assertEqual(result.mutation.session.mode, EnforcementMode.UNTRACKED)
+        self.assertIsNone(result.mutation.session.authorization_id)
+        self.assertIsNone(result.mutation.session.chain_revision)
+        self.assertIsNone(result.mutation.chain)
+        self.assertEqual(
+            result.mutation.session.current_external_user_turn_reference, "fresh-user"
+        )
+
     def test_untracked_intrinsic_read_only_and_tool_free_events_allow(self) -> None:
         snapshot = LifecycleSnapshot(
             chain=None,

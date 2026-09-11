@@ -633,10 +633,86 @@ class LocalLifecycleStorage:
         mutation: LifecycleMutation,
     ) -> LifecycleSnapshot:
         """Apply a complete mutation after comparing targeted live revisions."""
+        return self._compare_and_swap_key(
+            self.session_key(session_key),
+            expected_chain_revision,
+            expected_session_revision,
+            mutation,
+        )
+
+    def control_capability(self, session: SessionState) -> str:
+        """Bind a control capability to one derived identity, user turn and revision."""
+        if (
+            not isinstance(session, SessionState)
+            or session.current_external_user_turn_reference is None
+        ):
+            raise LifecycleStorageError(
+                "control requires an observed external user turn"
+            )
+        return hmac.new(
+            self.secret,
+            b"control\0"
+            + canonical_json_bytes(
+                {
+                    "session_key": session.session_key,
+                    "user_turn": session.current_external_user_turn_reference,
+                    "session_revision": session.targeted_revision,
+                }
+            ),
+            hashlib.sha256,
+        ).hexdigest()
+
+    def _validate_control(self, snapshot, capability, revision):
+        validate_hex_digest(capability, label="control capability")
+        _revision(revision)
+        if snapshot.session.targeted_revision != revision:
+            raise StaleLifecycleState("control revision changed")
+        if not hmac.compare_digest(
+            self.control_capability(snapshot.session), capability
+        ):
+            raise LifecycleStorageError("invalid control capability")
+
+    def load_control_snapshot(
+        self, derived_key: str, capability: str, expected_session_revision: int
+    ) -> LifecycleSnapshot:
+        """Read one existing derived-key session only after capability validation."""
+        validate_hex_digest(derived_key, label="derived session key")
+        with self._locked():
+            snapshot = self._snapshot(self._load(), derived_key)
+            self._validate_control(snapshot, capability, expected_session_revision)
+            return snapshot
+
+    def compare_and_swap_control(
+        self,
+        derived_key: str,
+        capability: str,
+        expected_chain_revision: int,
+        expected_session_revision: int,
+        mutation: LifecycleMutation,
+    ) -> LifecycleSnapshot:
+        """Consume a derived-key capability in the same locked CAS transaction."""
+        validate_hex_digest(derived_key, label="derived session key")
+        validate_hex_digest(capability, label="control capability")
+        return self._compare_and_swap_key(
+            derived_key,
+            expected_chain_revision,
+            expected_session_revision,
+            mutation,
+            capability=capability,
+        )
+
+    def _compare_and_swap_key(
+        self,
+        key,
+        expected_chain_revision,
+        expected_session_revision,
+        mutation,
+        *,
+        capability=None,
+    ):
         try:
             _revision(expected_chain_revision)
             _revision(expected_session_revision)
-            key = self.session_key(session_key)
             if (
                 not isinstance(mutation, LifecycleMutation)
                 or mutation.session.session_key != key
@@ -645,6 +721,10 @@ class LocalLifecycleStorage:
             with self._locked():
                 envelope = self._load()
                 current = self._snapshot(envelope, key)
+                if capability is not None:
+                    self._validate_control(
+                        current, capability, expected_session_revision
+                    )
                 target = current.chain or envelope.chains.get(
                     mutation.session.authorization_id
                 )
@@ -676,7 +756,29 @@ class LocalLifecycleStorage:
         session, chain = mutation.session, mutation.chain
         if session.targeted_revision != current.session.targeted_revision + 1:
             raise LifecycleStorageError("session revision must advance exactly once")
-        if current.chain is not None and session.mode is EnforcementMode.UNTRACKED:
+        reentry = (
+            current.chain is not None
+            and current.chain.status == "complete"
+            and current.session.mode is EnforcementMode.COMPLETE
+            and session.mode is EnforcementMode.UNTRACKED
+            and chain is None
+            and session.authorization_id is None
+            and session.chain_revision is None
+            and session.current_external_user_turn_reference is not None
+            and session.current_external_user_turn_reference
+            != current.session.current_external_user_turn_reference
+            and session.bootstrap_challenge is not None
+            and session.pending_decision_reference is None
+            and session.pending_transition_reference is None
+            and session.pending_correction_hmac is None
+            and session.correction_cycle_count == 0
+            and session.last_issue_signature is None
+        )
+        if (
+            current.chain is not None
+            and session.mode is EnforcementMode.UNTRACKED
+            and not reentry
+        ):
             raise LifecycleStorageError("tracked sessions cannot become untracked")
         chains, sessions = dict(envelope.chains), dict(envelope.sessions)
         if chain is not None:
@@ -723,6 +825,7 @@ class LocalLifecycleStorage:
         if (
             current.chain is not None
             and current.chain.authorization_id != session.authorization_id
+            and not reentry
         ):
             old = current.chain
             if (

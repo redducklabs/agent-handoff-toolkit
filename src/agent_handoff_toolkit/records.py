@@ -1487,6 +1487,14 @@ def render_tail(record_path: str | os.PathLike[str], text: str) -> str:
     return f"[Audit record (not a handoff)](<{link_path}>)"
 
 
+def render_resume_prompt(record_path: str | os.PathLike[str], text: str) -> str:
+    """Render the complete copied continuation prompt without its display fence."""
+    data = parse_markdown(text)
+    if data["record_type"] != "continuation":
+        raise ValueError("resume prompt requires a continuation")
+    return _continuation_tail_body(data, _absolute_markdown_path(record_path))
+
+
 def render_terminal_response(
     record_path: str | os.PathLike[str],
     text: str,

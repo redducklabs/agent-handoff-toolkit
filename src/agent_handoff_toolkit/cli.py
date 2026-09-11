@@ -104,7 +104,12 @@ class _LifecycleParser(argparse.ArgumentParser):
 def _lifecycle_parser():
     parser = _LifecycleParser(prog="handoff-toolkit lifecycle")
     commands = parser.add_subparsers(dest="operation", required=True)
-    commands.add_parser("inspect", help="print bounded lifecycle IDs and status")
+    inspection = commands.add_parser(
+        "inspect", help="print bounded lifecycle IDs and status"
+    )
+    inspection.add_argument("--session-key", required=True)
+    inspection.add_argument("--challenge", required=True)
+    inspection.add_argument("--expected-session-revision", type=int, required=True)
     register = commands.add_parser(
         "register-root", help="consume the live turn challenge and register a root"
     )
@@ -122,6 +127,7 @@ def _lifecycle_parser():
     )
     adopt.add_argument("--record", required=True)
     for command in (register, resume, join, adopt):
+        command.add_argument("--session-key", required=True)
         command.add_argument("--challenge", required=True)
         command.add_argument("--expected-session-revision", type=int, required=True)
     join.add_argument("--expected-chain-revision", type=int, required=True)
@@ -146,6 +152,8 @@ def _lifecycle_parser():
     decision.add_argument("--blocked-action-value", required=True)
     decision.add_argument("--reason", required=True)
     for command in (proposal, decision):
+        command.add_argument("--session-key", required=True)
+        command.add_argument("--challenge", required=True)
         command.add_argument("--expected-chain-revision", type=int, required=True)
         command.add_argument("--expected-session-revision", type=int, required=True)
     return parser
@@ -175,16 +183,23 @@ def _lifecycle_main(argv):
             raise ValueError("duplicate lifecycle flag")
         args = vars(_lifecycle_parser().parse_args(argv))
         operation = args.pop("operation")
-        session_id = os.environ.get("AHK_SESSION_ID")
-        if not session_id:
-            raise ValueError("missing host session binding")
+        session_key = args.pop("session_key")
+        capability = args["challenge"]
         state_root = os.environ.get("AHK_STATE_ROOT")
+        owned_root = _source_root()
         storage = LocalLifecycleStorage(
-            _repository_root(Path.cwd()),
+            owned_root.parent
+            if owned_root.name == ".agent-handoff-toolkit"
+            else _repository_root(Path.cwd()),
             state_root=Path(state_root) if state_root else None,
         )
-        service = LifecycleService(storage, session_id)
+        service = LifecycleService.for_control(
+            storage, session_key, capability, args["expected_session_revision"]
+        )
+        if operation not in {"register-root", "resume", "join", "adopt-v1"}:
+            args.pop("challenge")
         if operation == "inspect":
+            service.consume_control()
             result = service.inspect()
         elif operation == "request-decision":
             reconfigure = getattr(sys.stdin, "reconfigure", None)
@@ -197,9 +212,9 @@ def _lifecycle_main(argv):
             if operation in {"resume", "adopt-v1"}:
                 path = canonical_record_path(args.pop("record"))
                 if operation == "adopt-v1":
-                    pending = storage.load_snapshot(
-                        session_id
-                    ).session.pending_transition_reference
+                    pending = (
+                        service._load_snapshot().session.pending_transition_reference
+                    )
                     if (
                         pending is None
                         or pending.kind != "v1-adoption"
@@ -268,6 +283,8 @@ def _lifecycle_main(argv):
                         "evidence_hmac": proof.evidence_hmac,
                     },
                 }
+        result["session_key"] = session_key
+        result["challenge"] = service._control[1]
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))
         return 0
     except LifecycleOperationError as error:

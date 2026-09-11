@@ -5,6 +5,7 @@ from dataclasses import replace
 import hashlib
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -39,6 +40,7 @@ from agent_handoff_toolkit.lineage import (  # noqa: E402
 )
 from agent_handoff_toolkit.records import (  # noqa: E402
     render_record,
+    render_resume_prompt,
     render_terminal_response,
 )
 from test_lifecycle import make_record  # noqa: E402
@@ -104,6 +106,12 @@ class NormalizationTests(unittest.TestCase):
                     required.append("turn_id")
                 for field in required:
                     for value in (None, [], 42, "\x00", "x" * 131073):
+                        if (
+                            host == "codex"
+                            and field == "transcript_path"
+                            and value is None
+                        ):
+                            continue
                         data = payload(ROOT, event_name)
                         data[field] = value
                         with (
@@ -303,8 +311,9 @@ class EnforcementTests(unittest.TestCase):
     def test_untracked_mutations_require_exact_current_bootstrap_and_owned_runner(self):
         self.invoke("UserPromptSubmit")
         session = self.storage.load_snapshot("session-1").session
+        capability = self.storage.control_capability(session)
         runner = (self.root / ".agent-handoff-toolkit" / "runner.py").as_posix()
-        command = f"python {runner} lifecycle join --challenge {session.bootstrap_challenge} --authorization-id auth-1 --expected-chain-revision 1 --expected-session-revision {session.targeted_revision}"
+        command = f"python {runner} lifecycle join --session-key {session.session_key} --challenge {capability} --authorization-id auth-1 --expected-chain-revision 1 --expected-session-revision {session.targeted_revision}"
         for host in ("claude", "codex"):
             for tool in ("Bash", "Write", "apply_patch", "mcp__fs__read", "unknown"):
                 self.assert_block(
@@ -318,7 +327,7 @@ class EnforcementTests(unittest.TestCase):
                 command.replace("/", "\\"),
                 command + "; whoami",
                 command + " && echo x",
-                command.replace(session.bootstrap_challenge, "expired"),
+                command.replace(capability, "expired"),
                 command.replace("revision 1", "revision 0"),
             ):
                 self.assert_block(
@@ -330,10 +339,10 @@ class EnforcementTests(unittest.TestCase):
             feedback = json.loads(self.invoke("PreToolUse", host=host).stdout)[
                 "hookSpecificOutput"
             ]["permissionDecisionReason"]
-            self.assertIn("--challenge " + session.bootstrap_challenge, feedback)
+            self.assertIn("--challenge " + capability, feedback)
             self.assertIn("--expected-session-revision 1", feedback)
-            for operation in ("register-root", "resume", "join", "adopt-v1"):
-                self.assertIn("lifecycle " + operation + " --challenge", feedback)
+            self.assertEqual(feedback.count("Command: "), 1)
+            self.assertIn("lifecycle register-root --session-key", feedback)
         (self.root / ".agent-handoff-toolkit" / "runner.py").unlink()
         self.assert_block(
             self.invoke("PreToolUse", tool_input={"command": command}),
@@ -499,7 +508,7 @@ class EnforcementTests(unittest.TestCase):
                 "UserPromptSubmit",
                 session_id="new-session",
                 turn_id="user-2",
-                prompt="Continue from handoff: " + path.as_posix(),
+                prompt=render_resume_prompt(path, path.read_text(encoding="utf-8")),
             ),
             HookExecution(),
         )
@@ -776,7 +785,7 @@ class EnforcementTests(unittest.TestCase):
         self.invoke(
             "UserPromptSubmit",
             session_id="joined",
-            prompt="Continue from handoff: " + path.as_posix(),
+            prompt=render_resume_prompt(path, path.read_text(encoding="utf-8")),
         )
         predecessor = {
             "record_id": "first",
@@ -881,7 +890,7 @@ class EnforcementTests(unittest.TestCase):
         self.invoke(
             "UserPromptSubmit",
             session_id="joined",
-            prompt="Continue from handoff: " + path.as_posix(),
+            prompt=render_resume_prompt(path, path.read_text(encoding="utf-8")),
         )
         previous_id = "first"
         for attempt in (1, 2, 3):
@@ -990,6 +999,227 @@ class EnforcementTests(unittest.TestCase):
             env=environment,
         )
         self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
+
+    def test_codex_nullable_transcript_for_all_lifecycle_events(self):
+        for name in ("Stop", "PreToolUse", "UserPromptSubmit"):
+            event = normalize_event(
+                "codex", name, payload(self.root, name, transcript_path=None), self.root
+            )
+            self.assertIsNone(event.transcript_reference)
+        self.register()
+        self.assert_block(self.invoke(transcript_path=None), "AHK-STOP-WORK")
+
+    def test_malformed_identifiable_stop_fields_reach_circuit_in_four_attempts(self):
+        self.register()
+        for index, changes in enumerate(
+            (
+                {"last_assistant_message": "x" * 20000},
+                {"unrelated": "\x00"},
+                {"tool_input": [1] * 300},
+                {"last_assistant_message": "\u2028"},
+            ),
+            1,
+        ):
+            output = self.invoke(**changes)
+            if index < 3:
+                self.assert_block(output, "AHK-HOOK-RUNTIME")
+                self.assertIsNotNone(
+                    self.storage.load_snapshot(
+                        "session-1"
+                    ).session.pending_correction_hmac
+                )
+            else:
+                self.assertFalse(json.loads(output.stdout)["continue"])
+            self.assertEqual(
+                self.storage.load_snapshot("session-1").session.correction_cycle_count,
+                index,
+            )
+
+    def test_renderer_copied_multiline_prompt_only_resumes_exact_record(self):
+        self.register()
+        path, _, message = self.record()
+        self.invoke(last_assistant_message=message)
+        copied = message.split("```text\n", 1)[1].split("\n```", 1)[0]
+        for index, text in enumerate(
+            (
+                "Continue from handoff: " + path.as_posix(),
+                copied + "\nMore",
+                "Please " + copied,
+                copied.replace("Exact next action:", "Next:"),
+            )
+        ):
+            self.invoke(
+                "UserPromptSubmit", session_id="other-" + str(index), prompt=text
+            )
+            self.assertEqual(
+                self.storage.load_snapshot("other-" + str(index)).session.mode,
+                EnforcementMode.UNTRACKED,
+            )
+        self.assertEqual(
+            self.invoke("UserPromptSubmit", session_id="copy", prompt=copied),
+            HookExecution(),
+        )
+        self.assertEqual(
+            self.storage.load_snapshot("copy").session.authorization_id,
+            self.storage.load_snapshot("session-1").session.authorization_id,
+        )
+
+    def test_completed_session_reentry_demands_new_authority(self):
+        self.register()
+        _, _, audit = self.record("completion-audit", "audit")
+        self.assertEqual(self.invoke(last_assistant_message=audit), HookExecution())
+        completed = self.storage.load_snapshot("session-1").chain
+        self.assertEqual(
+            self.invoke(
+                "UserPromptSubmit", prompt="Start another task.", turn_id="fresh-user"
+            ),
+            HookExecution(),
+        )
+        fresh = self.storage.load_snapshot("session-1")
+        self.assertEqual(fresh.session.mode, EnforcementMode.UNTRACKED)
+        self.assertIsNone(fresh.chain)
+        self.assertIsNone(fresh.session.authorization_id)
+        self.assertIsNotNone(fresh.session.bootstrap_challenge)
+        self.assertEqual(self.storage.load_chain(completed.authorization_id), completed)
+        self.assert_block(self.invoke("PreToolUse"), "AHK-PRE-ROOT")
+        self.assertEqual(self.invoke(), HookExecution())
+
+    def test_emitted_absolute_control_command_executes_owned_runner_from_other_cwd(
+        self,
+    ):
+        init = subprocess.run(
+            ["git", "init", str(self.root)], capture_output=True, text=True
+        )
+        self.assertEqual(init.returncode, 0)
+        owned = self.root / ".agent-handoff-toolkit"
+        (owned / "runner.py").write_bytes(
+            (ROOT / "distribution" / "runner.py").read_bytes()
+        )
+        shutil.copytree(
+            ROOT / "src" / "agent_handoff_toolkit",
+            owned / "src" / "agent_handoff_toolkit",
+            ignore=shutil.ignore_patterns("__pycache__"),
+        )
+        self.storage = LocalLifecycleStorage(self.root)
+        self.service = LifecycleService(self.storage, "session-1")
+        self.invoke("UserPromptSubmit")
+        reason = json.loads(self.invoke("PreToolUse").stdout)["hookSpecificOutput"][
+            "permissionDecisionReason"
+        ]
+        command = reason.split("Command: ", 1)[1]
+        definition = (
+            base64.urlsafe_b64encode(
+                canonical_json_bytes(
+                    {
+                        "title": "Synthetic task",
+                        "outcome": "Complete the synthetic authorized outcome.",
+                    }
+                )
+            )
+            .decode()
+            .rstrip("=")
+        )
+        command = (
+            command.replace("{scope_id}", "synthetic-root")
+            .replace("{scope_kind}", "standalone")
+            .replace("{scope_definition_b64}", definition)
+        )
+        self.assertEqual(command.split()[1], (owned / "runner.py").as_posix())
+        self.assertNotIn("session-1", command)
+        relative = command.replace(
+            (owned / "runner.py").as_posix(), ".agent-handoff-toolkit/runner.py"
+        )
+        denied = self.invoke("PreToolUse", tool_input={"command": relative})
+        repaired = json.loads(denied.stdout)["hookSpecificOutput"][
+            "permissionDecisionReason"
+        ].split("Command: ", 1)[1]
+        self.assertEqual(repaired, command)
+        other = self.root / "other-cwd"
+        other.mkdir()
+        self.assertEqual(
+            self.invoke(
+                "PreToolUse", tool_input={"command": repaired, "workdir": str(other)}
+            ),
+            HookExecution(),
+        )
+        environment = {
+            key: value
+            for key, value in os.environ.items()
+            if not key.startswith("AHK_") and key != "PYTHONPATH"
+        }
+        result = subprocess.run(
+            repaired.split(), cwd=other, env=environment, text=True, capture_output=True
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+        state = self.storage.load_snapshot("session-1")
+        self.assertEqual(state.chain.locked_root_id, "synthetic-root")
+        self.assertEqual(
+            json.loads(result.stdout)["session_key"], state.session.session_key
+        )
+        replay = subprocess.run(
+            repaired.split(), cwd=other, env=environment, text=True, capture_output=True
+        )
+        self.assertNotEqual(replay.returncode, 0)
+
+    def test_duplicate_root_attempt_selects_one_concrete_join_command(self):
+        state = self.register()
+        self.invoke(
+            "UserPromptSubmit", session_id="other", prompt="Join the same task."
+        )
+        other = self.storage.load_snapshot("other").session
+        definition = (
+            base64.urlsafe_b64encode(
+                canonical_json_bytes(
+                    make_record("continuation", record_id="unused")["active_scopes"][0][
+                        "scope_definition"
+                    ]
+                )
+            )
+            .decode()
+            .rstrip("=")
+        )
+        runner = (self.root / ".agent-handoff-toolkit" / "runner.py").as_posix()
+        command = f"python {runner} lifecycle register-root --session-key {other.session_key} --challenge {self.storage.control_capability(other)} --scope-id issue-1 --scope-kind issue --scope-definition-b64 {definition} --expected-session-revision {other.targeted_revision}"
+        output = self.invoke(
+            "PreToolUse", session_id="other", tool_input={"command": command}
+        )
+        reason = json.loads(output.stdout)["hookSpecificOutput"][
+            "permissionDecisionReason"
+        ]
+        self.assertIn("lifecycle join", reason)
+        self.assertIn("--authorization-id " + state.chain.authorization_id, reason)
+        self.assertEqual(reason.count("Command: "), 1)
+        self.assertNotIn("{", reason)
+        self.assertEqual(
+            self.invoke(
+                "PreToolUse",
+                session_id="other",
+                tool_input={"command": reason.split("Command: ", 1)[1]},
+            ),
+            HookExecution(),
+        )
+
+    def test_stale_tracked_control_recovers_through_concrete_inspect_command(self):
+        self.register()
+        runner = (self.root / ".agent-handoff-toolkit" / "runner.py").as_posix()
+        stale = f"python {runner} lifecycle inspect"
+        result = self.invoke("PreToolUse", tool_input={"command": stale})
+        reason = json.loads(result.stdout)["hookSpecificOutput"][
+            "permissionDecisionReason"
+        ]
+        self.assertIn("AHK-CONTROL-BINDING", reason)
+        command = reason.split("Command: ", 1)[1]
+        self.assertEqual(
+            self.invoke("PreToolUse", tool_input={"command": command}), HookExecution()
+        )
+        self.invoke(
+            "UserPromptSubmit", prompt="Continue this task.", turn_id="new-user"
+        )
+        self.assert_block(
+            self.invoke("PreToolUse", tool_input={"command": command}),
+            "AHK-CONTROL-BINDING",
+        )
 
 
 if __name__ == "__main__":
