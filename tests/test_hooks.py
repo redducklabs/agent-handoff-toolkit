@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import math
 import os
@@ -18,9 +19,18 @@ from agent_handoff_toolkit.hooks import (  # noqa: E402
     MAX_HOOK_INPUT_BYTES,
     MAX_PATCH_BYTES,
     observe_context,
-    run_hook,
+    run_hook as execute_hook,
     select_milestone,
 )
+from agent_handoff_toolkit.cli import main  # noqa: E402
+from agent_handoff_toolkit.hooks import HookExecution  # noqa: E402
+
+
+def run_hook(*args):
+    execution = execute_hook(*args)
+    if execution.stderr or execution.exit_code:
+        raise AssertionError("advisory hooks must fail open")
+    return execution.stdout
 
 
 def hook_context(output: str) -> str:
@@ -88,6 +98,83 @@ class ContextHealthTests(unittest.TestCase):
 
 
 class HostHookTests(unittest.TestCase):
+    def test_cli_writes_exact_hook_execution_streams_and_exit_code(self):
+        for platform in ("claude", "codex"):
+            for event in (
+                "session-start",
+                "post-tool-use",
+                "stop",
+                "pre-tool-use",
+                "user-prompt-submit",
+            ):
+                for execution in (
+                    HookExecution(),
+                    HookExecution(
+                        '{"decision":"block","reason":"AHK-STOP-WORK"}', "", 0
+                    ),
+                    HookExecution("", "AHK-HOOK-RUNTIME", 2),
+                ):
+                    stdout, stderr = io.StringIO(), io.StringIO()
+                    with (
+                        mock_patch(
+                            "agent_handoff_toolkit.cli.run_hook", return_value=execution
+                        ),
+                        mock_patch("sys.stdin", io.StringIO("{}")),
+                        mock_patch("sys.stdout", stdout),
+                        mock_patch("sys.stderr", stderr),
+                    ):
+                        code = main(["hook", "--platform", platform, "--event", event])
+                    self.assertEqual(code, execution.exit_code)
+                    self.assertEqual(stdout.getvalue(), execution.stdout)
+                    self.assertEqual(stderr.getvalue(), execution.stderr)
+
+    def test_cli_runtime_failure_is_open_only_for_advisory_events(self):
+        for event in (
+            "session-start",
+            "post-tool-use",
+            "stop",
+            "pre-tool-use",
+            "user-prompt-submit",
+        ):
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with (
+                mock_patch(
+                    "agent_handoff_toolkit.cli.run_hook",
+                    side_effect=RuntimeError("sensitive synthetic text"),
+                ),
+                mock_patch("sys.stdin", io.StringIO("{}")),
+                mock_patch("sys.stdout", stdout),
+                mock_patch("sys.stderr", stderr),
+            ):
+                code = main(["hook", "--platform", "codex", "--event", event])
+            if event in ("session-start", "post-tool-use"):
+                self.assertEqual(
+                    (code, stdout.getvalue(), stderr.getvalue()), (0, "", "")
+                )
+            else:
+                self.assertEqual(code, 2)
+                self.assertEqual(stdout.getvalue(), "")
+                self.assertIn("AHK-HOOK-RUNTIME", stderr.getvalue())
+                self.assertNotIn("sensitive", stderr.getvalue())
+
+    def test_cli_bounds_input_read_before_dispatch(self):
+        class BoundedInput(io.StringIO):
+            def read(self, size=-1):
+                if size < 0 or size > MAX_HOOK_INPUT_BYTES + 1:
+                    raise AssertionError("unbounded hook input read")
+                return super().read(size)
+
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with (
+            mock_patch("sys.stdin", BoundedInput("x" * (MAX_HOOK_INPUT_BYTES + 2))),
+            mock_patch("sys.stdout", stdout),
+            mock_patch("sys.stderr", stderr),
+        ):
+            self.assertEqual(
+                main(["hook", "--platform", "codex", "--event", "stop"]), 0
+            )
+        self.assertIn("AHK-HOOK-RUNTIME", stdout.getvalue())
+
     def test_session_start_injects_contract_and_continuation_reminder(self) -> None:
         for platform in ("claude", "codex"):
             with self.subTest(platform=platform):

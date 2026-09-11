@@ -1,4 +1,4 @@
-"""Context-health policy and fail-open Claude Code/Codex hook adapters."""
+"""Advisory context hooks and fail-closed lifecycle dispatch."""
 
 from __future__ import annotations
 
@@ -9,10 +9,13 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 import re
-from typing import Any
+from typing import Any, TYPE_CHECKING
 import unicodedata
 from urllib.parse import quote
 import uuid
+
+if TYPE_CHECKING:
+    from .lifecycle_storage import LocalLifecycleStorage
 
 MILESTONES = (50, 60, 70)
 MAX_HOOK_INPUT_BYTES = 128 * 1024
@@ -46,6 +49,13 @@ _SESSION_START_REMINDER = (
     "with live state and do not repeat completed work. Do not search or inspect "
     "deprecated legacy handoffs."
 )
+
+
+@dataclass(frozen=True)
+class HookExecution:
+    stdout: str = ""
+    stderr: str = ""
+    exit_code: int = 0
 
 
 @dataclass(frozen=True)
@@ -241,7 +251,7 @@ def _raw_input_is_bounded(raw: str) -> bool:
     return len(raw.encode("utf-8")) <= MAX_HOOK_INPUT_BYTES
 
 
-def run_hook(platform: str, event: str, raw: str, repo_root: Path) -> str:
+def _run_advisory_hook(platform: str, event: str, raw: str, repo_root: Path) -> str:
     """Normalize a host event and return hook JSON, failing open on all errors.
 
     ``repo_root`` is retained at the adapter boundary for future local contract
@@ -280,3 +290,38 @@ def run_hook(platform: str, event: str, raw: str, repo_root: Path) -> str:
         )
     except Exception:
         return ""
+
+
+def run_hook(
+    platform: str,
+    event: str,
+    raw: str,
+    repo_root: Path,
+    storage: LocalLifecycleStorage | None = None,
+) -> HookExecution:
+    """Keep informational errors open and lifecycle errors visibly blocking."""
+    name = (
+        event.lower().replace("-", "").replace("_", "")
+        if isinstance(event, str)
+        else ""
+    )
+    if name not in {"userpromptsubmit", "pretooluse", "stop"}:
+        return HookExecution(stdout=_run_advisory_hook(platform, event, raw, repo_root))
+    try:
+        from .hook_adapters import run_lifecycle_hook
+
+        return run_lifecycle_hook(platform, event, raw, repo_root, storage)
+    except Exception:
+        # Also covers missing owned adapter/lifecycle modules. Never echo errors.
+        reason = "AHK-HOOK-RUNTIME: Repair lifecycle runtime and retry."
+        if name == "pretooluse":
+            value = {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": reason,
+                }
+            }
+        else:
+            value = {"decision": "block", "reason": reason}
+        return HookExecution(stdout=json.dumps(value, separators=(",", ":")))

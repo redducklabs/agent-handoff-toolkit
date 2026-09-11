@@ -486,6 +486,7 @@ class LifecycleService:
             old,
             new,
             selected_record,
+            source_user_turn_reference=snapshot.session.current_external_user_turn_reference,
         )
         return self._commit(
             snapshot,

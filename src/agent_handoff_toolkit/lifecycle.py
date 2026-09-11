@@ -382,8 +382,11 @@ class AuthorizationProposal:
     status: str = "pending"
     approval_turn_reference: str | None = None
     evidence_hmac: str | None = None
+    source_user_turn_reference: str | None = None
 
     def __post_init__(self):
+        if self.source_user_turn_reference is not None:
+            _identifier(self.source_user_turn_reference, "source_user_turn_reference")
         _identifier(self.proposal_id, "proposal_id")
         _identifier(self.assistant_turn_reference, "assistant_turn_reference")
         _identifier(self.to_authorization_id, "to_authorization_id")
@@ -525,8 +528,11 @@ class SessionState:
     last_issue_signature: str | None = None
     current_external_user_turn_reference: str | None = None
     bootstrap_challenge: str | None = None
+    pending_correction_hmac: str | None = None
 
     def __post_init__(self) -> None:
+        if self.pending_correction_hmac is not None:
+            _digest(self.pending_correction_hmac, "pending_correction_hmac")
         object.__setattr__(
             self, "session_key", _identifier(self.session_key, "session_key")
         )

@@ -11,7 +11,7 @@ import sys
 import tempfile
 from typing import Sequence
 
-from .hooks import observe_context, run_hook
+from .hooks import MAX_HOOK_INPUT_BYTES, observe_context, run_hook
 from .records import render_record, render_tail, validate_markdown
 
 
@@ -32,7 +32,7 @@ def _parser() -> argparse.ArgumentParser:
     tail = subparsers.add_parser("render-tail", help="render a final response tail")
     tail.add_argument("record", type=Path)
 
-    hook = subparsers.add_parser("hook", help="run a fail-open host hook")
+    hook = subparsers.add_parser("hook", help="run a host lifecycle or advisory hook")
     hook.add_argument("--platform", choices=("claude", "codex"), required=True)
     hook.add_argument("--event", required=True)
 
@@ -296,7 +296,7 @@ def _lifecycle_main(argv):
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run explicit fail-closed commands or the automatic fail-open hook."""
+    """Run explicit commands and preserve each host hook's failure policy."""
 
     _configure_output_encoding()
     arguments = list(argv) if argv is not None else sys.argv[1:]
@@ -309,15 +309,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             output = run_hook(
                 args.platform,
                 args.event,
-                sys.stdin.read(),
+                sys.stdin.read(MAX_HOOK_INPUT_BYTES + 1),
                 _repository_root(Path.cwd()),
             )
-            if output:
-                sys.stdout.write(output + "\n")
-                sys.stdout.flush()
+            sys.stdout.write(output.stdout)
+            sys.stderr.write(output.stderr)
+            sys.stdout.flush()
+            sys.stderr.flush()
+            return output.exit_code
         except Exception:
+            event = args.event.lower().replace("-", "").replace("_", "")
+            if event in {"stop", "pretooluse", "userpromptsubmit"}:
+                sys.stderr.write(
+                    "AHK-HOOK-RUNTIME: Repair lifecycle runtime and retry."
+                )
+                return 2
             return 0
-        return 0
 
     if args.command in {"install", "sync"}:
         try:
