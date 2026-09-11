@@ -18,7 +18,9 @@ sys.path.insert(0, str(ROOT / "src"))
 from agent_handoff_toolkit.acceptance import (  # noqa: E402
     AcceptanceResult,
     HostRun,
+    _configure_observer,
     _contains_sentinel,
+    _is_link_or_reparse,
     _is_safe_regular_file,
     _observer_script,
     _run_process,
@@ -29,19 +31,19 @@ from agent_handoff_toolkit.cli import main  # noqa: E402
 
 
 class FakeRunner:
-    """Simulate only the observer's bounded trace, never host output."""
+    """Simulate a host by executing the generated observer, never writing traces."""
 
     def __init__(
         self,
         *,
-        trace: list[dict[str, object]] | None = None,
+        observer_events: tuple[str, ...] | None = None,
         host_returncode: int = 0,
-        output: str = "",
+        issue_code: str = "AHK-STOP-WORK",
         retain_input: bool = False,
     ) -> None:
-        self.trace = trace
+        self.observer_events = observer_events
         self.host_returncode = host_returncode
-        self.output = output
+        self.issue_code = issue_code
         self.retain_input = retain_input
         self.calls: list[tuple[tuple[str, ...], Path]] = []
         self.environments: list[dict[str, str]] = []
@@ -55,7 +57,13 @@ class FakeRunner:
             target = Path(command[command.index("--target") + 1])
             hooks = {
                 event: [{"hooks": [{"command": "installed-command"}]}]
-                for event in ("UserPromptSubmit", "Stop")
+                for event in (
+                    "SessionStart",
+                    "UserPromptSubmit",
+                    "PreToolUse",
+                    "PostToolUse",
+                    "Stop",
+                )
             }
             for config in (
                 target / ".claude" / "settings.json",
@@ -63,29 +71,46 @@ class FakeRunner:
             ):
                 config.parent.mkdir(parents=True, exist_ok=True)
                 config.write_text(json.dumps({"hooks": hooks}), encoding="utf-8")
+            runner = target / ".agent-handoff-toolkit" / "runner.py"
+            runner.parent.mkdir(parents=True, exist_ok=True)
+            runner.write_text(
+                f'''import pathlib
+import sys
+
+event = sys.argv[sys.argv.index("--event") + 1]
+counter = pathlib.Path(__file__).with_name("observer-count.txt")
+count = int(counter.read_text() if counter.exists() else "0")
+if event.replace("-", "") == "stop":
+    counter.write_text(str(count + 1))
+    if count == 0:
+        sys.stdout.write('{{"decision":"block","reason":"{self.issue_code}"}}')
+''',
+                encoding="utf-8",
+            )
             return HostRun(0, False)
         if self.retain_input:
             (cwd / "host-output.txt").write_text(input_text, encoding="utf-8")
-        if self.trace is not None:
-            trace_path = Path(env["AHK_ACCEPTANCE_TRACE"])
-            run_id = env["AHK_ACCEPTANCE_RUN_ID"]
-            trace_path.write_text(
-                "".join(
-                    json.dumps({"run_id": run_id, **entry}, separators=(",", ":"))
-                    + "\n"
-                    for entry in self.trace
-                ),
-                encoding="utf-8",
+        if self.observer_events is not None:
+            observer = (
+                cwd
+                / ".agent-handoff-toolkit"
+                / "acceptance-runtime"
+                / "observe_hook.py"
             )
+            for event in self.observer_events:
+                subprocess.run(
+                    [sys.executable, str(observer), command[0], event],
+                    cwd=cwd,
+                    input=b"{}",
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    env=env,
+                    check=False,
+                )
         return HostRun(self.host_returncode, False)
 
 
-def green_trace() -> list[dict[str, object]]:
-    return [
-        {"event": "user-prompt-submit", "outcome": "observed"},
-        {"event": "stop", "outcome": "block", "issue_code": "AHK-STOP-WORK"},
-        {"event": "stop", "outcome": "allow"},
-    ]
+GREEN_EVENTS = ("userpromptsubmit", "stop", "stop")
 
 
 class AcceptanceResultTests(unittest.TestCase):
@@ -131,9 +156,7 @@ class AcceptanceHarnessTests(unittest.TestCase):
         result = run_acceptance(
             "claude",
             source_root=ROOT,
-            runner=FakeRunner(
-                output='{"hook_discovered":true,"blocked":true,"issue_codes":["AHK-STOP-WORK"],"corrected":true,"block_cap_compatible":true}'
-            ),
+            runner=FakeRunner(),
         )
 
         self.assertEqual(result.status, "unverified")
@@ -146,7 +169,7 @@ class AcceptanceHarnessTests(unittest.TestCase):
                 "codex",
                 scratch=scratch,
                 source_root=ROOT,
-                runner=FakeRunner(trace=green_trace()),
+                runner=FakeRunner(observer_events=GREEN_EVENTS),
             )
 
         self.assertEqual(result.status, "pass")
@@ -154,7 +177,7 @@ class AcceptanceHarnessTests(unittest.TestCase):
         self.assertFalse(scratch.exists())
 
     def test_claude_uses_nonpersistent_disposable_host_locations(self) -> None:
-        runner = FakeRunner(trace=green_trace())
+        runner = FakeRunner(observer_events=GREEN_EVENTS)
         result = run_acceptance("claude", source_root=ROOT, runner=runner)
 
         host_command = runner.calls[-1][0]
@@ -164,12 +187,14 @@ class AcceptanceHarnessTests(unittest.TestCase):
         self.assertIn("--settings", host_command)
         self.assertIn("acceptance-runtime", host_environment["CLAUDE_CONFIG_DIR"])
         self.assertIn("acceptance-runtime", host_environment["CODEX_HOME"])
+        self.assertNotIn("AHK_ACCEPTANCE_TRACE", host_environment)
+        self.assertNotIn("AHK_ACCEPTANCE_RUN_ID", host_environment)
 
     def test_nonzero_host_outcome_cannot_correct_a_trace(self) -> None:
         result = run_acceptance(
             "codex",
             source_root=ROOT,
-            runner=FakeRunner(trace=green_trace(), host_returncode=1),
+            runner=FakeRunner(observer_events=GREEN_EVENTS, host_returncode=1),
         )
 
         self.assertEqual(result.status, "fail")
@@ -179,21 +204,19 @@ class AcceptanceHarnessTests(unittest.TestCase):
         result = run_acceptance(
             "claude",
             source_root=ROOT,
-            runner=FakeRunner(trace=list(reversed(green_trace()))),
+            runner=FakeRunner(observer_events=tuple(reversed(GREEN_EVENTS))),
         )
 
         self.assertEqual(result.status, "fail")
         self.assertFalse(result.corrected)
 
     def test_unrecognized_trace_code_is_discarded(self) -> None:
-        trace = green_trace()
-        trace[1] = {
-            "event": "stop",
-            "outcome": "block",
-            "issue_code": "AHK-MODEL-CLAIM",
-        }
         result = run_acceptance(
-            "claude", source_root=ROOT, runner=FakeRunner(trace=trace)
+            "claude",
+            source_root=ROOT,
+            runner=FakeRunner(
+                observer_events=GREEN_EVENTS, issue_code="AHK-MODEL-CLAIM"
+            ),
         )
 
         self.assertEqual(result.status, "fail")
@@ -203,7 +226,7 @@ class AcceptanceHarnessTests(unittest.TestCase):
         result = run_acceptance(
             "claude",
             source_root=ROOT,
-            runner=FakeRunner(trace=green_trace(), retain_input=True),
+            runner=FakeRunner(observer_events=GREEN_EVENTS, retain_input=True),
         )
 
         self.assertEqual(result.status, "fail")
@@ -221,10 +244,49 @@ class AcceptanceHarnessTests(unittest.TestCase):
             self.assertEqual(result.status, "unverified")
             self.assertEqual(marker.read_text(encoding="utf-8"), "consumer-owned")
 
+    def test_observer_leaves_unrelated_installed_hooks_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            scratch = Path(directory)
+            runtime = scratch / "runtime"
+            runtime.mkdir()
+            runner = scratch / ".agent-handoff-toolkit" / "runner.py"
+            runner.parent.mkdir()
+            runner.write_text("", encoding="utf-8")
+            original = "installed-command"
+            hooks = {
+                event: [{"hooks": [{"command": original}]}]
+                for event in (
+                    "SessionStart",
+                    "UserPromptSubmit",
+                    "PreToolUse",
+                    "PostToolUse",
+                    "Stop",
+                )
+            }
+            config = scratch / ".claude" / "settings.json"
+            config.parent.mkdir()
+            config.write_text(json.dumps({"hooks": hooks}), encoding="utf-8")
+
+            _configure_observer("claude", scratch, runtime, "runtime-only")
+
+            configured = json.loads(config.read_text(encoding="utf-8"))["hooks"]
+            for event in ("SessionStart", "PreToolUse", "PostToolUse"):
+                self.assertEqual(configured[event][0]["hooks"][0]["command"], original)
+            for event in ("UserPromptSubmit", "Stop"):
+                self.assertNotEqual(
+                    configured[event][0]["hooks"][0]["command"], original
+                )
+
 
 class StreamingAndScannerTests(unittest.TestCase):
     def test_observer_script_is_valid_python(self) -> None:
-        compile(_observer_script(Path("C:/runtime/runner.py")), "observer", "exec")
+        compile(
+            _observer_script(
+                Path("C:/runtime/runner.py"), Path("C:/runtime/trace.jsonl"), "run"
+            ),
+            "observer",
+            "exec",
+        )
 
     def test_actual_timeout_terminates_the_spawned_process(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -235,6 +297,31 @@ class StreamingAndScannerTests(unittest.TestCase):
                 env=os.environ,
                 timeout_seconds=0.01,
             )
+
+        self.assertTrue(run.timed_out)
+
+    def test_timeout_terminates_a_descendant_process(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "child.pid"
+            child = (
+                "import os,pathlib,sys,time; "
+                "pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(30)"
+            )
+            parent = (
+                "import subprocess,sys,time; "
+                f"subprocess.Popen([sys.executable, '-c', {child!r}, {str(marker)!r}]); "
+                "time.sleep(30)"
+            )
+            run = _run_process(
+                (sys.executable, "-c", parent),
+                cwd=Path(directory),
+                input_text="",
+                env=os.environ,
+                timeout_seconds=0.2,
+            )
+            child_pid = int(marker.read_text(encoding="utf-8"))
+            with self.assertRaises(OSError):
+                os.kill(child_pid, 0)
 
         self.assertTrue(run.timed_out)
 
@@ -272,6 +359,16 @@ class StreamingAndScannerTests(unittest.TestCase):
             outside.write_text("outside", encoding="utf-8")
 
             self.assertFalse(_is_safe_regular_file(outside, root))
+
+    def test_reparse_detection_works_without_path_is_junction(self) -> None:
+        class LowerBoundPath:
+            def is_symlink(self) -> bool:
+                return False
+
+            def stat(self, *, follow_symlinks: bool):
+                return type("Metadata", (), {"st_file_attributes": 1024})()
+
+        self.assertTrue(_is_link_or_reparse(LowerBoundPath()))
 
 
 class AcceptanceCliTests(unittest.TestCase):

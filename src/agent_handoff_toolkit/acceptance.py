@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import queue
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -113,7 +114,10 @@ def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
             check=False,
         )
     else:
-        process.kill()
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
 
 def _run_process(
@@ -142,15 +146,27 @@ def _run_process(
     process.stdin.write(input_text.encode("utf-8"))
     process.stdin.close()
 
-    chunks: queue.Queue[bytes | None] = queue.Queue()
+    chunks: queue.Queue[bytes | None] = queue.Queue(maxsize=16)
+    stopped = threading.Event()
 
     def drain() -> None:
         try:
             while chunk := process.stdout.read(4096):
-                chunks.put(chunk)
+                while not stopped.is_set():
+                    try:
+                        chunks.put(chunk, timeout=0.1)
+                        break
+                    except queue.Full:
+                        continue
         finally:
             process.stdout.close()
-            chunks.put(None)
+            if not stopped.is_set():
+                while not stopped.is_set():
+                    try:
+                        chunks.put(None, timeout=0.1)
+                        break
+                    except queue.Full:
+                        continue
 
     reader = threading.Thread(target=drain, daemon=True)
     reader.start()
@@ -172,6 +188,7 @@ def _run_process(
         if chunk is None:
             break
         reducer.feed(chunk)
+    stopped.set()
     process.wait(timeout=2)
     reader.join(timeout=2)
     return HostRun(process.returncode or 0, timed_out, reducer.jsonl_events)
@@ -211,10 +228,26 @@ def _scenario_input(sentinel: str) -> str:
     )
 
 
+def _is_link_or_reparse(candidate: Path) -> bool:
+    if candidate.is_symlink():
+        return True
+    is_junction = getattr(candidate, "is_junction", None)
+    if callable(is_junction) and is_junction():
+        return True
+    try:
+        attributes = candidate.stat(follow_symlinks=False).st_file_attributes
+    except AttributeError:
+        return False
+    except OSError:
+        return True
+    reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return bool(attributes & reparse)
+
+
 def _is_safe_regular_file(candidate: Path, root: Path) -> bool:
     try:
         candidate.relative_to(root)
-        if candidate.is_symlink() or candidate.is_junction():
+        if _is_link_or_reparse(candidate):
             return False
         return stat.S_ISREG(candidate.stat(follow_symlinks=False).st_mode)
     except (OSError, ValueError):
@@ -224,7 +257,7 @@ def _is_safe_regular_file(candidate: Path, root: Path) -> bool:
 def _contains_sentinel(root: Path, sentinel: str) -> bool:
     """Treat unreadable, escaping, or linked runtime entries as unsafe retention."""
 
-    if root.is_symlink() or root.is_junction():
+    if _is_link_or_reparse(root):
         return True
     root = root.resolve()
     try:
@@ -233,7 +266,7 @@ def _contains_sentinel(root: Path, sentinel: str) -> bool:
         return True
     overlap = ""
     for candidate in candidates:
-        if candidate.is_symlink() or candidate.is_junction():
+        if _is_link_or_reparse(candidate):
             return True
         if candidate.is_dir():
             continue
@@ -261,7 +294,7 @@ def _release_source(root: Path | None) -> Path:
     return candidate
 
 
-def _observer_script(runner: Path) -> str:
+def _observer_script(runner: Path, trace: Path, run_id: str) -> str:
     return f"""import json
 import os
 from pathlib import Path
@@ -269,12 +302,14 @@ import subprocess
 import sys
 
 runner = {str(runner)!r}
+trace = {str(trace)!r}
+run_id = {run_id!r}
 platform, event = sys.argv[1:3]
 raw = sys.stdin.buffer.read()
 completed = subprocess.run([sys.executable, runner, "hook", "--platform", platform, "--event", event], input=raw, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
 combined = completed.stdout + completed.stderr
 allowed = "AHK-STOP-WORK"
-entry = {{"run_id": os.environ["AHK_ACCEPTANCE_RUN_ID"], "event": event, "outcome": "other"}}
+entry = {{"run_id": run_id, "event": event, "outcome": "other"}}
 if event.replace("-", "") == "userpromptsubmit" and completed.returncode == 0:
     entry["outcome"] = "observed"
 elif event == "stop":
@@ -282,7 +317,7 @@ elif event == "stop":
         entry.update(outcome="block", issue_code=allowed)
     elif completed.returncode == 0 and not combined:
         entry["outcome"] = "allow"
-Path(os.environ["AHK_ACCEPTANCE_TRACE"]).open("a", encoding="utf-8", newline="\\n").write(json.dumps(entry, separators=(",", ":")) + "\\n")
+Path(trace).open("a", encoding="utf-8", newline="\\n").write(json.dumps(entry, separators=(",", ":")) + "\\n")
 sys.stdout.buffer.write(completed.stdout)
 sys.stderr.buffer.write(completed.stderr)
 sys.exit(completed.returncode)
@@ -297,7 +332,9 @@ def _configure_observer(
     trace = runtime / "lifecycle-trace.jsonl"
     observer = runtime / "observe_hook.py"
     runner = scratch / ".agent-handoff-toolkit" / "runner.py"
-    observer.write_text(_observer_script(runner), encoding="utf-8", newline="\n")
+    observer.write_text(
+        _observer_script(runner, trace, run_id), encoding="utf-8", newline="\n"
+    )
     config = scratch / (
         ".claude/settings.json" if platform == "claude" else ".codex/hooks.json"
     )
@@ -305,7 +342,8 @@ def _configure_observer(
     hooks = value.get("hooks")
     if not isinstance(hooks, dict):
         raise ValueError("installed hook configuration is invalid")
-    for event, entries in hooks.items():
+    for event in ("UserPromptSubmit", "Stop"):
+        entries = hooks.get(event)
         if not isinstance(entries, list):
             raise ValueError("installed hook configuration is invalid")
         for entry in entries:
@@ -439,8 +477,6 @@ def run_acceptance(
             env={
                 **os.environ,
                 "NO_COLOR": "1",
-                "AHK_ACCEPTANCE_RUN_ID": run_id,
-                "AHK_ACCEPTANCE_TRACE": str(trace),
                 "CLAUDE_CONFIG_DIR": str(runtime / "claude-home"),
                 "CODEX_HOME": str(runtime / "codex-home"),
             },
