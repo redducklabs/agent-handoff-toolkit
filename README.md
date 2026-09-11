@@ -6,7 +6,7 @@ This repository provides a shared contract, deterministic validation and renderi
 
 ## Status
 
-Version 0.2.8 makes every continuation response stop the current session and
+Version 0.3.0 adds synchronous lifecycle enforcement for tracked sessions and
 direct the user to resume in a new session from the handoff. It preserves
 release-pinned installation, consumer-owned instructions, and opaque deprecated
 historical records for both Claude Code and Codex. No-action continuation fields
@@ -44,16 +44,16 @@ Automatic hooks fail open so they cannot break an agent session. Explicit comman
 
 ## Consumer installation
 
-Check out the public v0.2.8 release, inspect the proposed changes, then apply
+Check out the public v0.3.0 release, inspect the proposed changes, then apply
 them from that checkout:
 
 ```powershell
-git clone --branch v0.2.8 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
+git clone --branch v0.3.0 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
 Set-Location agent-handoff-toolkit
-python distribution/runner.py install --target <consumer-repository> --release v0.2.8 --dry-run
-python distribution/runner.py install --target <consumer-repository> --release v0.2.8 --apply
-python distribution/runner.py sync --target <consumer-repository> --release v0.2.8 --check
-python distribution/runner.py sync --target <consumer-repository> --release v0.2.8 --apply
+python distribution/runner.py install --target <consumer-repository> --release v0.3.0 --dry-run
+python distribution/runner.py install --target <consumer-repository> --release v0.3.0 --apply
+python distribution/runner.py sync --target <consumer-repository> --release v0.3.0 --check
+python distribution/runner.py sync --target <consumer-repository> --release v0.3.0 --apply
 ```
 
 Run install and sync only in an isolated, clean Git worktree with no concurrent
@@ -83,17 +83,15 @@ The package has no runtime dependencies outside the Python standard library.
 
 ## Software versions
 
-Last checked: 2026-09-06.
+Last checked: 2026-09-10.
 
-- Minimum supported Python: 3.11
-- CI Python versions: 3.11, 3.12, 3.13, 3.14
-- Latest stable Python checked: 3.14.7
-- GitHub Actions: `actions/checkout@v7`, `actions/setup-python@v7`
-- Build frontend: `build==1.6.0`
-- Build backend: `setuptools==84.0.0`
-- Linter and formatter: `ruff==0.16.6`
-
-Version sources are the official Python release index and the official GitHub Action repositories.
+- Minimum supported Python: [3.11](https://www.python.org/downloads/)
+- CI Python versions: [3.11, 3.12, 3.13, 3.14](https://www.python.org/downloads/)
+- Latest stable Python checked: [3.14.7](https://www.python.org/downloads/)
+- GitHub Actions: [`actions/checkout@v7`](https://github.com/actions/checkout), [`actions/setup-python@v7`](https://github.com/actions/setup-python)
+- Build frontend: [`build==1.6.1`](https://pypi.org/project/build/1.6.1/)
+- Build backend: [`setuptools==84.0.0`](https://pypi.org/project/setuptools/84.0.0/)
+- Linter and formatter: [`ruff==0.16.7`](https://pypi.org/project/ruff/0.16.7/)
 
 ## License
 

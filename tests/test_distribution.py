@@ -78,6 +78,21 @@ EXPECTED_INSTALL_TARGETS = {
     "src/agent_handoff_toolkit/records.py": {
         ".agent-handoff-toolkit/src/agent_handoff_toolkit/records.py"
     },
+    "src/agent_handoff_toolkit/lineage.py": {
+        ".agent-handoff-toolkit/src/agent_handoff_toolkit/lineage.py"
+    },
+    "src/agent_handoff_toolkit/lifecycle.py": {
+        ".agent-handoff-toolkit/src/agent_handoff_toolkit/lifecycle.py"
+    },
+    "src/agent_handoff_toolkit/lifecycle_storage.py": {
+        ".agent-handoff-toolkit/src/agent_handoff_toolkit/lifecycle_storage.py"
+    },
+    "src/agent_handoff_toolkit/lifecycle_operations.py": {
+        ".agent-handoff-toolkit/src/agent_handoff_toolkit/lifecycle_operations.py"
+    },
+    "src/agent_handoff_toolkit/hook_adapters.py": {
+        ".agent-handoff-toolkit/src/agent_handoff_toolkit/hook_adapters.py"
+    },
 }
 
 METADATA_RE = re.compile(
@@ -166,31 +181,32 @@ def normalized_sha256(data: bytes) -> str:
 
 
 class DistributionTests(unittest.TestCase):
-    def test_public_repository_ci_uses_github_hosted_runners(self) -> None:
+    def test_ci_uses_the_required_runner_and_pinned_toolchain(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
             encoding="utf-8"
         )
 
-        self.assertIn("runs-on: ubuntu-latest", workflow)
-        self.assertNotIn("runs-on: redducklabs-runners", workflow)
+        self.assertIn("runs-on: redducklabs-runners", workflow)
+        self.assertNotIn("runs-on: ubuntu-latest", workflow)
+        self.assertIn("build==1.6.1 ruff==0.16.7 setuptools==84.0.0", workflow)
 
     def test_manifest_hashes_every_managed_artifact(self) -> None:
         manifest = load_manifest()
 
         self.assertEqual(manifest["manifest_version"], 2)
-        self.assertEqual(manifest["toolkit_version"], "0.2.8")
+        self.assertEqual(manifest["toolkit_version"], "0.3.0")
         self.assertEqual(manifest["text_hash"], "utf8-lf-sha256-v1")
         self.assertIn(
-            '__version__ = "0.2.8"',
+            '__version__ = "0.3.0"',
             (ROOT / "src/agent_handoff_toolkit/__init__.py").read_text(
                 encoding="utf-8"
             ),
         )
         self.assertIn(
-            'version = "0.2.8"',
+            'version = "0.3.0"',
             (ROOT / "pyproject.toml").read_text(encoding="utf-8"),
         )
-        self.assertEqual(manifest["record_schema_version"], 1)
+        self.assertEqual(manifest["record_schema_version"], 2)
         expected_release = f"v{manifest['toolkit_version']}"
         for documentation in ("README.md", "docs/consumer-integration.md"):
             release_references = set(
@@ -242,7 +258,23 @@ class DistributionTests(unittest.TestCase):
         )
         self.assertEqual(
             claude["array_identities"],
-            [{"pointer": "/hooks/PostToolUse", "fields": ["matcher"]}],
+            [
+                {"pointer": "/hooks/SessionStart", "fields": ["matcher"]},
+                {"pointer": "/hooks/PreToolUse", "fields": ["matcher"]},
+                {"pointer": "/hooks/PostToolUse", "fields": ["matcher"]},
+            ],
+        )
+        codex = next(
+            artifact
+            for artifact in artifacts
+            if artifact["source"] == "adapters/codex/hooks.fragment.json"
+        )
+        self.assertEqual(
+            codex["array_identities"],
+            [
+                {"pointer": "/hooks/PreToolUse", "fields": ["matcher"]},
+                {"pointer": "/hooks/PostToolUse", "fields": ["matcher"]},
+            ],
         )
 
     def test_consumer_guidance_requires_prospective_acceptance_only(self) -> None:
@@ -681,22 +713,44 @@ class DistributionTests(unittest.TestCase):
             )
         )
 
-        for platform, fragment, matcher in (
-            ("claude", claude, "Write|Edit|MultiEdit"),
-            ("codex", codex, "apply_patch"),
+        for platform, fragment, matchers in (
+            (
+                "claude",
+                claude,
+                {
+                    "SessionStart": "startup|resume|clear|compact",
+                    "PreToolUse": "Bash|PowerShell|Write|Edit|MultiEdit",
+                    "PostToolUse": "Write|Edit|MultiEdit",
+                },
+            ),
+            (
+                "codex",
+                codex,
+                {"PreToolUse": "Bash|apply_patch", "PostToolUse": "apply_patch"},
+            ),
         ):
-            self.assertEqual(set(fragment["hooks"]), {"SessionStart", "PostToolUse"})
-            self.assertNotIn("Stop", fragment["hooks"])
-            if platform == "claude":
-                self.assertEqual(
-                    fragment["hooks"]["SessionStart"][0]["matcher"],
-                    "startup|resume|clear|compact",
-                )
-            self.assertEqual(fragment["hooks"]["PostToolUse"][0]["matcher"], matcher)
+            self.assertEqual(
+                set(fragment["hooks"]),
+                {
+                    "SessionStart",
+                    "UserPromptSubmit",
+                    "PreToolUse",
+                    "PostToolUse",
+                    "Stop",
+                },
+            )
             for host_event, cli_event in (
                 ("SessionStart", "session-start"),
+                ("UserPromptSubmit", "user-prompt-submit"),
+                ("PreToolUse", "pre-tool-use"),
                 ("PostToolUse", "post-tool-use"),
+                ("Stop", "stop"),
             ):
+                entry = fragment["hooks"][host_event][0]
+                if host_event in {"Stop", "UserPromptSubmit"}:
+                    self.assertNotIn("matcher", entry)
+                elif host_event in matchers:
+                    self.assertEqual(entry["matcher"], matchers[host_event])
                 hook = fragment["hooks"][host_event][0]["hooks"][0]
                 self.assertEqual(hook["type"], "command")
                 self.assertEqual(
@@ -843,22 +897,48 @@ class DistributionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(actual, expected)
 
+    def test_runner_fails_closed_for_lifecycle_hook_when_runtime_import_fails(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            consumer = Path(directory)
+            runner = consumer / ".agent-handoff-toolkit" / "runner.py"
+            runner.parent.mkdir()
+            shutil.copyfile(ROOT / "distribution" / "runner.py", runner)
+            result = run_installed_command(
+                "python .agent-handoff-toolkit/runner.py hook "
+                "--platform codex --event stop",
+                consumer,
+                "{}",
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            json.loads(result.stdout),
+            {
+                "decision": "block",
+                "reason": "AHK-HOOK-RUNTIME: Repair lifecycle runtime and retry.",
+            },
+        )
+
     def test_manifest_install_then_sync_check_is_current(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             consumer = Path(directory)
             result = run_source_cli(
-                "install", "--apply", target=consumer, release="v0.2.8"
+                "install", "--apply", target=consumer, release="v0.3.0"
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            check = run_source_cli("sync", "--check", target=consumer, release="v0.2.8")
+            check = run_source_cli("sync", "--check", target=consumer, release="v0.3.0")
             self.assertEqual(check.returncode, 0, check.stderr)
             state = json.loads(
                 (consumer / ".agent-handoff-toolkit/install-state.json").read_text(
                     encoding="utf-8"
                 )
             )
-            self.assertEqual(state["release"], "v0.2.8")
-            self.assertEqual(state["toolkit_version"], "0.2.8")
+            self.assertEqual(state["release"], "v0.3.0")
+            self.assertEqual(state["toolkit_version"], "0.3.0")
+            self.assertEqual(state["state_version"], 1)
+            self.assertEqual(state["record_schema_version"], 2)
             self.assertEqual(
                 [target["target"] for target in state["targets"]],
                 sorted(
@@ -918,13 +998,21 @@ class DistributionTests(unittest.TestCase):
             self.assertFalse((installed_source / "manifest.py").exists())
             self.assertFalse((installed_source / "operations.py").exists())
             self.assertFalse((installed_source / "state.py").exists())
+            for module in (
+                "lineage.py",
+                "lifecycle.py",
+                "lifecycle_storage.py",
+                "lifecycle_operations.py",
+                "hook_adapters.py",
+            ):
+                self.assertTrue((installed_source / module).is_file())
 
     def test_sync_upgrades_a_prior_release_without_touching_legacy_records(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            previous_source = root / "v0.2.7"
+            previous_source = root / "v0.2.8"
             shutil.copytree(
                 ROOT,
                 previous_source,
@@ -939,7 +1027,7 @@ class DistributionTests(unittest.TestCase):
                     "release was\n  adopted in the consumer",
                     "Treat every pre-toolkit handoff",
                 ),
-                "src/agent_handoff_toolkit/__init__.py": ("0.2.8", "0.2.7"),
+                "src/agent_handoff_toolkit/__init__.py": ("0.3.0", "0.2.8"),
                 "src/agent_handoff_toolkit/hooks.py": (
                     "deprecated legacy handoffs",
                     "deprecated pre-toolkit handoffs",
@@ -957,7 +1045,8 @@ class DistributionTests(unittest.TestCase):
             previous_manifest = json.loads(
                 previous_manifest_path.read_text(encoding="utf-8")
             )
-            previous_manifest["toolkit_version"] = "0.2.7"
+            previous_manifest["toolkit_version"] = "0.2.8"
+            previous_manifest["record_schema_version"] = 1
             for artifact in previous_manifest["artifacts"]:
                 source = previous_source / Path(
                     *PurePosixPath(artifact["source"]).parts
@@ -982,7 +1071,7 @@ class DistributionTests(unittest.TestCase):
                     "--target",
                     str(consumer),
                     "--release",
-                    "v0.2.7",
+                    "v0.2.8",
                     "--apply",
                 ],
                 cwd=previous_source,
@@ -999,11 +1088,11 @@ class DistributionTests(unittest.TestCase):
             legacy_record.write_bytes(legacy_bytes)
 
             upgraded = run_source_cli(
-                "sync", "--apply", target=consumer, release="v0.2.8"
+                "sync", "--apply", target=consumer, release="v0.3.0"
             )
             self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
             current = run_source_cli(
-                "sync", "--check", target=consumer, release="v0.2.8"
+                "sync", "--check", target=consumer, release="v0.3.0"
             )
 
             self.assertEqual(current.returncode, 0, current.stderr)
@@ -1018,8 +1107,9 @@ class DistributionTests(unittest.TestCase):
                     encoding="utf-8"
                 )
             )
-            self.assertEqual(state["release"], "v0.2.8")
-            self.assertEqual(state["toolkit_version"], "0.2.8")
+            self.assertEqual(state["release"], "v0.3.0")
+            self.assertEqual(state["toolkit_version"], "0.3.0")
+            self.assertEqual(state["record_schema_version"], 2)
 
     def test_hook_fragment_commands_execute_against_the_installed_layout(self) -> None:
         payloads = {
@@ -1043,7 +1133,7 @@ class DistributionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             consumer = Path(directory)
             installed = run_source_cli(
-                "install", "--apply", target=consumer, release="v0.2.8"
+                "install", "--apply", target=consumer, release="v0.3.0"
             )
             self.assertEqual(installed.returncode, 0, installed.stderr)
             installed_configs = {

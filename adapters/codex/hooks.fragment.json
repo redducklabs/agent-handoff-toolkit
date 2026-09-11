@@ -11,6 +11,29 @@
         ]
       }
     ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python .agent-handoff-toolkit/runner.py hook --platform codex --event user-prompt-submit",
+            "commandWindows": "python .agent-handoff-toolkit/runner.py hook --platform codex --event user-prompt-submit"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|apply_patch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python .agent-handoff-toolkit/runner.py hook --platform codex --event pre-tool-use",
+            "commandWindows": "python .agent-handoff-toolkit/runner.py hook --platform codex --event pre-tool-use"
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "apply_patch",
@@ -19,6 +42,17 @@
             "type": "command",
             "command": "python .agent-handoff-toolkit/runner.py hook --platform codex --event post-tool-use",
             "commandWindows": "python .agent-handoff-toolkit/runner.py hook --platform codex --event post-tool-use"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python .agent-handoff-toolkit/runner.py hook --platform codex --event stop",
+            "commandWindows": "python .agent-handoff-toolkit/runner.py hook --platform codex --event stop"
           }
         ]
       }

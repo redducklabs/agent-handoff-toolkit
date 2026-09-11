@@ -6,12 +6,12 @@ Run installation from an inspectable checkout of the public release rather than
 from a network downloader:
 
 ```powershell
-git clone --branch v0.2.8 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
+git clone --branch v0.3.0 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
 Set-Location agent-handoff-toolkit
-python distribution/runner.py install --target <consumer-repository> --release v0.2.8 --dry-run
-python distribution/runner.py install --target <consumer-repository> --release v0.2.8 --apply
-python distribution/runner.py sync --target <consumer-repository> --release v0.2.8 --check
-python distribution/runner.py sync --target <consumer-repository> --release v0.2.8 --apply
+python distribution/runner.py install --target <consumer-repository> --release v0.3.0 --dry-run
+python distribution/runner.py install --target <consumer-repository> --release v0.3.0 --apply
+python distribution/runner.py sync --target <consumer-repository> --release v0.3.0 --check
+python distribution/runner.py sync --target <consumer-repository> --release v0.3.0 --apply
 ```
 
 Run install and sync only in an isolated, clean Git worktree. Confirm the
@@ -81,31 +81,37 @@ Run these checks on the installation branch before enabling routine use:
    `install-state.json` as a test constant; never derive expected values from the
    state under test. The state is the installer's source of truth, not the
    acceptance test's oracle.
-3. From the consumer repository root, execute every installed Claude and Codex
+3. Verify that each host discovers the installed hook configuration and that its
+   trust configuration permits command hooks. Confirm the host's stop-block cap
+   is compatible with a synthetic bad-stop correction before enabling routine
+   use. If real-host discovery and smoke are not observed, record the host as
+   `unverified`; automatic Codex hook discovery is unverified until observed
+   end-to-end in the consumer's actual Codex host. Direct runner execution is
+   not host-discovery evidence.
+4. From the consumer repository root, execute every installed Claude and Codex
    hook command directly with representative matching and non-matching input.
    Derive each command from the installed JSON rather than duplicating its
    argument list in the test. Assert that SessionStart emits the exact policy
-   sentence `Do not search or inspect deprecated legacy handoffs.` Do not
-   infer runtime viability from valid JSON alone.
-4. Create fresh disposable continuation and completion-audit records. Render and
+   sentence `Do not search or inspect deprecated legacy handoffs.` Then use a
+   synthetic bad stop: require the exact lifecycle issue code, correct the stop,
+   and confirm the corrected stop is accepted without retained prompt, reply, or
+   transcript content. Do not infer runtime viability from valid JSON alone.
+5. Create fresh disposable continuation and completion-audit records. Render and
    validate both record types. Assert the continuation's copy/paste tail and the
    completion audit's `Audit record (not a handoff)` link, including correct URL
    encoding, and assert that an audit emits no restart prompt. Include the highest
    authorized scope completion audit. Verification results and exact next actions
    must be derived from record metadata, not maintained as handwritten prose.
-5. Reconcile project overlays at the policy level. Overlays may be stricter but
+6. Reconcile project overlays at the policy level. Overlays may be stricter but
    cannot loosen or contradict the record-type decision, canonical derived
    sections, or final-tail requirements. This review never includes deprecated
    historical records.
-6. Add consumer regression tests for the merged Claude and Codex hook JSON,
+7. Add consumer regression tests for the merged Claude and Codex hook JSON,
    install-state ownership and `CURRENT` status, schema-derived section parity,
    and continuation/completion record-decision semantics. Recursively assert
    every merge-owned JSON fragment, not only copied-file hashes. If this focused
    test runs in a container, mount every asserted managed artifact read-only.
    Missing, empty, wrong-type, or unmounted artifacts must fail, never skip.
-7. Report automatic Codex hook discovery as unverified unless it has been
-   observed end-to-end in the consumer's actual Codex host. Direct command
-   execution verifies the installed hook itself, not host discovery.
 8. Confirm a rendered continuation says the current session is stopped, directs
    the user to start a new session, and begins its fenced block for that new
    session with `Continue from handoff`. It must name the absolute record path and exact next
@@ -132,7 +138,7 @@ Before bulk adoption, select one repository with mature handoffs and one with li
 1. Inventory local instructions, hook and skill configuration, and tracker
    conventions. Count or locate historical handoff storage only if needed to
    protect it; do not open the records.
-2. Run the v0.2.8 installer in dry-run mode from its release checkout.
+2. Run the v0.3.0 installer in dry-run mode from its release checkout.
 3. Review the proposed instruction and hook merges.
 4. Apply on a branch. Treat every record that predates this adoption as
    deprecated by policy without marking, reading, or rewriting individual files.

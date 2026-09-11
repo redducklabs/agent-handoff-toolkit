@@ -11,6 +11,27 @@
         ]
       }
     ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python .agent-handoff-toolkit/runner.py hook --platform claude --event user-prompt-submit"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell|Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python .agent-handoff-toolkit/runner.py hook --platform claude --event pre-tool-use"
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Write|Edit|MultiEdit",
@@ -18,6 +39,16 @@
           {
             "type": "command",
             "command": "python .agent-handoff-toolkit/runner.py hook --platform claude --event post-tool-use"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python .agent-handoff-toolkit/runner.py hook --platform claude --event stop"
           }
         ]
       }
