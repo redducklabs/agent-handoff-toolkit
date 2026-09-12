@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import queue
+import shlex
 import shutil
 import signal
 import stat
@@ -30,7 +31,10 @@ _REQUIRED_PROPERTIES = (
 )
 _MAX_HOST_OUTPUT_BYTES = 65536
 _MAX_TRACE_BYTES = 8192
-_HOST_TIMEOUT_SECONDS = 25
+# A real host session runs several turns: one measured Claude run of this
+# scenario took about 167 seconds. A short cap kills the host mid-session and
+# reports undiscovered hooks instead of the timeout it actually was.
+_HOST_TIMEOUT_SECONDS = 600
 
 
 @dataclass(frozen=True)
@@ -195,6 +199,80 @@ def _run_process(
     return HostRun(process.returncode or 0, timed_out, reducer.jsonl_events)
 
 
+# The disposable home each host is pointed at, and where that host keeps the
+# credential it needs to start a session at all.
+_HOST_HOMES = {"claude": "claude-home", "codex": "codex-home"}
+_HOST_CREDENTIALS = {
+    "claude": ("CLAUDE_CONFIG_DIR", Path(".claude"), ".credentials.json"),
+    "codex": ("CODEX_HOME", Path(".codex"), "auth.json"),
+}
+
+
+def _operator_credential(platform: str) -> Path | None:
+    """Locate the operator's own host credential without following a link."""
+
+    variable, default, name = _HOST_CREDENTIALS[platform]
+    configured = os.environ.get(variable)
+    try:
+        home = Path(configured) if configured else Path.home() / default
+        candidate = home / name
+        if _is_link_or_reparse(candidate):
+            return None
+        if not stat.S_ISREG(candidate.stat(follow_symlinks=False).st_mode):
+            return None
+    except (OSError, ValueError, RuntimeError):
+        return None
+    return candidate
+
+
+def _remove_credential(path: Path | None) -> None:
+    """Overwrite then unlink a seeded copy, never raising."""
+
+    if path is None:
+        return
+    try:
+        size = path.stat(follow_symlinks=False).st_size
+        with open(path, "r+b") as handle:
+            handle.write(b"\0" * size)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except OSError:
+        pass
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
+def _seed_host_home(platform: str, runtime: Path) -> Path | None:
+    """Lend the disposable home the operator credential for this run only.
+
+    The host is deliberately started with its config home redirected into the
+    scratch directory, so on any machine whose credential lives in that home the
+    host cannot start a session at all. That reads as "the hooks were never
+    discovered" when the real cause is a missing prerequisite, so the operator's
+    credential is copied in for the run and removed as soon as the host exits.
+    The copy is created private, is never read back or reported, and the
+    operator's own file is only ever read.
+    """
+
+    home = runtime / _HOST_HOMES[platform]
+    home.mkdir(parents=True, exist_ok=True)
+    source = _operator_credential(platform)
+    if source is None:
+        return None
+    payload = source.read_bytes()
+    target = home / source.name
+    descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+    except BaseException:
+        _remove_credential(target)
+        raise
+    return target
+
+
 def _host_command(platform: str, settings: Path) -> tuple[str, ...]:
     if platform == "claude":
         return (
@@ -325,6 +403,18 @@ sys.exit(completed.returncode)
 """
 
 
+def _shell_command(interpreter: Path, script: Path, *arguments: str) -> str:
+    """Quote a hook command for the POSIX shell every host runs hooks through.
+
+    subprocess.list2cmdline() emits cmd.exe syntax, whose backslash paths are
+    escape sequences to that shell: the command is mangled, never runs, and the
+    run reports undiscovered hooks rather than a broken command.
+    """
+
+    words = (interpreter.as_posix(), script.as_posix(), *arguments)
+    return " ".join(shlex.quote(word) for word in words)
+
+
 def _configure_observer(
     platform: str, scratch: Path, runtime: Path, run_id: str
 ) -> tuple[Path, Path]:
@@ -355,8 +445,8 @@ def _configure_observer(
                     hook.get("command"), str
                 ):
                     raise ValueError("installed hook configuration is invalid")
-                command = subprocess.list2cmdline(
-                    [sys.executable, str(observer), platform, event.lower()]
+                command = _shell_command(
+                    Path(sys.executable), observer, platform, event.lower()
                 )
                 hook["command"] = command
                 if "commandWindows" in hook:
@@ -457,7 +547,7 @@ def run_acceptance(
                 "--target",
                 str(scratch_path),
                 "--release",
-                "v0.3.0",
+                "v0.3.1",
                 "--apply",
             ),
             cwd=root,
@@ -472,17 +562,23 @@ def run_acceptance(
         ):
             return result
         trace, settings = _configure_observer(platform, scratch_path, runtime, run_id)
-        host = runner(
-            _host_command(platform, settings),
-            cwd=scratch_path,
-            input_text=_scenario_input(sentinel),
-            env={
-                **os.environ,
-                "NO_COLOR": "1",
-                "CLAUDE_CONFIG_DIR": str(runtime / "claude-home"),
-                "CODEX_HOME": str(runtime / "codex-home"),
-            },
-        )
+        credential = _seed_host_home(platform, runtime)
+        try:
+            host = runner(
+                _host_command(platform, settings),
+                cwd=scratch_path,
+                input_text=_scenario_input(sentinel),
+                env={
+                    **os.environ,
+                    "NO_COLOR": "1",
+                    "CLAUDE_CONFIG_DIR": str(runtime / _HOST_HOMES["claude"]),
+                    "CODEX_HOME": str(runtime / _HOST_HOMES["codex"]),
+                },
+            )
+        finally:
+            # Removed before the retention scan, and again by the scratch
+            # teardown in the outer finally.
+            _remove_credential(credential)
         discovered, blocked, issue_received, corrected, codes = _read_evidence(
             trace, run_id
         )
