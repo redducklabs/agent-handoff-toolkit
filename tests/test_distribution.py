@@ -190,13 +190,15 @@ def normalized_sha256(data: bytes) -> str:
 
 
 class DistributionTests(unittest.TestCase):
-    def test_ci_uses_the_required_runner_and_pinned_toolchain(self) -> None:
+    def test_public_repository_ci_uses_github_hosted_runners(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
             encoding="utf-8"
         )
 
-        self.assertIn("runs-on: redducklabs-runners", workflow)
-        self.assertNotIn("runs-on: ubuntu-latest", workflow)
+        # This repository is public and CI triggers on pull_request, so a fork
+        # can execute workflow code. Self-hosted runners must never serve it.
+        self.assertIn("runs-on: ubuntu-latest", workflow)
+        self.assertNotIn("runs-on: redducklabs-runners", workflow)
         self.assertIn("build==1.6.1 ruff==0.16.7 setuptools==84.0.0", workflow)
 
     def test_manifest_hashes_every_managed_artifact(self) -> None:
