@@ -1,6 +1,6 @@
 {
   "manifest_version": 2,
-  "toolkit_version": "0.3.0",
+  "toolkit_version": "0.3.1",
   "record_schema_version": 2,
   "runtime": {
     "python_command": "python",
@@ -56,7 +56,7 @@
     },
     {
       "source": "docs/consumer-integration.md",
-      "sha256": "a7a84dfb78b1fe94cd109201875cd9d6130c910db3d5a445963fd8345766f76e",
+      "sha256": "c965af2f5896bd90989a8727f1f67c5c37fd4eb94758877075690a0b137c083a",
       "install": {
         "mode": "copy",
         "transform": "none",
@@ -168,7 +168,7 @@
     },
     {
       "source": "src/agent_handoff_toolkit/__init__.py",
-      "sha256": "af635efd9c9a101df64f12245bd3a6c87e651e7a04add085047551081d7e68c3",
+      "sha256": "fc4e1f6f58131a1b7adc88d53378b0fbdf0f660420067deaccfb7a231a87cdd3",
       "install": {
         "mode": "copy",
         "transform": "none",
@@ -201,7 +201,7 @@
     },
     {
       "source": "src/agent_handoff_toolkit/acceptance.py",
-      "sha256": "83d06f4bc1760ee19a2198605956b45bd97cdd58056f0aef1a2c9d63c8469338",
+      "sha256": "16d66f60a688842ab4893ee6303835f6c45ea69e2626745c307226329a48e403",
       "install": {
         "mode": "copy",
         "transform": "none",

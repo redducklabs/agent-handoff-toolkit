@@ -6,12 +6,12 @@ Run installation from an inspectable checkout of the public release rather than
 from a network downloader:
 
 ```powershell
-git clone --branch v0.3.0 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
+git clone --branch v0.3.1 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
 Set-Location agent-handoff-toolkit
-python distribution/runner.py install --target <consumer-repository> --release v0.3.0 --dry-run
-python distribution/runner.py install --target <consumer-repository> --release v0.3.0 --apply
-python distribution/runner.py sync --target <consumer-repository> --release v0.3.0 --check
-python distribution/runner.py sync --target <consumer-repository> --release v0.3.0 --apply
+python distribution/runner.py install --target <consumer-repository> --release v0.3.1 --dry-run
+python distribution/runner.py install --target <consumer-repository> --release v0.3.1 --apply
+python distribution/runner.py sync --target <consumer-repository> --release v0.3.1 --check
+python distribution/runner.py sync --target <consumer-repository> --release v0.3.1 --apply
 ```
 
 Run install and sync only in an isolated, clean Git worktree. Confirm the
@@ -145,14 +145,35 @@ The command initializes and installs into only the named scratch directory,
 uses synthetic runtime-only scenario data, reduces captured host output in
 memory, searches only that scratch/runtime path for the generated sentinel,
 and removes the exact directory in `finally`. Its output contains only the
-platform, pass/fail properties, and lifecycle issue codes; it never prints or
-persists a prompt, reply, transcript, record body, credential, or consumer
-content. Do not run this command in ordinary public CI.
+platform, pass/fail properties, and lifecycle issue codes; it never prints a
+prompt, reply, transcript, record body, credential, or consumer content, and
+retains none of them after the run. Do not run this command in ordinary public
+CI.
+
+The host is started with its configuration home redirected into the scratch
+directory, so on a machine whose host credential lives in that home the host
+would have no credential and could not start a session at all. That failure
+reports as undiscovered hooks rather than as the missing prerequisite it is, so
+the command copies the operator's existing host credential into the disposable
+home for the duration of the run, creating the copy private to the operator, and
+overwrites and removes it as soon as the host exits and before the retention
+scan. The operator's own credential file is only ever read. No API key is
+required, and none is accepted in its place.
 
 `pass` requires observed trusted hook discovery, an initial blocked stop with
 an issue code, a corrected stop, no retained synthetic content, and compatible
 host block capacity. If a host executable is unavailable or trusted hook
 discovery cannot be observed, its result is `unverified`, not `pass`.
+
+Read the reported properties individually rather than only the overall status.
+`discovered` is the property that answers whether the host finds, trusts, and
+runs the installed hooks, and it is the one an installation most needs. The
+`blocked`, `issue_received`, and `corrected` properties additionally require the
+scenario to drive the host into a tracked session and back out of a blocked
+stop, which depends on the host model's own behavior; a run may legitimately
+report `discovered=pass` with those still failing. That combination is evidence
+of hook discovery and not evidence of the block-and-correct cycle, which the
+consumer's own focused tests should assert directly.
 An installed runner requires the explicit, local pinned release checkout for
 the disposable installation; an unavailable or unsafe release source exits
 with a bounded prerequisite error rather than attempting an unverified run.
@@ -164,7 +185,7 @@ Before bulk adoption, select one repository with mature handoffs and one with li
 1. Inventory local instructions, hook and skill configuration, and tracker
    conventions. Count or locate historical handoff storage only if needed to
    protect it; do not open the records.
-2. Run the v0.3.0 installer in dry-run mode from its release checkout.
+2. Run the v0.3.1 installer in dry-run mode from its release checkout.
 3. Review the proposed instruction and hook merges.
 4. Apply on a branch. Treat every record that predates this adoption as
    deprecated by policy without marking, reading, or rewriting individual files.

@@ -6,7 +6,13 @@ This repository provides a shared contract, deterministic validation and renderi
 
 ## Status
 
-Version 0.3.0 adds synchronous lifecycle enforcement for tracked sessions and
+Version 0.3.1 repairs the opt-in host smoke check. It lends the host the
+operator's existing credential for the run, allows a real multi-turn session to
+finish, and emits hook commands the host's POSIX shell can actually execute.
+Each of those previously reported as undiscovered hooks rather than as the
+missing prerequisite, the timeout, or the shell-quoting failure it actually was.
+
+Version 0.3.0 added synchronous lifecycle enforcement for tracked sessions and
 directs the user to resume in a new session from the handoff. Schema v2 also
 stores every structured fact exactly once, in a visible metadata block, removing
 the narrative sections that schema v1 derived from that same metadata. It
@@ -51,7 +57,11 @@ Explicit commands fail closed and return a non-zero exit code for invalid input.
 
 `acceptance` is an opt-in local host smoke check. It creates and removes the
 named empty scratch repository, keeps host output only in memory, and prints
-only reduced platform properties and lifecycle issue codes. It is not part of
+only reduced platform properties and lifecycle issue codes. It redirects the
+host's configuration home into that scratch directory, so it lends the host the
+operator's existing credential for the run and removes that copy as soon as the
+host exits; without it the host cannot start a session and the run reports
+undiscovered hooks instead of the missing prerequisite. It is not part of
 ordinary public CI. A host without observed trusted hook discovery is reported
 as `unverified`, not `pass`. When invoking the command from an installed
 consumer runtime, supply `--release-source <pinned-release-checkout>` so the
@@ -59,16 +69,16 @@ disposable consumer can be installed from a verified local release source.
 
 ## Consumer installation
 
-Check out the public v0.3.0 release, inspect the proposed changes, then apply
+Check out the public v0.3.1 release, inspect the proposed changes, then apply
 them from that checkout:
 
 ```powershell
-git clone --branch v0.3.0 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
+git clone --branch v0.3.1 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
 Set-Location agent-handoff-toolkit
-python distribution/runner.py install --target <consumer-repository> --release v0.3.0 --dry-run
-python distribution/runner.py install --target <consumer-repository> --release v0.3.0 --apply
-python distribution/runner.py sync --target <consumer-repository> --release v0.3.0 --check
-python distribution/runner.py sync --target <consumer-repository> --release v0.3.0 --apply
+python distribution/runner.py install --target <consumer-repository> --release v0.3.1 --dry-run
+python distribution/runner.py install --target <consumer-repository> --release v0.3.1 --apply
+python distribution/runner.py sync --target <consumer-repository> --release v0.3.1 --check
+python distribution/runner.py sync --target <consumer-repository> --release v0.3.1 --apply
 ```
 
 Run install and sync only in an isolated, clean Git worktree with no concurrent
