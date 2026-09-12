@@ -188,6 +188,15 @@ class LifecycleStorageTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name).resolve()
+        # Git discovery walks ancestors, so an unrelated repository above the
+        # platform temporary directory would otherwise capture this test's
+        # lifecycle state. Fence discovery at the temporary root so resolution
+        # can never escape it.
+        fence = patch.dict(
+            os.environ, {"GIT_CEILING_DIRECTORIES": self.root.as_posix()}
+        )
+        fence.start()
+        self.addCleanup(fence.stop)
         self.repo = self.root / "repository-private-identifier"
         self.repo.mkdir()
         self.state = self.root / "state"
@@ -807,6 +816,31 @@ class LifecycleStorageTests(unittest.TestCase):
         (self.repo / ".git" / "agent-handoff-toolkit").write_bytes(b"opaque")
         with self.assertRaises(LifecycleStorageError):
             resolve_lifecycle_state_root(self.repo)
+
+    def test_ancestor_repository_cannot_capture_fenced_state(self):
+        """A fence stops discovery before an unrelated ancestor repository."""
+
+        outer = self.root / "outer"
+        workspace = outer / "workspace"
+        inner = workspace / "inner"
+        inner.mkdir(parents=True)
+        subprocess.run(
+            ["git", "-C", str(outer), "init"], check=True, capture_output=True
+        )
+        cache = self.root / "fenced-cache"
+        cache.mkdir()
+        adopted = outer / ".git" / "agent-handoff-toolkit" / "lifecycle"
+        with patch.dict(
+            os.environ, {"LOCALAPPDATA": str(cache), "XDG_STATE_HOME": str(cache)}
+        ):
+            with patch.dict(os.environ, {"GIT_CEILING_DIRECTORIES": ""}):
+                self.assertEqual(resolve_lifecycle_state_root(inner), adopted)
+            with patch.dict(
+                os.environ, {"GIT_CEILING_DIRECTORIES": workspace.as_posix()}
+            ):
+                fenced = resolve_lifecycle_state_root(inner)
+        self.assertTrue(fenced.is_relative_to(cache))
+        self.assertFalse(fenced.is_relative_to(outer))
 
     def test_non_git_platform_fallback_hides_repository(self):
         cache = self.root / "cache"

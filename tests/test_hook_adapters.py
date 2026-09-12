@@ -234,6 +234,10 @@ class EnforcementTests(unittest.TestCase):
         self.service = LifecycleService(self.storage, "session-1")
         (self.root / "handoffs").mkdir()
         (self.root / ".agent-handoff-toolkit").mkdir()
+        # Installed hooks resolve the repository root by walking ancestors for
+        # `.git`. Mark this temporary consumer as that root so an unrelated
+        # repository above the platform temporary directory cannot claim it.
+        (self.root / ".git").mkdir()
         (self.root / ".agent-handoff-toolkit" / "runner.py").write_text(
             "# owned runner\n"
         )
