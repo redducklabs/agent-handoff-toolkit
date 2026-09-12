@@ -121,7 +121,7 @@ def decode_scope_definition(value: str) -> dict[str, str]:
         ):
             raise ValueError("scope definition must be canonical JSON")
         return definition
-    except (UnicodeError, ValueError) as error:
+    except (UnicodeError, ValueError, RecursionError) as error:
         raise ValueError("invalid canonical scope definition") from error
 
 

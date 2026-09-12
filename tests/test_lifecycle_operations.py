@@ -210,6 +210,13 @@ class BootstrapTests(unittest.TestCase):
             self.parse(command("register-root").replace(DEFINITION, value))
         )
 
+    def test_json_recursion_error_is_rejected_without_escaping_the_parser(self):
+        # Whether deep nesting exhausts the C scanner depends on the platform's
+        # recursion accounting, so inject the error directly. The parser must
+        # reject such input everywhere rather than propagate RecursionError.
+        with patch("json.loads", side_effect=RecursionError("nesting too deep")):
+            self.assertIsNone(self.parse(command("register-root")))
+
 
 class OperationsTests(unittest.TestCase):
     def test_cli_uses_derived_binding_ignoring_raw_session_environment(self):
