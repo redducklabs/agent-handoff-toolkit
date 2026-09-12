@@ -257,9 +257,12 @@ class EnforcementTests(unittest.TestCase):
         # Both root resolvers walk ancestors, so an unrelated repository above
         # the platform temporary directory could otherwise claim this consumer.
         # The ceiling fences `git rev-parse`; the marker fences the installer's
-        # pure-Python `.git` walk, which an empty directory satisfies.
+        # pure-Python `.git` walk, which an empty directory satisfies. Git
+        # ignores a ceiling that is not a strict ancestor of the directory being
+        # resolved, and resolution here starts at the root itself, so the
+        # ceiling is its parent.
         fence = patch.dict(
-            os.environ, {"GIT_CEILING_DIRECTORIES": self.root.as_posix()}
+            os.environ, {"GIT_CEILING_DIRECTORIES": self.root.parent.as_posix()}
         )
         fence.start()
         self.addCleanup(fence.stop)
