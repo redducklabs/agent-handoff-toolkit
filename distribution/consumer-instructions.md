@@ -30,8 +30,9 @@ before creating or changing a continuation or completion audit.
   Blocking feedback names the failed checks after `failed=`.
 - Validate new or materially replaced records with
   `python .agent-handoff-toolkit/runner.py validate <record>`.
-- Render a schema-v1 continuation's final tail with
-  `python .agent-handoff-toolkit/runner.py render-tail <continuation-record>`.
+- Render the required terminal response with
+  `python .agent-handoff-toolkit/runner.py render-tail <record>`. Its output is
+  the whole response; send it verbatim with nothing before or after it.
 - Run `install` and `sync` only from the exact toolkit release checkout. The
   vendored runner intentionally contains the record and hook runtime, not the
   installer modules needed to update itself.

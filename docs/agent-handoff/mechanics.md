@@ -16,12 +16,20 @@ object never contains a bare fence line, because JSON escapes every newline.
 
 A schema-v1 record begins with the `<!-- agent-handoff-metadata` comment and
 closes it with `-->`. Each schema version has exactly one canonical form; a
-record that declares one version and uses the other form is invalid.
+record that declares one version and uses the other form is invalid, and a
+record carrying a visible block plus a metadata comment is invalid because the
+comment would be invisible in rendered Markdown while claiming to be metadata.
+
+The visible block is recognized only at a record's fixed metadata position: the
+start of a continuation, or directly after a completion audit's sentinel and its
+blank line. The same text anywhere else is ordinary body content and cannot
+displace the real block, so a narrative section may quote it.
 
 Metadata is deterministic JSON with UTF-8 characters preserved, keys sorted,
-two-space indentation, and LF line endings. The validator normalizes
-record-document line endings to LF for parsing. The renderer does not strip or
-otherwise normalize the stored next-session prompt.
+two-space indentation, and LF line endings. Any other fenced block the renderer
+emits uses a fence long enough not to collide with its content. The validator
+normalizes record-document line endings to LF for parsing. The renderer does not
+strip or otherwise normalize the stored next-session prompt.
 
 ## Schema-v2 lineage and root immutability
 
@@ -86,11 +94,12 @@ be displayed before `Stop` runs. The hook cannot retract that transient
 display, but it returns corrective continuation feedback and requires a corrected
 response or a visibly failed policy outcome.
 
-Blocking feedback names the issue code, the corrective action, and the
-validator's own bounded summary of what failed. Repeated feedback for the same
-issue restates that summary rather than shrinking to a pointer, because a repeat
-proves the first message was insufficient. Feedback carries validator and
-registry text only; it never carries prompt, reply, or transcript content.
+Blocking feedback names the issue code, the corrective action, and — after
+`failed=` — the validator's own codes for the checks that failed. Those codes
+are a closed vocabulary of identifiers, appended only when the whole line still
+fits the feedback budget, so naming them never costs another issue its code or
+its action. The adapter emits no other issue text: free-form summaries never
+reach the host, and no prompt, reply, or transcript content can.
 
 Informational hooks fail open. Tracked lifecycle hooks fail closed on
 `UserPromptSubmit` and `Stop`, including corrupt tracked state, unreadable
@@ -138,3 +147,49 @@ complete `active_scopes` list, and **Next-session prompt** is the exact
 summary is invalid even when each representation would be valid in isolation.
 Schema v2 removes these sections because each one was a second copy of a
 metadata field.
+## Authoring input for `render`
+
+`render` reads one JSON object and writes the record document. That object is the
+record's metadata fields at the top level plus a sibling `sections` map from
+section heading to body text. `sections` is not part of the emitted metadata
+block, and the renderer emits the sections in canonical order regardless of the
+order supplied.
+
+```json
+{
+  "schema_version": 2,
+  "record_type": "continuation",
+  "timestamp": "2026-09-11T12:00:00Z",
+  "record_id": "record-001",
+  "authorization_id": "auth-001",
+  "authorized_root_scope_id": "root-scope",
+  "predecessor": null,
+  "authorization_evidence": { "kind": "initial-user-turn", "user_turn_ref": "turn-001", "proposal_turn_ref": null, "evidence_hmac": "<64 hex>" },
+  "transition": null,
+  "active_scopes": [ { "...": "one entry per scope" } ],
+  "next_session_gates": [],
+  "verification": [ { "check": "...", "result": "pass", "evidence": "..." } ],
+  "exact_action": { "action": "...", "target": "...", "constraints": "...", "completion_condition": "..." },
+  "next_session_prompt": "- ...",
+  "sections": { "Objective": "...", "...": "one entry per required section" }
+}
+```
+
+A completion audit replaces `exact_action`, `next_session_prompt`, and
+`next_session_gates` with `completed_scope_id` and `authorization_basis`, and
+uses the audit section list.
+
+Compute each scope's `scope_definition_digest` with
+`agent_handoff_toolkit.lineage.scope_definition_digest(scope)`, which covers the
+scope's `scope_id`, `scope_kind`, `parent_scope_id`, and `scope_definition` under
+the canonical JSON rules above. The digest is authored, never recomputed by the
+renderer: recomputing it for an altered definition would defeat root immutability.
+
+## Lifecycle commands and untracked authoring
+
+`lifecycle inspect`, `register-root`, `resume`, and `join` act on a host-tracked
+session and require the session key, challenge, and expected revision that a
+tracked `UserPromptSubmit` supplies. They are the entry point whenever the
+session is tracked. Authoring a record outside a tracked session — no session key
+or challenge is available — uses `render`, `validate`, and `render-tail` only;
+lifecycle credentials are never fabricated to satisfy a command.

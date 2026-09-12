@@ -7,12 +7,15 @@ description: Use when unfinished authorized work of any kind (including code, re
 
 Read `docs/agent-handoff/contract.md` before authoring a record. Create a continuation only for unfinished authorized work. Create a completion audit when the highest authorized outcome is complete. The record must be executable from live state, not merely descriptive.
 
-For schema v2, begin by running `lifecycle inspect`. Use `lifecycle register-root`
-only to establish a new authorized root, `lifecycle resume` for its direct
-successor, and `lifecycle join` only for a permitted session join. Explicitly
-validate the candidate against the locked authorization root and predecessor; an
-older handoff or an informal request does not authorize a scope-definition or root
-change. Use an approved transition before changing either.
+If the session is tracked — a lifecycle hook has given you a session key,
+challenge, and expected revision — begin by running `lifecycle inspect`. Use
+`lifecycle register-root` only to establish a new authorized root, `lifecycle
+resume` for its direct successor, and `lifecycle join` only for a permitted
+session join. Explicitly validate the candidate against the locked authorization
+root and predecessor; an older handoff or an informal request does not authorize
+a scope-definition or root change. Use an approved transition before changing
+either. Never invent lifecycle credentials to satisfy a command: with no tracked
+session, author the record with `render`, `validate`, and `render-tail` only.
 
 ## Gate: Choose the record type
 
@@ -48,6 +51,10 @@ python .agent-handoff-toolkit/runner.py render <record>.json --output handoffs/<
 python .agent-handoff-toolkit/runner.py validate handoffs/<record>.md
 ```
 
+That JSON is the metadata fields at the top level plus a sibling `sections` map
+from heading to body text. `docs/agent-handoff/mechanics.md` gives its exact
+shape and how to compute each scope's `scope_definition_digest`.
+
 Fix every reported error before calling the record valid. Validation proves structure and internal consistency only. You remain responsible for factual accuracy, current hierarchy, verification evidence, and whether the action is correct. A skipped check is `not-run`, never `pass`. For a tracked lifecycle session, validate the direct candidate record and its lineage before stopping.
 
 ## Gate: Render the final response tail
@@ -58,7 +65,7 @@ Your entire terminal message is the renderer's output for the record, copied ver
 python .agent-handoff-toolkit/runner.py render-tail <record-path>
 ```
 
-That command is the command-line form of `render_terminal_response`; for schema v1 it emits the established v1 tail.
+That command emits `render_terminal_response`, the exact output `Stop` enforces; for schema v1 it emits the established v1 tail.
 
 If progress genuinely requires user authority, register a legitimate decision request rather than asking whether to continue or stop. A decision request must name the blocked exact action and recognized authority category; it does not change the authorized root.
 

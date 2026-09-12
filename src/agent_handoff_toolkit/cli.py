@@ -13,7 +13,7 @@ from typing import Sequence
 
 from .acceptance import AcceptancePrerequisiteError, format_result, run_acceptance
 from .hooks import MAX_HOOK_INPUT_BYTES, observe_context, run_hook
-from .records import render_record, render_tail, validate_markdown
+from .records import render_record, render_terminal_response, validate_markdown
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -428,7 +428,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
 
         text = _read_text(args.record)
-        sys.stdout.write(render_tail(args.record, text) + "\n")
+        # `Stop` enforces byte-exact equality against `render_terminal_response`,
+        # so the command a consumer runs emits exactly that. It delegates to the
+        # schema-v1 tail for v1 records.
+        sys.stdout.write(render_terminal_response(args.record, text) + "\n")
         return 0
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)

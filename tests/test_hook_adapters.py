@@ -192,6 +192,30 @@ class NormalizationTests(unittest.TestCase):
             self.assertIn("policy failure", data["systemMessage"].lower())
             self.assertNotIn("decision", data)
 
+    def test_detail_codes_never_cost_an_issue_its_line(self):
+        """Detail is additional; it never displaces a code or its action."""
+
+        codes = ("AHK-STOP-ROOT", "AHK-STOP-PREDECESSOR", "AHK-STOP-SCOPE")
+        long_details = tuple(f"detail-{index}-{'d' * 100}" for index in range(8))
+        issues = tuple(
+            LifecycleIssue(
+                code,
+                "Summary.",
+                "Corrective action.",
+                detail_codes=long_details,
+            )
+            for code in codes
+        )
+        reason = json.loads(
+            render_hook_execution(
+                "codex", EventName.STOP, LifecycleDecision(DecisionKind.BLOCK, issues)
+            ).stdout
+        )["reason"]
+        self.assertLessEqual(len(reason.encode()), 1200)
+        for code in codes:
+            self.assertIn(code, reason)
+        self.assertNotIn("AHK-HOOK-RUNTIME", reason)
+
     def test_hook_reason_never_echoes_arbitrary_issue_content_and_stays_bounded(self):
         sentinel = "sensitive-synthetic-sentinel"
         issue = LifecycleIssue(
@@ -230,13 +254,19 @@ class EnforcementTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
+        # Both root resolvers walk ancestors, so an unrelated repository above
+        # the platform temporary directory could otherwise claim this consumer.
+        # The ceiling fences `git rev-parse`; the marker fences the installer's
+        # pure-Python `.git` walk, which an empty directory satisfies.
+        fence = patch.dict(
+            os.environ, {"GIT_CEILING_DIRECTORIES": self.root.as_posix()}
+        )
+        fence.start()
+        self.addCleanup(fence.stop)
         self.storage = LocalLifecycleStorage(self.root, state_root=self.root / "state")
         self.service = LifecycleService(self.storage, "session-1")
         (self.root / "handoffs").mkdir()
         (self.root / ".agent-handoff-toolkit").mkdir()
-        # Installed hooks resolve the repository root by walking ancestors for
-        # `.git`. Mark this temporary consumer as that root so an unrelated
-        # repository above the platform temporary directory cannot claim it.
         (self.root / ".git").mkdir()
         (self.root / ".agent-handoff-toolkit" / "runner.py").write_text(
             "# owned runner\n"

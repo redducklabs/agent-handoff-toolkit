@@ -94,10 +94,12 @@ METADATA_RE = re.compile(
     re.DOTALL,
 )
 # A rendered metadata object never contains a bare fence line: JSON escapes every
-# newline, so no line inside the payload can be exactly three backticks.
+# newline, so no line inside the payload can be exactly three backticks. The
+# pattern is matched only at a record's fixed metadata position, so a narrative
+# section that imitates the block stays ordinary body text.
 METADATA_FENCE_RE = re.compile(
-    r"^```json agent-handoff-metadata\n(?P<json>.*?)\n```$",
-    re.DOTALL | re.MULTILINE,
+    r"```json agent-handoff-metadata\n(?P<json>.*?)\n```(?=\n|\Z)",
+    re.DOTALL,
 )
 FENCE_OPEN_RE = re.compile(r"^[ ]{0,3}(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
 HEADING_LINE_RE = re.compile(r"^[ ]{0,3}##[ \t]+(?P<title>.*?)(?:[ \t]+#+)?[ \t]*$")
@@ -1337,7 +1339,14 @@ def _extract_markdown(
     record_path: str | os.PathLike[str] | None = None,
 ) -> tuple[dict[str, Any] | None, list[ValidationIssue]]:
     normalized = text.replace("\r\n", "\n").replace("\r", "\n")
-    fence_match = METADATA_FENCE_RE.search(normalized)
+    # A visible metadata block is recognized only where a record must carry it:
+    # at the start, or directly after a completion audit's sentinel. Anywhere
+    # else the same text is body content and cannot displace the real block.
+    fence_match = METADATA_FENCE_RE.match(normalized)
+    if fence_match is None:
+        sentinel_prefix = AUDIT_SENTINEL + "\n\n"
+        if normalized.startswith(sentinel_prefix):
+            fence_match = METADATA_FENCE_RE.match(normalized, len(sentinel_prefix))
     comment_match = METADATA_RE.search(normalized)
     # Each schema version has exactly one canonical form; take whichever is
     # present and reject the mismatch once the declared version is known.
@@ -1349,6 +1358,16 @@ def _extract_markdown(
     fenced = match is fence_match
 
     issues: list[ValidationIssue] = []
+    if fenced and comment_match is not None:
+        # A second block in the deprecated form would be invisible in rendered
+        # Markdown while claiming to be this record's metadata.
+        issues.append(
+            _issue(
+                "metadata-form",
+                "a record must carry exactly one agent-handoff metadata block",
+            )
+        )
+
     try:
         metadata = json.loads(match.group("json"))
     except json.JSONDecodeError as error:

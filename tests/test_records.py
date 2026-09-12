@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import inspect
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -1207,22 +1208,68 @@ class RecordRenderingTests(unittest.TestCase):
         self.assertIn("## Verification evidence", text)
         self.assertIn("## Next-session prompt", text)
 
-    def test_a_metadata_fence_inside_a_section_cannot_displace_the_real_block(
-        self,
-    ) -> None:
-        """A body that imitates the v2 block is rejected, never reinterpreted."""
+    def test_a_metadata_fence_inside_a_section_is_body_text_not_metadata(self) -> None:
+        """Only the block at the record's fixed position is metadata."""
 
         planted = (
             "Body text.\n\n```json agent-handoff-metadata\n"
             '{\n  "record_type": "completion-audit",\n  "schema_version": 2\n}\n```'
         )
-        self.continuation["sections"]["Objective"] = planted
-        text = render_record(self.continuation)
-        codes = issue_codes(text)
-        self.assertTrue(codes)
-        self.assertEqual(
-            parse_markdown(render_record(self.audit))["record_type"], "completion-audit"
+        for data in (self.continuation, make_v2_continuation()):
+            with self.subTest(schema_version=data["schema_version"]):
+                data["sections"]["Objective"] = planted
+                text = render_record(data)
+                # The imitation is ordinary body text, so the record stays
+                # exactly as valid as it was without it.
+                self.assertEqual(validate_markdown(text), [])
+                parsed = parse_markdown(text)
+                self.assertEqual(parsed["record_type"], "continuation")
+                self.assertEqual(parsed["schema_version"], data["schema_version"])
+                self.assertEqual(parsed["sections"]["Objective"], planted)
+
+    def test_render_tail_command_emits_the_enforced_terminal_response(self) -> None:
+        """`Stop` enforces `render_terminal_response`, so the CLI must emit it."""
+
+        for data in (
+            self.continuation,
+            self.audit,
+            make_v2_continuation(),
+            make_v2_audit(),
+        ):
+            with self.subTest(
+                schema_version=data["schema_version"], record_type=data["record_type"]
+            ):
+                text = render_record(data)
+                with tempfile.TemporaryDirectory() as directory:
+                    record = Path(directory) / "record.md"
+                    record.write_text(text, encoding="utf-8", newline="\n")
+                    result = subprocess.run(
+                        [
+                            sys.executable,
+                            "-m",
+                            "agent_handoff_toolkit.cli",
+                            "render-tail",
+                            str(record),
+                        ],
+                        capture_output=True,
+                        text=True,
+                        env={**os.environ, "PYTHONPATH": str(ROOT / "src")},
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(
+                        result.stdout.replace("\r\n", "\n"),
+                        render_terminal_response(record, text) + "\n",
+                    )
+
+    def test_a_second_metadata_block_cannot_hide_beside_the_visible_one(self) -> None:
+        """A v2 record carries one metadata block; a hidden comment is rejected."""
+
+        text = render_record(make_v2_continuation())
+        hidden = (
+            text + '\n<!-- agent-handoff-metadata\n{"record_type": "completion-audit",'
+            ' "schema_version": 1}\n-->\n'
         )
+        self.assertIn("metadata-form", issue_codes(hidden))
 
     def test_headings_inside_backtick_and_tilde_fences_are_not_sections(self) -> None:
         objective = (
