@@ -1,4 +1,4 @@
-"""Schema version 1 parsing, validation, and deterministic rendering."""
+"""Handoff record parsing, validation, and deterministic rendering."""
 
 from __future__ import annotations
 
@@ -13,9 +13,24 @@ from typing import Any
 import unicodedata
 from urllib.parse import quote
 
+from .lineage import (
+    LineageError,
+    scope_definition_digest,
+    validate_hex_digest,
+    validate_identifier,
+    validate_scope_definition,
+)
+
 SCHEMA_VERSION = 1
+LATEST_SCHEMA_VERSION = 2
+SUPPORTED_SCHEMA_VERSIONS = frozenset({SCHEMA_VERSION, LATEST_SCHEMA_VERSION})
 METADATA_OPEN = "<!-- agent-handoff-metadata"
 METADATA_CLOSE = "-->"
+# Schema v2 keeps one copy of every structured fact. The block stays visible so
+# a reviewer reading rendered Markdown still sees verification, the exact next
+# action, and the scope list that schema v1 duplicated into prose sections.
+METADATA_FENCE_OPEN = "```json agent-handoff-metadata"
+METADATA_FENCE_CLOSE = "```"
 AUDIT_SENTINEL = "> Audit record — not a handoff. Do not use this file to start or continue a session."
 
 CONTINUATION_SECTIONS = (
@@ -43,10 +58,32 @@ AUDIT_SECTIONS = (
     "External effects",
 )
 
+# Schema v2 drops every section the renderer derived byte-for-byte from
+# metadata; only narrative sections that have no metadata field remain.
+V2_DERIVED_SECTIONS = frozenset(
+    {
+        "Verification evidence",
+        "Exact next action",
+        "Remaining code by active scope",
+        "Next-session prompt",
+    }
+)
+
+CONTINUATION_SECTIONS_V2 = tuple(
+    name for name in CONTINUATION_SECTIONS if name not in V2_DERIVED_SECTIONS
+)
+
+AUDIT_SECTIONS_V2 = tuple(
+    name for name in AUDIT_SECTIONS if name not in V2_DERIVED_SECTIONS
+)
+
 SCOPE_KINDS = frozenset({"unit", "issue", "phase", "epic", "rollout", "standalone"})
 SCOPE_STATUSES = frozenset({"pending", "in-progress", "blocked", "complete"})
 NONTERMINAL_SCOPE_STATUSES = SCOPE_STATUSES - {"complete"}
 VERIFICATION_RESULTS = frozenset({"pass", "fail", "not-run"})
+AUTHORIZATION_EVIDENCE_KINDS = frozenset(
+    {"initial-user-turn", "approved-transition", "v1-adoption"}
+)
 MAX_NEXT_PROMPT_WORDS = 120
 MAX_NEXT_PROMPT_CHARACTERS = 1200
 MAX_NEXT_PROMPT_LINES = 6
@@ -54,6 +91,14 @@ MAX_CONTINUATION_TAIL_WORDS = 300
 MAX_CONTINUATION_TAIL_CHARACTERS = 2400
 METADATA_RE = re.compile(
     r"<!-- agent-handoff-metadata\n(?P<json>.*?)\n-->",
+    re.DOTALL,
+)
+# A rendered metadata object never contains a bare fence line: JSON escapes every
+# newline, so no line inside the payload can be exactly three backticks. The
+# pattern is matched only at a record's fixed metadata position, so a narrative
+# section that imitates the block stays ordinary body text.
+METADATA_FENCE_RE = re.compile(
+    r"```json agent-handoff-metadata\n(?P<json>.*?)\n```(?=\n|\Z)",
     re.DOTALL,
 )
 FENCE_OPEN_RE = re.compile(r"^[ ]{0,3}(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
@@ -109,6 +154,7 @@ def _looks_like_record_document(value: str) -> bool:
     markers = (
         METADATA_OPEN,
         METADATA_CLOSE,
+        METADATA_FENCE_OPEN,
         AUDIT_SENTINEL,
         "# session continuation",
         "# completion audit",
@@ -197,7 +243,14 @@ def _canonical_json_section(value: object) -> str:
     return _fenced_block(payload, "json")
 
 
+def _is_v2(data: Mapping[str, object]) -> bool:
+    return data.get("schema_version") == LATEST_SCHEMA_VERSION
+
+
 def _derived_sections(data: Mapping[str, object]) -> dict[str, str]:
+    if _is_v2(data):
+        # Schema v2 has no derived sections; its visible metadata is the copy.
+        return {}
     derived: dict[str, str] = {}
     verification = data.get("verification")
     if isinstance(verification, list):
@@ -216,11 +269,14 @@ def _derived_sections(data: Mapping[str, object]) -> dict[str, str]:
     return derived
 
 
-def _expected_sections(record_type: object) -> tuple[str, ...] | None:
+def _expected_sections(
+    record_type: object, schema_version: object = SCHEMA_VERSION
+) -> tuple[str, ...] | None:
+    latest = schema_version == LATEST_SCHEMA_VERSION
     if record_type == "continuation":
-        return CONTINUATION_SECTIONS
+        return CONTINUATION_SECTIONS_V2 if latest else CONTINUATION_SECTIONS
     if record_type == "completion-audit":
-        return AUDIT_SECTIONS
+        return AUDIT_SECTIONS_V2 if latest else AUDIT_SECTIONS
     return None
 
 
@@ -235,6 +291,338 @@ def _validate_timestamp(value: object) -> bool:
     except ValueError:
         return False
     return parsed.tzinfo is not None
+
+
+def _normalized_absolute_path(value: object) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError("path must be non-empty text")
+    if any(
+        character in "<>\u2028\u2029" or unicodedata.category(character) in {"Cc", "Cs"}
+        for character in value
+    ):
+        raise ValueError("path contains an unsafe character")
+    windows_path = PureWindowsPath(value)
+    posix_path = PurePosixPath(value)
+    if windows_path.is_absolute():
+        if ".." in windows_path.parts:
+            raise ValueError("path must not contain parent traversal")
+        normalized = windows_path.as_posix()
+    elif posix_path.is_absolute():
+        if ".." in posix_path.parts:
+            raise ValueError("path must not contain parent traversal")
+        normalized = str(posix_path)
+    else:
+        raise ValueError("path must be absolute")
+    if value != normalized:
+        raise ValueError("path must be normalized")
+    return normalized
+
+
+def _lineage_identifier(
+    value: object,
+    *,
+    label: str,
+    issues: list[ValidationIssue],
+    code: str = "lineage-id",
+) -> str | None:
+    try:
+        return validate_identifier(value, label=label)
+    except LineageError as error:
+        issues.append(_issue(code, str(error)))
+        return None
+
+
+def _lineage_digest(
+    value: object,
+    *,
+    label: str,
+    issues: list[ValidationIssue],
+    code: str,
+) -> str | None:
+    try:
+        return validate_hex_digest(value, label=label)
+    except LineageError as error:
+        issues.append(_issue(code, str(error)))
+        return None
+
+
+def _validate_v2_lineage_fields(
+    data: Mapping[str, object],
+) -> list[ValidationIssue]:
+    issues: list[ValidationIssue] = []
+    common_fields = {
+        "schema_version",
+        "record_type",
+        "timestamp",
+        "record_id",
+        "authorization_id",
+        "authorized_root_scope_id",
+        "predecessor",
+        "authorization_evidence",
+        "transition",
+        "active_scopes",
+        "verification",
+        "sections",
+    }
+    type_fields = (
+        {"next_session_gates", "exact_action", "next_session_prompt"}
+        if data.get("record_type") == "continuation"
+        else {"completed_scope_id", "authorization_basis"}
+        if data.get("record_type") == "completion-audit"
+        else set()
+    )
+    expected_fields = common_fields | type_fields
+    if set(data) != expected_fields:
+        missing = sorted(expected_fields - set(data))
+        unknown = sorted(set(data) - expected_fields)
+        details = []
+        if missing:
+            details.append(f"missing {', '.join(missing)}")
+        if unknown:
+            details.append(f"unknown {', '.join(unknown)}")
+        issues.append(
+            _issue(
+                "lineage-field",
+                "schema-v2 record fields are invalid: " + "; ".join(details),
+            )
+        )
+
+    for field in ("record_id", "authorization_id", "authorized_root_scope_id"):
+        _lineage_identifier(data.get(field), label=field, issues=issues)
+
+    predecessor = data.get("predecessor")
+    if predecessor is not None:
+        if not isinstance(predecessor, Mapping) or set(predecessor) != {
+            "record_id",
+            "path",
+            "sha256",
+        }:
+            issues.append(
+                _issue(
+                    "lineage-predecessor",
+                    "predecessor must be null or contain exactly record_id, path, and sha256",
+                )
+            )
+        else:
+            _lineage_identifier(
+                predecessor.get("record_id"),
+                label="predecessor.record_id",
+                issues=issues,
+                code="lineage-predecessor",
+            )
+            _lineage_digest(
+                predecessor.get("sha256"),
+                label="predecessor.sha256",
+                issues=issues,
+                code="lineage-predecessor",
+            )
+            try:
+                _normalized_absolute_path(predecessor.get("path"))
+            except ValueError as error:
+                issues.append(_issue("lineage-predecessor", str(error)))
+
+    evidence = data.get("authorization_evidence")
+    if not isinstance(evidence, Mapping) or set(evidence) != {
+        "kind",
+        "user_turn_ref",
+        "proposal_turn_ref",
+        "evidence_hmac",
+    }:
+        issues.append(
+            _issue(
+                "lineage-evidence",
+                "authorization_evidence must contain exactly kind, user_turn_ref, proposal_turn_ref, and evidence_hmac",
+            )
+        )
+    else:
+        kind = evidence.get("kind")
+        if not isinstance(kind, str) or kind not in AUTHORIZATION_EVIDENCE_KINDS:
+            issues.append(
+                _issue(
+                    "lineage-evidence",
+                    "authorization_evidence.kind is not supported",
+                )
+            )
+        _lineage_identifier(
+            evidence.get("user_turn_ref"),
+            label="authorization_evidence.user_turn_ref",
+            issues=issues,
+            code="lineage-evidence",
+        )
+        proposal_turn_ref = evidence.get("proposal_turn_ref")
+        if kind == "initial-user-turn":
+            if proposal_turn_ref is not None:
+                issues.append(
+                    _issue(
+                        "lineage-evidence",
+                        "initial-user-turn evidence must have a null proposal_turn_ref",
+                    )
+                )
+        else:
+            _lineage_identifier(
+                proposal_turn_ref,
+                label="authorization_evidence.proposal_turn_ref",
+                issues=issues,
+                code="lineage-evidence",
+            )
+        if kind == "v1-adoption" and predecessor is not None:
+            issues.append(
+                _issue(
+                    "lineage-evidence",
+                    "v1-adoption evidence must begin a v2 chain without a predecessor",
+                )
+            )
+        _lineage_digest(
+            evidence.get("evidence_hmac"),
+            label="authorization_evidence.evidence_hmac",
+            issues=issues,
+            code="lineage-evidence",
+        )
+
+    transition = data.get("transition")
+    transition_fields = (
+        "from_authorization_id",
+        "to_authorization_id",
+        "old_root_scope_id",
+        "new_root_scope_id",
+        "proposal_turn_ref",
+        "approval_turn_ref",
+        "evidence_hmac",
+    )
+    if transition is not None:
+        if not isinstance(transition, Mapping) or set(transition) != set(
+            transition_fields
+        ):
+            issues.append(
+                _issue(
+                    "lineage-transition",
+                    "transition must be null or contain exactly the transition fields",
+                )
+            )
+        else:
+            for field in transition_fields[:-1]:
+                _lineage_identifier(
+                    transition.get(field),
+                    label=f"transition.{field}",
+                    issues=issues,
+                    code="lineage-transition",
+                )
+            _lineage_digest(
+                transition.get("evidence_hmac"),
+                label="transition.evidence_hmac",
+                issues=issues,
+                code="lineage-transition",
+            )
+        if predecessor is None:
+            issues.append(
+                _issue(
+                    "lineage-transition",
+                    "a transition requires a predecessor reference",
+                )
+            )
+
+    if isinstance(evidence, Mapping):
+        kind = evidence.get("kind")
+        if transition is None and kind == "approved-transition":
+            issues.append(
+                _issue(
+                    "lineage-evidence",
+                    "approved-transition evidence requires a transition",
+                )
+            )
+        if transition is not None and kind != "approved-transition":
+            issues.append(
+                _issue(
+                    "lineage-evidence",
+                    "a transition requires approved-transition evidence",
+                )
+            )
+        if isinstance(transition, Mapping) and set(transition) == set(
+            transition_fields
+        ):
+            if (
+                evidence.get("proposal_turn_ref") != transition.get("proposal_turn_ref")
+                or evidence.get("user_turn_ref") != transition.get("approval_turn_ref")
+                or evidence.get("evidence_hmac") != transition.get("evidence_hmac")
+            ):
+                issues.append(
+                    _issue(
+                        "lineage-evidence",
+                        "approved transition evidence must match the transition",
+                    )
+                )
+    return issues
+
+
+def _validate_v2_scopes(data: Mapping[str, object]) -> list[ValidationIssue]:
+    issues: list[ValidationIssue] = []
+    raw_scopes = data.get("active_scopes")
+    if not isinstance(raw_scopes, list):
+        return issues
+    expected_fields = {
+        "scope_id",
+        "scope_kind",
+        "parent_scope_id",
+        "highest_authorized",
+        "scope_definition",
+        "scope_definition_digest",
+        "remaining_work",
+        "remaining_code",
+        "remaining_code_detail",
+        "status",
+    }
+    for index, scope in enumerate(raw_scopes):
+        if not isinstance(scope, Mapping):
+            continue
+        if set(scope) != expected_fields:
+            issues.append(
+                _issue(
+                    "lineage-scope",
+                    f"active_scopes[{index}] must contain exactly the schema-v2 scope fields",
+                )
+            )
+            continue
+        _lineage_identifier(
+            scope.get("scope_id"),
+            label=f"active_scopes[{index}].scope_id",
+            issues=issues,
+        )
+        parent = scope.get("parent_scope_id")
+        if parent is not None:
+            _lineage_identifier(
+                parent,
+                label=f"active_scopes[{index}].parent_scope_id",
+                issues=issues,
+            )
+        try:
+            validate_scope_definition(scope.get("scope_definition"))
+            supplied_digest = validate_hex_digest(
+                scope.get("scope_definition_digest"),
+                label=f"active_scopes[{index}].scope_definition_digest",
+            )
+            expected_digest = scope_definition_digest(scope)
+            if supplied_digest != expected_digest:
+                raise LineageError("scope_definition_digest does not match the scope")
+        except LineageError as error:
+            issues.append(_issue("lineage-definition", str(error)))
+
+    root_id = data.get("authorized_root_scope_id")
+    linked_roots = [
+        scope
+        for scope in raw_scopes
+        if isinstance(scope, Mapping)
+        and scope.get("scope_id") == root_id
+        and scope.get("parent_scope_id") is None
+        and scope.get("highest_authorized") is True
+    ]
+    if len(linked_roots) != 1:
+        issues.append(
+            _issue(
+                "lineage-root",
+                "authorized_root_scope_id must identify the sole highest-authorized root",
+            )
+        )
+    return issues
 
 
 def _validate_scopes(data: Mapping[str, object]) -> list[ValidationIssue]:
@@ -661,12 +1049,15 @@ def _validate_data(
         return [_issue("metadata-type", "metadata must be a JSON object")]
 
     issues: list[ValidationIssue] = []
-    if data.get("schema_version") != SCHEMA_VERSION or isinstance(
-        data.get("schema_version"), bool
+    schema_version = data.get("schema_version")
+    if (
+        not isinstance(schema_version, int)
+        or isinstance(schema_version, bool)
+        or schema_version not in SUPPORTED_SCHEMA_VERSIONS
     ):
-        issues.append(_issue("schema-version", "schema_version must be 1"))
+        issues.append(_issue("schema-version", "schema_version must be 1 or 2"))
     record_type = data.get("record_type")
-    expected_sections = _expected_sections(record_type)
+    expected_sections = _expected_sections(record_type, schema_version)
     if expected_sections is None:
         issues.append(
             _issue(
@@ -680,6 +1071,9 @@ def _validate_data(
         )
 
     issues.extend(_validate_scopes(data))
+    if schema_version == LATEST_SCHEMA_VERSION:
+        issues.extend(_validate_v2_lineage_fields(data))
+        issues.extend(_validate_v2_scopes(data))
     issues.extend(_validate_verification(data))
     issues.extend(_validate_type_fields(data, record_path=record_path))
 
@@ -707,6 +1101,196 @@ def _validate_data(
 
 def _format_issues(issues: Sequence[ValidationIssue]) -> str:
     return "; ".join(f"{issue.code}: {issue.message}" for issue in issues)
+
+
+def validate_successor(
+    candidate: Mapping[str, object],
+    predecessor: Mapping[str, object],
+    *,
+    expected_predecessor_path: str,
+    predecessor_sha256: str,
+    approved_transition_hmac: str | None = None,
+) -> list[ValidationIssue]:
+    """Validate a schema-v2 successor against its direct predecessor."""
+
+    issues = [*_validate_data(predecessor), *_validate_data(candidate)]
+    if not isinstance(candidate, Mapping) or not isinstance(predecessor, Mapping):
+        return issues
+    if (
+        candidate.get("schema_version") != LATEST_SCHEMA_VERSION
+        or predecessor.get("schema_version") != LATEST_SCHEMA_VERSION
+    ):
+        issues.append(
+            _issue(
+                "lineage-schema",
+                "candidate and predecessor must both use schema version 2",
+            )
+        )
+        return issues
+    if candidate.get("record_id") == predecessor.get("record_id"):
+        issues.append(
+            _issue(
+                "lineage-record",
+                "a successor must have a different record_id from its predecessor",
+            )
+        )
+
+    predecessor_reference = candidate.get("predecessor")
+    try:
+        normalized_expected_path = _normalized_absolute_path(expected_predecessor_path)
+    except ValueError as error:
+        issues.append(_issue("lineage-predecessor", str(error)))
+        normalized_expected_path = None
+
+    expected_digest = _lineage_digest(
+        predecessor_sha256,
+        label="predecessor_sha256",
+        issues=issues,
+        code="lineage-predecessor",
+    )
+    if not isinstance(predecessor_reference, Mapping):
+        issues.append(
+            _issue(
+                "lineage-predecessor",
+                "a successor must contain a predecessor reference",
+            )
+        )
+    else:
+        mismatches = []
+        if predecessor_reference.get("record_id") != predecessor.get("record_id"):
+            mismatches.append("record_id")
+        if (
+            normalized_expected_path is not None
+            and predecessor_reference.get("path") != normalized_expected_path
+        ):
+            mismatches.append("path")
+        if (
+            expected_digest is not None
+            and predecessor_reference.get("sha256") != expected_digest
+        ):
+            mismatches.append("sha256")
+        if mismatches:
+            issues.append(
+                _issue(
+                    "lineage-predecessor",
+                    "predecessor reference does not match: " + ", ".join(mismatches),
+                )
+            )
+
+    transition = candidate.get("transition")
+    trusted_transition = isinstance(transition, Mapping)
+    if trusted_transition:
+        transition_hmac = transition.get("evidence_hmac")
+        if (
+            approved_transition_hmac is None
+            or transition_hmac != approved_transition_hmac
+        ):
+            issues.append(
+                _issue(
+                    "lineage-transition",
+                    "transition HMAC does not match trusted approval evidence",
+                )
+            )
+            trusted_transition = False
+
+        transition_expectations = {
+            "from_authorization_id": predecessor.get("authorization_id"),
+            "to_authorization_id": candidate.get("authorization_id"),
+            "old_root_scope_id": predecessor.get("authorized_root_scope_id"),
+            "new_root_scope_id": candidate.get("authorized_root_scope_id"),
+        }
+        inconsistent = [
+            field
+            for field, expected in transition_expectations.items()
+            if transition.get(field) != expected
+        ]
+        if transition.get("from_authorization_id") == transition.get(
+            "to_authorization_id"
+        ):
+            inconsistent.append("authorization_id-change")
+        if inconsistent:
+            issues.append(
+                _issue(
+                    "lineage-transition",
+                    "transition is inconsistent with candidate and predecessor: "
+                    + ", ".join(inconsistent),
+                )
+            )
+            trusted_transition = False
+
+    if not trusted_transition:
+        if candidate.get("authorization_id") != predecessor.get("authorization_id"):
+            issues.append(
+                _issue(
+                    "lineage-authorization",
+                    "authorization_id changed without a trusted transition",
+                )
+            )
+        if candidate.get("authorized_root_scope_id") != predecessor.get(
+            "authorized_root_scope_id"
+        ):
+            issues.append(
+                _issue(
+                    "lineage-root",
+                    "authorized root changed without a trusted transition",
+                )
+            )
+
+        predecessor_scopes = predecessor.get("active_scopes")
+        candidate_scopes = candidate.get("active_scopes")
+        if isinstance(predecessor_scopes, list) and isinstance(candidate_scopes, list):
+            predecessor_ids = [
+                scope.get("scope_id") if isinstance(scope, Mapping) else None
+                for scope in predecessor_scopes
+            ]
+            candidate_ids = [
+                scope.get("scope_id") if isinstance(scope, Mapping) else None
+                for scope in candidate_scopes
+            ]
+            if candidate_ids != predecessor_ids:
+                issues.append(
+                    _issue(
+                        "lineage-scope",
+                        "inherited scopes must be retained in their original order",
+                    )
+                )
+            for predecessor_scope, candidate_scope in zip(
+                predecessor_scopes, candidate_scopes, strict=False
+            ):
+                if not isinstance(predecessor_scope, Mapping) or not isinstance(
+                    candidate_scope, Mapping
+                ):
+                    continue
+                if predecessor_scope.get("scope_id") != candidate_scope.get("scope_id"):
+                    continue
+                immutable_fields = (
+                    "scope_id",
+                    "scope_kind",
+                    "parent_scope_id",
+                    "scope_definition",
+                    "scope_definition_digest",
+                )
+                if any(
+                    predecessor_scope.get(field) != candidate_scope.get(field)
+                    for field in immutable_fields
+                ):
+                    issues.append(
+                        _issue(
+                            "lineage-definition",
+                            f"inherited scope {predecessor_scope.get('scope_id')!r} changed its immutable definition",
+                        )
+                    )
+
+        if candidate.get("record_type") == "completion-audit" and candidate.get(
+            "completed_scope_id"
+        ) != predecessor.get("authorized_root_scope_id"):
+            issues.append(
+                _issue(
+                    "lineage-root",
+                    "a completion audit must complete the predecessor's locked root",
+                )
+            )
+    return issues
 
 
 def _headings_outside_fences(text: str) -> list[_Heading]:
@@ -755,13 +1339,35 @@ def _extract_markdown(
     record_path: str | os.PathLike[str] | None = None,
 ) -> tuple[dict[str, Any] | None, list[ValidationIssue]]:
     normalized = text.replace("\r\n", "\n").replace("\r", "\n")
-    match = METADATA_RE.search(normalized)
+    # A visible metadata block is recognized only where a record must carry it:
+    # at the start, or directly after a completion audit's sentinel. Anywhere
+    # else the same text is body content and cannot displace the real block.
+    fence_match = METADATA_FENCE_RE.match(normalized)
+    if fence_match is None:
+        sentinel_prefix = AUDIT_SENTINEL + "\n\n"
+        if normalized.startswith(sentinel_prefix):
+            fence_match = METADATA_FENCE_RE.match(normalized, len(sentinel_prefix))
+    comment_match = METADATA_RE.search(normalized)
+    # Each schema version has exactly one canonical form; take whichever is
+    # present and reject the mismatch once the declared version is known.
+    match = fence_match if fence_match is not None else comment_match
     if match is None:
         return None, [
-            _issue("metadata-missing", "agent-handoff metadata comment is missing")
+            _issue("metadata-missing", "agent-handoff metadata block is missing")
         ]
+    fenced = match is fence_match
 
     issues: list[ValidationIssue] = []
+    if fenced and comment_match is not None:
+        # A second block in the deprecated form would be invisible in rendered
+        # Markdown while claiming to be this record's metadata.
+        issues.append(
+            _issue(
+                "metadata-form",
+                "a record must carry exactly one agent-handoff metadata block",
+            )
+        )
+
     try:
         metadata = json.loads(match.group("json"))
     except json.JSONDecodeError as error:
@@ -774,13 +1380,29 @@ def _extract_markdown(
     if not isinstance(metadata, dict):
         return None, [_issue("metadata-type", "metadata must be a JSON object")]
 
+    schema_version = metadata.get("schema_version")
+    if schema_version in SUPPORTED_SCHEMA_VERSIONS and fenced != (
+        schema_version == LATEST_SCHEMA_VERSION
+    ):
+        expected_form = (
+            "a fenced `json agent-handoff-metadata` block"
+            if schema_version == LATEST_SCHEMA_VERSION
+            else "an agent-handoff metadata comment"
+        )
+        issues.append(
+            _issue(
+                "metadata-form",
+                f"a schema-v{schema_version} record must use {expected_form}",
+            )
+        )
+
     record_type = metadata.get("record_type")
     if record_type == "continuation":
         if match.start() != 0:
             issues.append(
                 _issue(
                     "record-preamble",
-                    "a continuation must begin with its metadata comment",
+                    "a continuation must begin with its metadata block",
                 )
             )
         expected_title = "# Session continuation"
@@ -798,7 +1420,7 @@ def _extract_markdown(
 
     heading_matches = _headings_outside_fences(normalized)
     actual_headings = tuple(item.title for item in heading_matches)
-    expected_headings = _expected_sections(record_type)
+    expected_headings = _expected_sections(record_type, schema_version)
     if expected_headings is not None and actual_headings != expected_headings:
         issues.append(
             _issue(
@@ -878,7 +1500,7 @@ def render_record(data: Mapping[str, object]) -> str:
     record_type = str(data["record_type"])
     sections = data["sections"]
     assert isinstance(sections, Mapping)
-    expected_sections = _expected_sections(record_type)
+    expected_sections = _expected_sections(record_type, data.get("schema_version"))
     assert expected_sections is not None
 
     metadata = {key: value for key, value in data.items() if key != "sections"}
@@ -888,7 +1510,12 @@ def render_record(data: Mapping[str, object]) -> str:
         indent=2,
         sort_keys=True,
     )
-    metadata_block = f"{METADATA_OPEN}\n{metadata_json}\n{METADATA_CLOSE}"
+    if _is_v2(data):
+        metadata_block = (
+            f"{METADATA_FENCE_OPEN}\n{metadata_json}\n{METADATA_FENCE_CLOSE}"
+        )
+    else:
+        metadata_block = f"{METADATA_OPEN}\n{metadata_json}\n{METADATA_CLOSE}"
     title = (
         "# Session continuation"
         if record_type == "continuation"
@@ -942,5 +1569,35 @@ def render_tail(record_path: str | os.PathLike[str], text: str) -> str:
                 "exceed 300 words or 2400 characters"
             )
         return tail
+    link_path = quote(absolute_path, safe="/:._-")
+    return f"[Audit record (not a handoff)](<{link_path}>)"
+
+
+def render_resume_prompt(record_path: str | os.PathLike[str], text: str) -> str:
+    """Render the complete copied continuation prompt without its display fence."""
+    data = parse_markdown(text)
+    if data["record_type"] != "continuation":
+        raise ValueError("resume prompt requires a continuation")
+    return _continuation_tail_body(data, _absolute_markdown_path(record_path))
+
+
+def render_terminal_response(
+    record_path: str | os.PathLike[str],
+    text: str,
+) -> str:
+    """Render the complete schema-v2 terminal assistant response."""
+
+    data = parse_markdown(text)
+    if data["schema_version"] == SCHEMA_VERSION:
+        return render_tail(record_path, text)
+    absolute_path = _absolute_markdown_path(record_path)
+    if data["record_type"] == "continuation":
+        response = _continuation_tail(data, absolute_path)
+        if not _tail_is_within_budget(response):
+            raise ValueError(
+                "continuation-tail-size: the generated continuation response must "
+                "not exceed 300 words or 2400 characters"
+            )
+        return response
     link_path = quote(absolute_path, safe="/:._-")
     return f"[Audit record (not a handoff)](<{link_path}>)"

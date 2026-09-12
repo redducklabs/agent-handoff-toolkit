@@ -6,11 +6,14 @@ This repository provides a shared contract, deterministic validation and renderi
 
 ## Status
 
-Version 0.2.8 makes every continuation response stop the current session and
-direct the user to resume in a new session from the handoff. It preserves
-release-pinned installation, consumer-owned instructions, and opaque deprecated
-historical records for both Claude Code and Codex. No-action continuation fields
-are rejected even when prefixed as ordered or unordered list items.
+Version 0.3.0 adds synchronous lifecycle enforcement for tracked sessions and
+directs the user to resume in a new session from the handoff. Schema v2 also
+stores every structured fact exactly once, in a visible metadata block, removing
+the narrative sections that schema v1 derived from that same metadata. It
+preserves release-pinned installation, consumer-owned instructions, and opaque
+deprecated historical records for both Claude Code and Codex. No-action
+continuation fields are rejected even when prefixed as ordered or unordered list
+items.
 
 ## Core rules
 
@@ -19,7 +22,8 @@ are rejected even when prefixed as ordered or unordered list items.
 - Every active scope explicitly states whether code remains. A child-level “no” never implies that its parent is complete.
 - Questions that can change the next session's first action are answered before a continuation is finalized.
 - Recorded repository and tracker state is a timestamped snapshot. A resumed session reconciles live state before acting.
-- Verification results are classified as `pass`, `fail`, or `not-run`; skipped checks are never reported as passing.
+- Verification results are classified as `pass`, `fail`, or `not-run`; skipped checks are never reported as passing. Record one entry per gate the next session would rerun, not one per invocation.
+- A schema-v2 record stores each fact once, in a visible metadata block at the top of the document. No narrative section restates verification, the exact next action, the scope list, or the next-session prompt. Schema-v1 records keep their metadata comment and their derived sections.
 - A continuation response says `This session is stopped because authorized work
   remains` and `What you need to do: Start a new session from the continuation
   handoff below`. Its copy/paste block for the new session begins with `Continue
@@ -28,7 +32,7 @@ are rejected even when prefixed as ordered or unordered list items.
   and the complete generated tail to 300 words. The response must not reproduce
   the handoff document. The absolute clickable link remains the final line.
 
-See [the contract](docs/agent-handoff/contract.md) for the normative requirements.
+See [the contract](docs/agent-handoff/contract.md) for what an author must write, and [the mechanics reference](docs/agent-handoff/mechanics.md) for the exact formats and enforcement the toolkit applies.
 
 ## Command surface
 
@@ -38,22 +42,33 @@ handoff-toolkit render <record.json> --output <record.md>
 handoff-toolkit render-tail <continuation.md>
 handoff-toolkit context-health --percent <0-100> --session-id <id>
 handoff-toolkit hook --platform claude|codex --event post-tool-use
+handoff-toolkit acceptance --platform claude|codex --scratch <empty-scratch-directory>
 ```
 
-Automatic hooks fail open so they cannot break an agent session. Explicit commands fail closed and return a non-zero exit code for invalid input.
+Advisory automatic hooks fail open so they cannot break an agent session.
+Tracked lifecycle hooks (`UserPromptSubmit`, `PreToolUse`, and `Stop`) fail closed.
+Explicit commands fail closed and return a non-zero exit code for invalid input.
+
+`acceptance` is an opt-in local host smoke check. It creates and removes the
+named empty scratch repository, keeps host output only in memory, and prints
+only reduced platform properties and lifecycle issue codes. It is not part of
+ordinary public CI. A host without observed trusted hook discovery is reported
+as `unverified`, not `pass`. When invoking the command from an installed
+consumer runtime, supply `--release-source <pinned-release-checkout>` so the
+disposable consumer can be installed from a verified local release source.
 
 ## Consumer installation
 
-Check out the public v0.2.8 release, inspect the proposed changes, then apply
+Check out the public v0.3.0 release, inspect the proposed changes, then apply
 them from that checkout:
 
 ```powershell
-git clone --branch v0.2.8 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
+git clone --branch v0.3.0 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
 Set-Location agent-handoff-toolkit
-python distribution/runner.py install --target <consumer-repository> --release v0.2.8 --dry-run
-python distribution/runner.py install --target <consumer-repository> --release v0.2.8 --apply
-python distribution/runner.py sync --target <consumer-repository> --release v0.2.8 --check
-python distribution/runner.py sync --target <consumer-repository> --release v0.2.8 --apply
+python distribution/runner.py install --target <consumer-repository> --release v0.3.0 --dry-run
+python distribution/runner.py install --target <consumer-repository> --release v0.3.0 --apply
+python distribution/runner.py sync --target <consumer-repository> --release v0.3.0 --check
+python distribution/runner.py sync --target <consumer-repository> --release v0.3.0 --apply
 ```
 
 Run install and sync only in an isolated, clean Git worktree with no concurrent
@@ -83,17 +98,15 @@ The package has no runtime dependencies outside the Python standard library.
 
 ## Software versions
 
-Last checked: 2026-09-06.
+Last checked: 2026-09-10.
 
-- Minimum supported Python: 3.11
-- CI Python versions: 3.11, 3.12, 3.13, 3.14
-- Latest stable Python checked: 3.14.7
-- GitHub Actions: `actions/checkout@v7`, `actions/setup-python@v7`
-- Build frontend: `build==1.6.0`
-- Build backend: `setuptools==84.0.0`
-- Linter and formatter: `ruff==0.16.6`
-
-Version sources are the official Python release index and the official GitHub Action repositories.
+- Minimum supported Python: [3.11](https://www.python.org/downloads/)
+- CI Python versions: [3.11, 3.12, 3.13, 3.14](https://www.python.org/downloads/)
+- Latest stable Python checked: [3.14.7](https://www.python.org/downloads/)
+- GitHub Actions: [`actions/checkout@v7`](https://github.com/actions/checkout), [`actions/setup-python@v7`](https://github.com/actions/setup-python)
+- Build frontend: [`build==1.6.1`](https://pypi.org/project/build/1.6.1/)
+- Build backend: [`setuptools==84.0.0`](https://pypi.org/project/setuptools/84.0.0/)
+- Linter and formatter: [`ruff==0.16.7`](https://pypi.org/project/ruff/0.16.7/)
 
 ## License
 

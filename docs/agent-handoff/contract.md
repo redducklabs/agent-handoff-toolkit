@@ -1,6 +1,11 @@
 # Agent handoff contract
 
-This document is normative for schema version 1.
+This document is normative for schema version 2 and is what an author reads
+before writing a record. `mechanics.md` carries the exact formats the toolkit
+enforces — lineage fields, canonical JSON, the generated response, lifecycle
+enforcement, the enforcement boundary, and the schema version 1 compatibility
+appendix. The validator rejects a record that violates them, so an author does
+not need to reproduce them from memory.
 
 ## Record decision
 
@@ -10,13 +15,15 @@ Completion of the highest authorized epic, feature, rollout, or explicitly stand
 
 ## Active scopes
 
-Every active scope declares `scope_id`, `scope_kind`, `parent_scope_id`, `highest_authorized`, `remaining_work`, `remaining_code`, `remaining_code_detail`, and `status`. Scope kind is `unit`, `issue`, `phase`, `epic`, `rollout`, or `standalone`.
+Every active scope declares `scope_id`, `scope_kind`, `parent_scope_id`, `highest_authorized`, `remaining_work`, `remaining_code`, `remaining_code_detail`, and `status`. Scope kind is `unit`, `issue`, `phase`, `epic`, `rollout`, or `standalone`. Each schema-v2 scope additionally carries an immutable `scope_definition` and `scope_definition_digest`; `mechanics.md` defines them and the root immutability they protect.
 
 Status is `pending`, `in-progress`, `blocked`, or `complete`. A scope with status `complete` has neither remaining work nor remaining code. The highest-authorized scope of a continuation has a nonterminal status (`pending`, `in-progress`, or `blocked`); the highest-authorized scope of a completion audit has status `complete`.
 
 Exactly one active scope is highest-authorized. Every non-root parent reference resolves within the scope list, and the graph is acyclic. The highest-authorized scope has no parent.
 
 A continuation requires `remaining_work: true` at the highest-authorized scope. A completion audit requires `remaining_work: false` there. `remaining_code: true` implies `remaining_work: true` for the same scope. A true `remaining_work` or `remaining_code` value on a descendant requires the corresponding value to be true on every ancestor. `remaining_code_detail` must explain both `true` and `false` answers. Code, review/UAT/decision work, and completed work remain distinct.
+
+State `remaining_code_detail` as one sentence naming what remains and where. A scope is a unit of authority, not a progress narrative; the narrative belongs in **Completed work** and **Incomplete work and risks**.
 
 ## Question gate
 
@@ -36,23 +43,38 @@ Repository, remote, tracker, and rollout facts in a record are timestamped snaps
 
 Reconciliation is preflight, not the exact next action. The continuation also names the concrete action after successful reconciliation, including its target, constraints, and completion condition.
 
+## Metadata is the only copy
+
+A schema-v2 record begins with one visible fenced `json agent-handoff-metadata`
+block holding schema version, record type, timestamp, lineage, scope
+declarations, question gates, verification classifications, exact-action fields,
+and the stored next-session prompt. A completion audit places its sentinel
+before that block.
+
+That block is the sole copy of every structured fact. A schema-v2 record
+contains no narrative restatement of verification, the exact next action, the
+scope list, or the next-session prompt, and no section repeats a value that
+already has a metadata field. Schema-v1 records keep their metadata comment and
+their derived sections; see the compatibility appendix in `mechanics.md`.
+
 ## Continuation sections
 
-A continuation contains exactly these level-two sections, in order:
+A schema-v2 continuation contains exactly these level-two sections, in order:
 
 1. Objective
 2. Authoritative references
 3. User decisions
 4. Repository state
 5. Completed work
-6. Verification evidence
-7. Incomplete work and risks
-8. Exact next action
-9. External effects
-10. Remaining code by active scope
-11. Next-session prompt
+6. Incomplete work and risks
+7. External effects
 
-The document begins with a machine-readable metadata comment containing schema version, record type, timestamp, scope declarations, question gates, verification classifications, exact-action fields, and the stored next-session prompt.
+**User decisions** holds settled decisions and the constraints they impose; other
+fields refer to a decision by its short label rather than restating it.
+**Repository state** is branch, HEAD, worktree path, and remote or pull-request
+status — the reader re-inspects live state anyway. **Incomplete work and risks**
+lists only what no scope's `remaining_code_detail` already states: risks,
+blockers, and cross-scope conflicts.
 
 ## Completion-audit sections
 
@@ -67,9 +89,8 @@ It contains exactly these level-two sections, in order:
 3. User decisions
 4. Final repository state
 5. Completed work
-6. Verification evidence
-7. Known risks or separately tracked follow-ups
-8. External effects
+6. Known risks or separately tracked follow-ups
+7. External effects
 
 Its metadata identifies the completed highest-authorized scope and authorization basis. It must not contain continuation-only fields or sections.
 
@@ -77,42 +98,51 @@ Its metadata identifies the completed highest-authorized scope and authorization
 
 Every verification entry has a command or check, a result of `pass`, `fail`, or `not-run`, and evidence or a reason. Never convert `not-run` into `pass`. A failing check remains visible until it is rerun successfully or explicitly carried as a known risk.
 
-## Canonical derived sections
+Record one entry per gate the next session would rerun, not one per invocation.
+Omit any entry a broader entry already covers: a passing full-suite run subsumes
+the individual suites inside it. Keep `check` at or under 120 characters and
+`evidence` or `reason` at or under 160 characters. The entry states the gate and
+its outcome, not a log of the session that ran it.
 
-Structured metadata is authoritative for facts that also appear in narrative sections. The renderer generates these sections; authors do not maintain separate prose copies:
-
-- **Verification evidence** is the complete `verification` list for both record types.
-- **Exact next action** is the continuation's complete `exact_action` object.
-- **Remaining code by active scope** is the continuation's complete `active_scopes` list.
-- **Next-session prompt** is the continuation's exact `next_session_prompt` value in a fenced `text` block. It contains only essential blockers, settled decisions, and validation gates not already represented by `exact_action`.
-
-The structured sections use deterministic JSON with UTF-8 characters preserved, keys sorted, two-space indentation, LF line endings, and a fenced `json` block long enough not to collide with content. The prompt must be non-empty, use LF line endings, contain no unsafe control or line-separator characters or leading or trailing whitespace, and use at most six non-empty lines, 120 words, and 1,200 characters. It must not contain a Markdown fence or handoff-document structure. The renderer does not strip or otherwise normalize it.
+## Exact next action
 
 Each `exact_action` field is either non-empty text or a non-empty list of text
 items, preserving schema-v1 compatibility. Every item is trimmed, single-line,
 and free of unsafe control or line-separator characters, Markdown fences, and
 handoff-document structure. Each `exact_action` item must not be a no-action
-assertion. The tail joins list items with `; `.
+assertion. `constraints` names the governing decisions and prohibitions; it does
+not restate **User decisions** in full.
 
-The validator normalizes record-document line endings to LF for parsing, regenerates every derived section from metadata, and requires exact equality with the visible section. A contradictory prose summary is invalid even when each representation would be valid in isolation.
+The `next_session_prompt` contains only essential blockers, settled decisions,
+and validation gates not already represented by `exact_action`. It must be
+non-empty, use LF line endings, contain no unsafe control or line-separator
+characters or leading or trailing whitespace, and use at most six non-empty
+lines, 120 words, and 1,200 characters. It must not contain a Markdown fence or
+handoff-document structure.
 
 ## Final response
 
-For a continuation, the response tail contains exactly:
+A continuation response says `This session is stopped because authorized work
+remains` and `What you need to do: Start a new session from the continuation
+handoff below`, carries a `Continue from handoff` block with the absolute path,
+names the exact next action, target, constraints, and completion gate, lists
+only the stored essential blockers, decisions, and validation gates, and ends
+with an absolute clickable Markdown link. It must not reproduce the handoff
+document. Completion responses label their link **Audit record (not a handoff)**
+and generate no restart prompt.
 
-1. `This session is stopped because authorized work remains.`
-2. `What you need to do: Start a new session from the continuation handoff below.`
-3. One fenced `text` block beginning with `Continue from handoff` and the absolute handoff path for use in the new session.
-4. The exact action, target, constraints, and completion gate from metadata.
-5. Only the stored essential blockers, decisions, and validation gates.
-6. An absolute clickable Markdown link to the continuation as the final non-whitespace line.
-
-The complete generated tail, including its fence and link, is limited to 300 words and 2,400 characters. It must not reproduce the handoff document. The detailed record remains the source of truth; the tail is only a concise pointer and executable start. Completion responses label their link **Audit record (not a handoff)** and do not generate a restart prompt.
-
-A continuation response may summarize completed and remaining work before the generated tail, but the generated tail supplies its sole user-action statement. A no-action statement such as `None`, `Nothing to do`, or `No action required` is valid only when the highest authorized scope is complete and the response links an audit rather than a continuation.
+The renderer is the only source of a schema-v2 terminal response: there is no
+handwritten preamble, and the normalized terminal message must have byte-exact
+equality with the rendered response. Do not retype any of it. `mechanics.md`
+states the exact generated shape and its budget.
 
 ## Enforcement boundary
 
-The validator enforces record type, section shape, scope consistency, verification classifications, empty gates, and actionable field presence. It cannot prove that recorded facts are true, that all source code was inspected, that tracker hierarchy is current, or that the chosen action is correct. The skill requires those checks; tooling must not claim otherwise.
-
-Automatic host hooks are advisory and fail open. Explicit CLI commands fail visibly and return a non-zero status for invalid input.
+The validator enforces record type, section shape, scope consistency, lineage,
+verification classifications, empty gates, and actionable field presence. It
+does not mechanically prove that recorded facts are true, arbitrary
+natural-language scope interpretation is correct, all source code was inspected,
+tracker hierarchy is current, or completion is semantically true. The skill
+requires those checks; tooling must not claim otherwise. `mechanics.md` states
+the enforcement model, the permitted stop outcomes, and the hook failure
+policies.

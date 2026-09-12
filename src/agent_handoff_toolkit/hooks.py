@@ -1,4 +1,4 @@
-"""Context-health policy and fail-open Claude Code/Codex hook adapters."""
+"""Advisory context hooks and fail-closed lifecycle dispatch."""
 
 from __future__ import annotations
 
@@ -9,10 +9,13 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 import re
-from typing import Any
+from typing import Any, TYPE_CHECKING
 import unicodedata
 from urllib.parse import quote
 import uuid
+
+if TYPE_CHECKING:
+    from .lifecycle_storage import LocalLifecycleStorage
 
 MILESTONES = (50, 60, 70)
 MAX_HOOK_INPUT_BYTES = 128 * 1024
@@ -40,12 +43,22 @@ _MILESTONE_MESSAGES = {
     ),
 }
 
+# Every session in a consumer repository pays for this reminder, so it points at
+# the `agent-handoff` skill instead of directing sessions that never touch a
+# record to read the whole contract.
 _SESSION_START_REMINDER = (
-    "Read `docs/agent-handoff/contract.md` before continuing. If the incoming session "
-    "context explicitly links a current schema-v1 continuation, reconcile that record "
-    "with live state and do not repeat completed work. Do not search or inspect "
-    "deprecated legacy handoffs."
+    "Use the `agent-handoff` skill before creating or changing a handoff record. "
+    "If the incoming session context explicitly links a current schema-v1 "
+    "continuation, reconcile that record with live state and do not repeat "
+    "completed work. Do not search or inspect deprecated legacy handoffs."
 )
+
+
+@dataclass(frozen=True)
+class HookExecution:
+    stdout: str = ""
+    stderr: str = ""
+    exit_code: int = 0
 
 
 @dataclass(frozen=True)
@@ -200,15 +213,14 @@ def _authoring_reminder(changes: tuple[_RecordChange, ...]) -> str:
     paragraphs = ["Record change reminder:\n" + rendered_paths]
 
     if authored:
+        # The renderer is the only source of the terminal response, so this
+        # reminder names the record-type decision and leaves the generated tail,
+        # the contract, and the authoring gates to the `agent-handoff` skill.
         paragraphs.append(
-            "Determine the record type before finishing it. Continuation: resolve "
-            "every question that gates the next session's first action, record "
-            "remaining code at every active scope, and render the required response "
-            "tail. Its response states `This session is stopped because authorized "
-            "work remains` and `What you need to do: Start a new session from the "
-            "continuation handoff below`. Completion audit: this is not a handoff and "
-            "must not contain a "
-            "restart action, exact next action, or next-session prompt."
+            "Finish the record through the `agent-handoff` skill. A continuation "
+            "needs remaining authorized work and an executable first action; a "
+            "completion audit is evidence and must not contain a restart action, "
+            "exact next action, or next-session prompt."
         )
     if deleted:
         paragraphs.append(
@@ -216,10 +228,6 @@ def _authoring_reminder(changes: tuple[_RecordChange, ...]) -> str:
             "work retains a valid current continuation."
         )
 
-    paragraphs.append(
-        "Re-read `docs/agent-handoff/contract.md`, reconcile live state, and preserve failed or "
-        "not-run verification accurately."
-    )
     if authored:
         validation = (
             "Run the explicit `validate` subcommand separately for every added, "
@@ -241,7 +249,7 @@ def _raw_input_is_bounded(raw: str) -> bool:
     return len(raw.encode("utf-8")) <= MAX_HOOK_INPUT_BYTES
 
 
-def run_hook(platform: str, event: str, raw: str, repo_root: Path) -> str:
+def _run_advisory_hook(platform: str, event: str, raw: str, repo_root: Path) -> str:
     """Normalize a host event and return hook JSON, failing open on all errors.
 
     ``repo_root`` is retained at the adapter boundary for future local contract
@@ -280,3 +288,38 @@ def run_hook(platform: str, event: str, raw: str, repo_root: Path) -> str:
         )
     except Exception:
         return ""
+
+
+def run_hook(
+    platform: str,
+    event: str,
+    raw: str,
+    repo_root: Path,
+    storage: LocalLifecycleStorage | None = None,
+) -> HookExecution:
+    """Keep informational errors open and lifecycle errors visibly blocking."""
+    name = (
+        event.lower().replace("-", "").replace("_", "")
+        if isinstance(event, str)
+        else ""
+    )
+    if name not in {"userpromptsubmit", "pretooluse", "stop"}:
+        return HookExecution(stdout=_run_advisory_hook(platform, event, raw, repo_root))
+    try:
+        from .hook_adapters import run_lifecycle_hook
+
+        return run_lifecycle_hook(platform, event, raw, repo_root, storage)
+    except Exception:
+        # Also covers missing owned adapter/lifecycle modules. Never echo errors.
+        reason = "AHK-HOOK-RUNTIME: Repair lifecycle runtime and retry."
+        if name == "pretooluse":
+            value = {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": reason,
+                }
+            }
+        else:
+            value = {"decision": "block", "reason": reason}
+        return HookExecution(stdout=json.dumps(value, separators=(",", ":")))

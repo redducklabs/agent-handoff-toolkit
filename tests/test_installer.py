@@ -587,6 +587,33 @@ class JsonMergeTests(InstallerFixture, unittest.TestCase):
                         owned=owned,
                     )
 
+    def test_sync_advances_matcherless_owned_hook_without_touching_consumer_hook(
+        self,
+    ) -> None:
+        old_hook = {"hooks": [{"command": "python old.py"}]}
+        desired_hook = {"hooks": [{"command": "python lifecycle.py"}]}
+        consumer_hook = {"hooks": [{"command": "python consumer.py"}]}
+
+        result = merge_json_fragment(
+            {"hooks": {"Stop": [consumer_hook, old_hook]}},
+            {"hooks": {"Stop": [desired_hook]}},
+            identities={},
+            owned={"hooks": {"Stop": [old_hook]}},
+        )
+
+        self.assertEqual(result["hooks"]["Stop"], [consumer_hook, desired_hook])
+
+    def test_sync_refuses_locally_modified_matcherless_owned_hook(self) -> None:
+        owned_hook = {"hooks": [{"command": "python old.py"}]}
+
+        with self.assertRaisesRegex(OperationConflict, "missing|locally modified"):
+            merge_json_fragment(
+                {"hooks": {"UserPromptSubmit": [{"hooks": [{"command": "local"}]}]}},
+                {"hooks": {"UserPromptSubmit": [{"hooks": [{"command": "new"}]}]}},
+                identities={},
+                owned={"hooks": {"UserPromptSubmit": [owned_hook]}},
+            )
+
     def test_object_roots_are_required(self) -> None:
         for current, desired in (([], {}), ({}, [])):
             with self.subTest(current=current, desired=desired):
