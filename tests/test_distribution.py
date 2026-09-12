@@ -201,6 +201,16 @@ class DistributionTests(unittest.TestCase):
         self.assertNotIn("runs-on: redducklabs-runners", workflow)
         self.assertIn("build==1.6.1 ruff==0.16.7 setuptools==84.0.0", workflow)
 
+    def test_ci_fetches_full_history_for_the_upgrade_fixture(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+
+        # test_sync_upgrades_a_prior_release_without_touching_legacy_records
+        # rebuilds an authentic v0.2.8 tree with `git show`; the default
+        # shallow checkout does not contain that history.
+        self.assertIn("fetch-depth: 0", workflow)
+
     def test_manifest_hashes_every_managed_artifact(self) -> None:
         manifest = load_manifest()
 
