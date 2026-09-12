@@ -1,6 +1,6 @@
 # Repository instructions
 
-Read `docs/agent-handoff/contract.md` before changing record behavior, templates, validation, rendering, hooks, or the handoff skill.
+Read `docs/agent-handoff/contract.md` and `docs/agent-handoff/mechanics.md` before changing record behavior, templates, validation, rendering, hooks, or the handoff skill. The contract states what an author must write; mechanics states the formats and enforcement the toolkit applies.
 
 - Preserve the continuation/completion-audit distinction.
 - Keep the core package independent of Claude Code, Codex, GitHub, and tracker APIs.
@@ -23,7 +23,7 @@ Read `docs/agent-handoff/contract.md` before changing record behavior, templates
 - Resolved SDD review-package warning: relative scratch-package paths resolve against the command's working directory. Run the generator from the intended linked worktree or use its verified absolute workspace path; otherwise it targets the primary checkout where the plan workspace does not exist.
 - In a tag-only or shallow release checkout, `git fetch origin main` may not create `origin/main`. Run `git fetch origin main:refs/remotes/origin/main` before creating a main-based worktree.
 - Run Ruff through the repository configuration in `pyproject.toml`; unconfigured broad rules incorrectly reject the intentional catch-all boundary that makes automatic hooks fail open.
-- Resolved Windows verification warning: a default temporary directory beneath an unrelated Git checkout makes non-Git lifecycle tests inherit that checkout and may create test state in its metadata. Before verification, select a fresh temporary parent outside every Git checkout, confirm `git -C <parent> rev-parse --show-toplevel` fails, and set process-local `TEMP` and `TMP` to that parent for the test command.
+- Resolved Windows verification warning: a default temporary directory beneath an unrelated Git checkout used to make non-Git lifecycle tests inherit that checkout and create test state in its metadata. The tests now fence discovery at their own temporary root, so no `TEMP`/`TMP` preparation is needed; keep that fence when adding tests that resolve a lifecycle state root or a repository root.
 
 These repository-local rules apply to both Codex and Claude Code. Keep
 `AGENTS.md` and `CLAUDE.md` semantically identical.

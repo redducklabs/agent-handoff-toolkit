@@ -48,7 +48,11 @@ from agent_handoff_toolkit.records import (
     render_terminal_response,
 )  # noqa: E402
 from agent_handoff_toolkit.cli import main  # noqa: E402
-from test_lifecycle import make_record, make_scope  # noqa: E402
+from test_lifecycle import (  # noqa: E402
+    make_record,
+    make_scope,
+    restore_v1_sections,
+)
 
 
 DEFINITION = "eyJvdXRjb21lIjoiQ29tcGxldGUgYWxsIGF1dGhvcml6ZWQgaXNzdWUgd29yay4iLCJ0aXRsZSI6Iklzc3VlIDEzMjMifQ"
@@ -637,7 +641,7 @@ class OperationsTests(unittest.TestCase):
         for scope in data["active_scopes"]:
             scope.pop("scope_definition")
             scope.pop("scope_definition_digest")
-        text = render_record(data)
+        text = render_record(restore_v1_sections(data))
         selected = RecordReference(
             "legacy-selected",
             (self.root / "selected-v1.md").as_posix(),
@@ -1331,7 +1335,7 @@ class OperationsTests(unittest.TestCase):
             scope.pop("scope_definition")
             scope.pop("scope_definition_digest")
             scope["scope_kind"] = "rollout"
-        text = render_record(data)
+        text = render_record(restore_v1_sections(data))
         selected = RecordReference(
             "legacy-selected",
             (self.root / "selected.md").as_posix(),

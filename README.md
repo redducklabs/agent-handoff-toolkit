@@ -7,10 +7,13 @@ This repository provides a shared contract, deterministic validation and renderi
 ## Status
 
 Version 0.3.0 adds synchronous lifecycle enforcement for tracked sessions and
-direct the user to resume in a new session from the handoff. It preserves
-release-pinned installation, consumer-owned instructions, and opaque deprecated
-historical records for both Claude Code and Codex. No-action continuation fields
-are rejected even when prefixed as ordered or unordered list items.
+directs the user to resume in a new session from the handoff. Schema v2 also
+stores every structured fact exactly once, in a visible metadata block, removing
+the narrative sections that schema v1 derived from that same metadata. It
+preserves release-pinned installation, consumer-owned instructions, and opaque
+deprecated historical records for both Claude Code and Codex. No-action
+continuation fields are rejected even when prefixed as ordered or unordered list
+items.
 
 ## Core rules
 
@@ -19,7 +22,8 @@ are rejected even when prefixed as ordered or unordered list items.
 - Every active scope explicitly states whether code remains. A child-level “no” never implies that its parent is complete.
 - Questions that can change the next session's first action are answered before a continuation is finalized.
 - Recorded repository and tracker state is a timestamped snapshot. A resumed session reconciles live state before acting.
-- Verification results are classified as `pass`, `fail`, or `not-run`; skipped checks are never reported as passing.
+- Verification results are classified as `pass`, `fail`, or `not-run`; skipped checks are never reported as passing. Record one entry per gate the next session would rerun, not one per invocation.
+- A schema-v2 record stores each fact once, in a visible metadata block at the top of the document. No narrative section restates verification, the exact next action, the scope list, or the next-session prompt. Schema-v1 records keep their metadata comment and their derived sections.
 - A continuation response says `This session is stopped because authorized work
   remains` and `What you need to do: Start a new session from the continuation
   handoff below`. Its copy/paste block for the new session begins with `Continue
@@ -28,7 +32,7 @@ are rejected even when prefixed as ordered or unordered list items.
   and the complete generated tail to 300 words. The response must not reproduce
   the handoff document. The absolute clickable link remains the final line.
 
-See [the contract](docs/agent-handoff/contract.md) for the normative requirements.
+See [the contract](docs/agent-handoff/contract.md) for what an author must write, and [the mechanics reference](docs/agent-handoff/mechanics.md) for the exact formats and enforcement the toolkit applies.
 
 ## Command surface
 

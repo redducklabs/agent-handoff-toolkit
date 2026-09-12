@@ -38,6 +38,23 @@ def issue_codes(text: str) -> set[str]:
 
 V2_PREDECESSOR_PATH = "D:/repo/handoffs/record-001.md"
 
+# Schema v2 keeps no narrative copy of a metadata field, so an author supplies
+# only the sections that have no metadata equivalent.
+V2_DROPPED_SECTIONS = (
+    "Verification evidence",
+    "Exact next action",
+    "Remaining code by active scope",
+    "Next-session prompt",
+)
+
+
+def drop_v2_sections(data: dict[str, object]) -> dict[str, object]:
+    sections = data["sections"]
+    assert isinstance(sections, dict)
+    for name in V2_DROPPED_SECTIONS:
+        sections.pop(name, None)
+    return data
+
 
 def make_v2_scope(
     scope_id: str,
@@ -120,7 +137,7 @@ def make_v2_continuation(
             )
         )
     data["active_scopes"] = scopes
-    return data
+    return drop_v2_sections(data)
 
 
 def make_v2_audit(
@@ -173,7 +190,7 @@ def make_v2_audit(
             )
         )
     data["active_scopes"] = scopes
-    return data
+    return drop_v2_sections(data)
 
 
 def successor_of(
@@ -1092,6 +1109,120 @@ class RecordRenderingTests(unittest.TestCase):
             audit_verification, "No verification was performed.", 1
         )
         self.assertIn("section-consistency", issue_codes(contradictory_audit))
+
+    def test_v2_carries_one_visible_metadata_copy_and_no_derived_sections(
+        self,
+    ) -> None:
+        """Schema v2 stores each fact once, in a metadata block a reader can see."""
+
+        data = make_v2_continuation()
+        text = render_record(data)
+        self.assertEqual(validate_markdown(text), [])
+        self.assertTrue(text.startswith("```json agent-handoff-metadata\n"))
+        self.assertNotIn("<!-- agent-handoff-metadata", text)
+
+        headings = [
+            line.removeprefix("## ")
+            for line in text.splitlines()
+            if line.startswith("## ")
+        ]
+        self.assertEqual(
+            headings,
+            [
+                "Objective",
+                "Authoritative references",
+                "User decisions",
+                "Repository state",
+                "Completed work",
+                "Incomplete work and risks",
+                "External effects",
+            ],
+        )
+        # Each dropped section existed only as a second copy of metadata.
+        for dropped in (
+            "## Verification evidence",
+            "## Exact next action",
+            "## Remaining code by active scope",
+            "## Next-session prompt",
+        ):
+            self.assertNotIn(dropped, text)
+        self.assertEqual(text.count(str(data["next_session_prompt"])), 1)
+        self.assertEqual(
+            text.count(str(data["active_scopes"][0]["scope_definition_digest"])), 1
+        )
+
+        parsed = parse_markdown(text)
+        self.assertEqual(parsed["schema_version"], 2)
+        self.assertEqual(parsed["verification"], data["verification"])
+        self.assertEqual(parsed["exact_action"], data["exact_action"])
+        self.assertEqual(render_record(parsed), text)
+
+    def test_v2_audit_keeps_the_sentinel_before_visible_metadata(self) -> None:
+        text = render_record(make_v2_audit())
+        self.assertEqual(validate_markdown(text), [])
+        self.assertTrue(
+            text.startswith(
+                "> Audit record — not a handoff. Do not use this file to start or "
+                "continue a session.\n\n```json agent-handoff-metadata\n"
+            )
+        )
+        headings = [
+            line.removeprefix("## ")
+            for line in text.splitlines()
+            if line.startswith("## ")
+        ]
+        self.assertEqual(
+            headings,
+            [
+                "Completed objective",
+                "Authoritative references",
+                "User decisions",
+                "Final repository state",
+                "Completed work",
+                "Known risks or separately tracked follow-ups",
+                "External effects",
+            ],
+        )
+        self.assertNotIn("## Verification evidence", text)
+
+    def test_v2_rejects_the_v1_metadata_comment_form(self) -> None:
+        text = render_record(make_v2_continuation())
+        payload, remainder = text.split("```json agent-handoff-metadata\n", 1)[1].split(
+            "\n```\n", 1
+        )
+        commented = "<!-- agent-handoff-metadata\n" + payload + "\n-->\n" + remainder
+        self.assertIn("metadata-form", issue_codes(commented))
+
+    def test_v1_rejects_the_v2_visible_metadata_form(self) -> None:
+        text = render_record(self.continuation)
+        payload, remainder = text.split("<!-- agent-handoff-metadata\n", 1)[1].split(
+            "\n-->\n", 1
+        )
+        fenced = "```json agent-handoff-metadata\n" + payload + "\n```\n" + remainder
+        self.assertIn("metadata-form", issue_codes(fenced))
+
+    def test_v1_keeps_its_comment_metadata_and_derived_sections(self) -> None:
+        text = render_record(self.continuation)
+        self.assertTrue(text.startswith("<!-- agent-handoff-metadata\n"))
+        self.assertIn("## Verification evidence", text)
+        self.assertIn("## Next-session prompt", text)
+
+    def test_a_metadata_fence_inside_a_section_cannot_displace_the_real_block(
+        self,
+    ) -> None:
+        """A body that imitates the v2 block is rejected, never reinterpreted."""
+
+        planted = (
+            "Body text.\n\n```json agent-handoff-metadata\n"
+            '{\n  "record_type": "completion-audit",\n  "schema_version": 2\n}\n```'
+        )
+        self.continuation["sections"]["Objective"] = planted
+        text = render_record(self.continuation)
+        codes = issue_codes(text)
+        self.assertTrue(codes)
+        self.assertEqual(
+            parse_markdown(render_record(self.audit))["record_type"], "completion-audit"
+        )
 
     def test_headings_inside_backtick_and_tilde_fences_are_not_sections(self) -> None:
         objective = (

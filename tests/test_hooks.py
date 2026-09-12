@@ -175,15 +175,20 @@ class HostHookTests(unittest.TestCase):
             )
         self.assertIn("AHK-HOOK-RUNTIME", stdout.getvalue())
 
-    def test_session_start_injects_contract_and_continuation_reminder(self) -> None:
+    def test_session_start_defers_contract_reading_to_the_skill(self) -> None:
         for platform in ("claude", "codex"):
             with self.subTest(platform=platform):
                 output = run_hook(platform, "session-start", "{}", ROOT)
                 context = hook_context(output)
-                self.assertIn("docs/agent-handoff/contract.md", context)
+                self.assertIn("agent-handoff", context)
+                self.assertIn("skill", context.lower())
                 self.assertIn("continuation", context.lower())
                 self.assertIn("schema-v1", context.lower())
                 self.assertIn("do not search or inspect deprecated", context.lower())
+                # Every session pays for this reminder, so it must not direct a
+                # session that never touches a record to read the contract.
+                self.assertNotIn("docs/agent-handoff/contract.md", context)
+                self.assertLessEqual(len(context), 320)
                 self.assertEqual(
                     json.loads(output)["hookSpecificOutput"]["hookEventName"],
                     "SessionStart",
@@ -243,17 +248,18 @@ class HostHookTests(unittest.TestCase):
                     {"tool_name": "Edit", "tool_input": {"file_path": path}}
                 )
                 context = hook_context(run_hook("claude", "post-tool-use", raw, ROOT))
-                self.assertIn("Determine the record type", context)
-                self.assertIn(
+                self.assertIn("agent-handoff", context)
+                self.assertIn("completion audit is evidence", context)
+                self.assertIn("must not contain a restart action", context)
+                # The renderer is the only source of the terminal response, so
+                # the reminder must not retype the tail it generates.
+                self.assertNotIn(
                     "This session is stopped because authorized work remains",
                     context,
                 )
-                self.assertIn(
-                    "What you need to do: Start a new session from the continuation handoff below",
-                    context,
-                )
-                self.assertIn("Completion audit: this is not a handoff", context)
-                self.assertIn("must not contain a restart action", context)
+                self.assertNotIn("What you need to do:", context)
+                self.assertNotIn("docs/agent-handoff/contract.md", context)
+                self.assertLessEqual(len(context), 700)
 
     def test_codex_mixed_patch_reminds_for_deletions_and_validates_authored_records(
         self,

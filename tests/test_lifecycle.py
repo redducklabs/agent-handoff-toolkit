@@ -148,6 +148,22 @@ def load_fixture(name: str) -> dict[str, object]:
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
 
+def restore_v1_sections(data: dict[str, object]) -> dict[str, object]:
+    """Restore the derived sections schema v1 still renders but v2 dropped."""
+
+    source = load_fixture(
+        "continuation.json"
+        if data["record_type"] == "continuation"
+        else "completion-audit.json"
+    )
+    sections = data["sections"]
+    origin = source["sections"]
+    assert isinstance(sections, dict) and isinstance(origin, dict)
+    for name, value in origin.items():
+        sections.setdefault(name, value)
+    return data
+
+
 def make_scope(
     scope_id: str,
     *,
@@ -216,6 +232,17 @@ def make_record(
     )
     if record_type == "completion-audit":
         data["completed_scope_id"] = root
+    # Schema v2 keeps no narrative copy of a metadata field, so an author
+    # supplies only the sections that have no metadata equivalent.
+    sections = data["sections"]
+    assert isinstance(sections, dict)
+    for name in (
+        "Verification evidence",
+        "Exact next action",
+        "Remaining code by active scope",
+        "Next-session prompt",
+    ):
+        sections.pop(name, None)
     return data
 
 

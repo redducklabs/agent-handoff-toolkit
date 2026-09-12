@@ -954,6 +954,39 @@ class EnforcementTests(unittest.TestCase):
         )
         self.assertEqual(self.invoke(last_assistant_message=message), HookExecution())
 
+    def test_block_feedback_names_the_validator_checks_that_failed(self):
+        """A blocked record says which checks failed, in validator codes."""
+
+        self.register()
+        data = make_record("continuation", record_id="first", root="issue-invented")
+        _, _, message = self.record(data=data)
+        reason = json.loads(self.invoke(last_assistant_message=message).stdout)[
+            "reason"
+        ]
+        self.assertIn("AHK-STOP-", reason)
+        self.assertIn(" failed=", reason)
+        codes = reason.split(" failed=", 1)[1].split()[0].split(",")
+        self.assertTrue(codes)
+        for code in codes:
+            self.assertRegex(code, r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+        self.assertLessEqual(len(reason.encode()), 1200)
+
+    def test_block_feedback_never_carries_record_or_message_content(self):
+        self.register()
+        secret = "Zq7PrivateObjectiveProse"
+        data = make_record("continuation", record_id="first")
+        data["sections"]["Objective"] = f"{secret} objective body."
+        data["active_scopes"][0]["remaining_code_detail"] = f"{secret} detail."
+        data["next_session_prompt"] = f"- {secret} prompt line"
+        _, _, message = self.record(data=data)
+        altered = f"{secret} handwritten preamble.\n\n{message}"
+        reason = json.loads(self.invoke(last_assistant_message=altered).stdout)[
+            "reason"
+        ]
+        self.assertIn("AHK-STOP-", reason)
+        self.assertNotIn(secret, reason)
+        self.assertLessEqual(len(reason.encode()), 1200)
+
     def test_real_cli_lifecycle_feedback_and_silent_success_for_both_hosts(self):
         self.register()
         environment = {

@@ -293,9 +293,20 @@ class LifecycleIssue:
     expected: str | None = None
     actual: str | None = None
     candidate_path: str | None = None
+    # Validator codes naming which checks failed. A closed vocabulary of
+    # identifiers, so a host adapter can surface them without echoing text.
+    detail_codes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "code", _identifier(self.code, "issue code"))
+        object.__setattr__(
+            self,
+            "detail_codes",
+            tuple(
+                _identifier(detail, "issue detail code")
+                for detail in tuple(self.detail_codes)[:8]
+            ),
+        )
         object.__setattr__(
             self, "summary", _text(self.summary, limit=400, label="issue summary")
         )
@@ -1025,6 +1036,7 @@ def _stop_issue(
     expected: object = None,
     actual: object = None,
     candidate_path: str | None = None,
+    detail_codes: tuple[str, ...] = (),
 ) -> LifecycleIssue:
     def evidence(value: object) -> str | None:
         if value is None:
@@ -1038,6 +1050,7 @@ def _stop_issue(
         expected=evidence(expected),
         actual=evidence(actual),
         candidate_path=candidate_path,
+        detail_codes=detail_codes,
     )
 
 
@@ -1084,6 +1097,9 @@ def _mapped_successor_issues(
     candidate_path: str,
 ) -> tuple[LifecycleIssue, ...]:
     categories: dict[str, list[str]] = {}
+    # The validator's own codes are identifiers, so they can name the failed
+    # checks to the model without carrying any record text.
+    detail_codes: dict[str, list[str]] = {}
     for issue in validation_issues:
         if issue.code in {"lineage-root", "lineage-authorization"}:
             stop_code = "AHK-STOP-ROOT"
@@ -1101,6 +1117,9 @@ def _mapped_successor_issues(
         else:
             stop_code = "AHK-STOP-WORK"
         categories.setdefault(stop_code, []).append(issue.message)
+        seen = detail_codes.setdefault(stop_code, [])
+        if issue.code not in seen:
+            seen.append(issue.code)
     corrective_actions = {
         "AHK-STOP-ROOT": "Render a successor for the locked authorized root or use a trusted approved transition.",
         "AHK-STOP-PREDECESSOR": "Render a direct successor of the current record using its exact path and source digest.",
@@ -1113,6 +1132,7 @@ def _mapped_successor_issues(
             "; ".join(messages)[:400],
             corrective_actions[code],
             candidate_path=candidate_path,
+            detail_codes=tuple(detail_codes.get(code, ())),
         )
         for code, messages in categories.items()
     )
@@ -1444,26 +1464,38 @@ def _evaluate_initial_record(snapshot, candidate, data):
         "proposal_turn_ref": proposal_turn,
         "evidence_hmac": chain.authorization_evidence_hmac,
     }
-    valid = (
-        not validate_markdown(candidate.text)
-        and data.get("schema_version") == 2
-        and data.get("authorization_id") == chain.authorization_id
-        and data.get("authorized_root_scope_id") == chain.locked_root_id
-        and tuple(
-            scope.get("scope_definition_digest")
-            for scope in data.get("active_scopes", [])
-        )
-        == chain.scope_digests
-        and data.get("predecessor") is None
-        and candidate.predecessor is None
-        and evidence == expected_evidence
-        and record_digest(candidate.text) == candidate.digest
-        and render_terminal_response(candidate.path, candidate.text).replace(
-            "\r\n", "\n"
-        )
-        == candidate.rendered_response.replace("\r\n", "\n")
-    )
-    if not valid:
+    # Each check names itself so a blocked model learns which one failed. The
+    # names are a closed vocabulary of identifiers, never record text, and the
+    # checks keep their original short-circuit order so behavior is unchanged.
+    failed: list[str] = []
+    if validate_markdown(candidate.text):
+        failed.append("structure")
+    else:
+        if data.get("schema_version") != 2:
+            failed.append("schema-version")
+        if data.get("authorization_id") != chain.authorization_id:
+            failed.append("authorization-id")
+        if data.get("authorized_root_scope_id") != chain.locked_root_id:
+            failed.append("root-scope")
+        if (
+            tuple(
+                scope.get("scope_definition_digest")
+                for scope in data.get("active_scopes", [])
+            )
+            != chain.scope_digests
+        ):
+            failed.append("scope-digests")
+        if data.get("predecessor") is not None or candidate.predecessor is not None:
+            failed.append("predecessor")
+        if evidence != expected_evidence:
+            failed.append("evidence")
+        if record_digest(candidate.text) != candidate.digest:
+            failed.append("source-digest")
+        if not failed and render_terminal_response(
+            candidate.path, candidate.text
+        ).replace("\r\n", "\n") != candidate.rendered_response.replace("\r\n", "\n"):
+            failed.append("response")
+    if failed:
         return _blocked_stop(
             snapshot,
             (
@@ -1471,6 +1503,7 @@ def _evaluate_initial_record(snapshot, candidate, data):
                     "AHK-STOP-ROOT",
                     "Initial record differs from registered authority.",
                     "Render the first record with the registered root, immutable definitions, and user-turn evidence.",
+                    detail_codes=tuple(failed),
                 ),
             ),
         )

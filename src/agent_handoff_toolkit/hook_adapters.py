@@ -238,6 +238,16 @@ def _reason(decision):
         line = f"{code}: {_ACTIONS[code]}"
         if decision.reason.startswith("Same lifecycle issue"):
             line = f"{code}: Same issue; apply the prior corrective action."
+        # Closed-vocabulary detail: the validator's own codes name which checks
+        # failed. Like expected/actual, each is echoed only when it matches the
+        # identifier pattern, so no free text can reach the host through here.
+        details = [
+            detail
+            for detail in getattr(issue, "detail_codes", ())
+            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", str(detail))
+        ][:8]
+        if details:
+            line += f" failed={','.join(details)}"
         for label in ("expected", "actual"):
             value = getattr(issue, label)
             if value is not None and re.fullmatch(

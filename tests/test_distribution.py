@@ -16,18 +16,16 @@ from urllib.parse import quote
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = ROOT / "distribution" / "manifest.json"
 
+# Schema v2 keeps one copy of every structured fact, so a v2 template carries
+# only the narrative sections that have no metadata field.
 CONTINUATION_SECTIONS = [
     "Objective",
     "Authoritative references",
     "User decisions",
     "Repository state",
     "Completed work",
-    "Verification evidence",
     "Incomplete work and risks",
-    "Exact next action",
     "External effects",
-    "Remaining code by active scope",
-    "Next-session prompt",
 ]
 
 AUDIT_SECTIONS = [
@@ -36,10 +34,16 @@ AUDIT_SECTIONS = [
     "User decisions",
     "Final repository state",
     "Completed work",
-    "Verification evidence",
     "Known risks or separately tracked follow-ups",
     "External effects",
 ]
+
+DROPPED_V2_SECTIONS = (
+    "## Verification evidence",
+    "## Exact next action",
+    "## Remaining code by active scope",
+    "## Next-session prompt",
+)
 
 REQUIRED_SKILL_GATES = {
     "Choose the record type",
@@ -53,6 +57,7 @@ EXPECTED_INSTALL_TARGETS = {
     "distribution/consumer-instructions.md": {"AGENTS.md", "CLAUDE.md"},
     "LICENSE": {".agent-handoff-toolkit/LICENSE"},
     "docs/agent-handoff/contract.md": {"docs/agent-handoff/contract.md"},
+    "docs/agent-handoff/mechanics.md": {"docs/agent-handoff/mechanics.md"},
     "docs/consumer-integration.md": {".agent-handoff-toolkit/consumer-integration.md"},
     "skills/agent-handoff/SKILL.md": {
         ".agents/skills/agent-handoff/SKILL.md",
@@ -99,7 +104,8 @@ EXPECTED_INSTALL_TARGETS = {
 }
 
 METADATA_RE = re.compile(
-    r"<!-- agent-handoff-metadata\n(?P<metadata>.*?)\n-->", re.DOTALL
+    r"^```json agent-handoff-metadata\n(?P<metadata>.*?)\n```$",
+    re.DOTALL | re.MULTILINE,
 )
 
 
@@ -300,7 +306,7 @@ class DistributionTests(unittest.TestCase):
             "new or materially replaced records",
             "cannot loosen or contradict",
             "highest authorized scope",
-            "derived from record metadata",
+            "stores each fact once, in its visible metadata block",
             "do not resolve questions from or mark individual legacy files",
             ".agent-handoff-toolkit/consumer-integration.md",
         ):
@@ -466,10 +472,6 @@ class DistributionTests(unittest.TestCase):
         }
         self.assertEqual(gates, REQUIRED_SKILL_GATES)
         self.assertIn("docs/agent-handoff/contract.md", text)
-        self.assertIn(
-            "must not reproduce the handoff document",
-            " ".join(text.lower().split()),
-        )
         contract = " ".join(
             (ROOT / "docs/agent-handoff/contract.md")
             .read_text(encoding="utf-8")
@@ -478,11 +480,11 @@ class DistributionTests(unittest.TestCase):
         )
         self.assertIn("each `exact_action` item", contract)
         self.assertIn("must not be a no-action assertion", contract)
+        self.assertIn("must not reproduce the handoff document", contract)
         normalized_skill = " ".join(text.lower().split())
-        self.assertIn("render_terminal_response", normalized_skill)
-        self.assertIn(
-            "use `render-tail` only for schema-v1 compatibility", text.lower()
-        )
+        # The skill names a command the consumer actually has; the library
+        # function it wraps belongs in the mechanics reference.
+        self.assertIn("runner.py render-tail", normalized_skill)
         self.assertIn("nothing before or after", normalized_skill)
 
     def test_schema_v2_workflow_documentation_states_enforced_lifecycle_rules(
@@ -490,6 +492,7 @@ class DistributionTests(unittest.TestCase):
     ) -> None:
         sources = {
             "contract": ROOT / "docs" / "agent-handoff" / "contract.md",
+            "mechanics": ROOT / "docs" / "agent-handoff" / "mechanics.md",
             "skill": ROOT / "skills" / "agent-handoff" / "SKILL.md",
             "consumer": ROOT / "distribution" / "consumer-instructions.md",
         }
@@ -498,8 +501,21 @@ class DistributionTests(unittest.TestCase):
             for name, path in sources.items()
         }
 
+        # The contract is what an author reads; it states the rules that govern
+        # what they write.
         for phrase in (
             "normative for schema version 2",
+            "scope_definition_digest",
+            "byte-exact equality",
+            "handwritten preamble",
+            "does not mechanically prove",
+        ):
+            with self.subTest(document="contract", phrase=phrase):
+                self.assertIn(phrase, normalized["contract"])
+
+        # The mechanics reference carries the exact formats and the enforcement
+        # model that tooling implements and a blocked session diagnoses against.
+        for phrase in (
             "schema version 1 compatibility appendix",
             "record_id",
             "authorization_id",
@@ -517,8 +533,10 @@ class DistributionTests(unittest.TestCase):
             "does not mechanically prove",
             "no model call is required",
         ):
-            with self.subTest(phrase=phrase):
-                self.assertIn(phrase, normalized["contract"])
+            with self.subTest(document="mechanics", phrase=phrase):
+                self.assertIn(phrase, normalized["mechanics"])
+
+        self.assertIn("mechanics.md", normalized["contract"])
 
         for phrase in (
             "lifecycle inspect",
@@ -526,7 +544,7 @@ class DistributionTests(unittest.TestCase):
             "lifecycle resume",
             "lifecycle join",
             "explicitly validate the candidate",
-            "renderer is the only source",
+            "renderer's output for the record",
             "legitimate decision request",
             "corrective stop feedback",
             "already be displayed",
@@ -565,9 +583,18 @@ class DistributionTests(unittest.TestCase):
             "must not reproduce the handoff document",
             "120 words",
         )
+        # The contract states the rule and the README summarizes the project.
+        for relative_path in ("README.md", "docs/agent-handoff/contract.md"):
+            text = " ".join(
+                (ROOT / relative_path).read_text(encoding="utf-8").lower().split()
+            )
+            with self.subTest(path=relative_path):
+                for phrase in required_phrases:
+                    self.assertIn(phrase, text)
+
+        # The model-facing documents are loaded every session, so they point at
+        # the renderer rather than retyping the response it generates.
         for relative_path in (
-            "README.md",
-            "docs/agent-handoff/contract.md",
             "distribution/consumer-instructions.md",
             "skills/agent-handoff/SKILL.md",
         ):
@@ -575,8 +602,12 @@ class DistributionTests(unittest.TestCase):
                 (ROOT / relative_path).read_text(encoding="utf-8").lower().split()
             )
             with self.subTest(path=relative_path):
-                for phrase in required_phrases:
-                    self.assertIn(phrase, text)
+                self.assertIn("renderer", text)
+                for phrase in (
+                    "this session is stopped because authorized work remains",
+                    "what you need to do: start a new session",
+                ):
+                    self.assertNotIn(phrase, text)
 
     def test_templates_match_the_contract_section_shapes(self) -> None:
         sys.path.insert(0, str(ROOT / "src"))
@@ -623,31 +654,17 @@ class DistributionTests(unittest.TestCase):
         self.assertRegex(
             continuation_scope["scope_definition_digest"], r"^[0-9a-f]{64}$"
         )
-        remaining_scope_section = (
-            continuation.split("## Remaining code by active scope\n", 1)[1]
-            .split("## Next-session prompt\n", 1)[0]
-            .strip()
-        )
-        remaining_scope_match = re.fullmatch(
-            r"```json\n(?P<scopes>.*?)\n```", remaining_scope_section, re.DOTALL
-        )
-        self.assertIsNotNone(remaining_scope_match)
-        self.assertEqual(
-            json.loads(remaining_scope_match.group("scopes")),
-            continuation_metadata["active_scopes"],
-        )
+        self.assertTrue(continuation.startswith("```json agent-handoff-metadata\n"))
         self.assertEqual(
             continuation[continuation_match.end() :].lstrip().splitlines()[0],
             "# Session continuation",
         )
         self.assertEqual(level_two_headings(continuation), CONTINUATION_SECTIONS)
-        prompt_section = continuation.split("## Next-session prompt\n", 1)[1].strip()
-        prompt_match = re.fullmatch(
-            r"```text\n(?P<prompt>.*?)\n```", prompt_section, re.DOTALL
-        )
-        self.assertIsNotNone(prompt_match)
+        # Each dropped section only restated a metadata field.
+        for dropped in DROPPED_V2_SECTIONS:
+            self.assertNotIn(dropped, continuation)
         self.assertEqual(
-            prompt_match.group("prompt"), continuation_metadata["next_session_prompt"]
+            continuation.count(str(continuation_metadata["next_session_prompt"])), 1
         )
         materialized_continuation = continuation.replace(
             "<replace with ISO-8601 timestamp including timezone>",
@@ -661,7 +678,7 @@ class DistributionTests(unittest.TestCase):
         )
         self.assertEqual(audit.splitlines()[0], sentinel)
         self.assertTrue(
-            audit.startswith(f"{sentinel}\n\n<!-- agent-handoff-metadata\n")
+            audit.startswith(f"{sentinel}\n\n```json agent-handoff-metadata\n")
         )
         audit_metadata, audit_match = template_metadata(audit)
         self.assertEqual(
@@ -695,8 +712,8 @@ class DistributionTests(unittest.TestCase):
             "# Completion audit",
         )
         self.assertEqual(level_two_headings(audit), AUDIT_SECTIONS)
-        self.assertNotIn("## Exact next action", audit)
-        self.assertNotIn("## Next-session prompt", audit)
+        for dropped in DROPPED_V2_SECTIONS:
+            self.assertNotIn(dropped, audit)
         materialized_audit = audit.replace(
             "<replace with ISO-8601 timestamp including timezone>",
             "2026-09-11T12:00:00Z",
@@ -1293,14 +1310,15 @@ class DistributionTests(unittest.TestCase):
                         self.assertEqual(
                             output["hookSpecificOutput"]["hookEventName"], event
                         )
-                        self.assertIn(
-                            "docs/agent-handoff/contract.md",
-                            output["hookSpecificOutput"]["additionalContext"],
-                        )
+                        context = output["hookSpecificOutput"]["additionalContext"]
+                        # Advisory context is paid for by every session, so it
+                        # points at the skill instead of the whole contract.
+                        self.assertIn("`agent-handoff` skill", context)
+                        self.assertNotIn("docs/agent-handoff/contract.md", context)
                         if event == "SessionStart":
                             self.assertIn(
                                 "Do not search or inspect deprecated legacy handoffs.",
-                                output["hookSpecificOutput"]["additionalContext"],
+                                context,
                             )
 
                 malformed = run_installed_command(command, consumer, "{")

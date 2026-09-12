@@ -43,11 +43,14 @@ _MILESTONE_MESSAGES = {
     ),
 }
 
+# Every session in a consumer repository pays for this reminder, so it points at
+# the `agent-handoff` skill instead of directing sessions that never touch a
+# record to read the whole contract.
 _SESSION_START_REMINDER = (
-    "Read `docs/agent-handoff/contract.md` before continuing. If the incoming session "
-    "context explicitly links a current schema-v1 continuation, reconcile that record "
-    "with live state and do not repeat completed work. Do not search or inspect "
-    "deprecated legacy handoffs."
+    "Use the `agent-handoff` skill before creating or changing a handoff record. "
+    "If the incoming session context explicitly links a current schema-v1 "
+    "continuation, reconcile that record with live state and do not repeat "
+    "completed work. Do not search or inspect deprecated legacy handoffs."
 )
 
 
@@ -210,15 +213,14 @@ def _authoring_reminder(changes: tuple[_RecordChange, ...]) -> str:
     paragraphs = ["Record change reminder:\n" + rendered_paths]
 
     if authored:
+        # The renderer is the only source of the terminal response, so this
+        # reminder names the record-type decision and leaves the generated tail,
+        # the contract, and the authoring gates to the `agent-handoff` skill.
         paragraphs.append(
-            "Determine the record type before finishing it. Continuation: resolve "
-            "every question that gates the next session's first action, record "
-            "remaining code at every active scope, and render the required response "
-            "tail. Its response states `This session is stopped because authorized "
-            "work remains` and `What you need to do: Start a new session from the "
-            "continuation handoff below`. Completion audit: this is not a handoff and "
-            "must not contain a "
-            "restart action, exact next action, or next-session prompt."
+            "Finish the record through the `agent-handoff` skill. A continuation "
+            "needs remaining authorized work and an executable first action; a "
+            "completion audit is evidence and must not contain a restart action, "
+            "exact next action, or next-session prompt."
         )
     if deleted:
         paragraphs.append(
@@ -226,10 +228,6 @@ def _authoring_reminder(changes: tuple[_RecordChange, ...]) -> str:
             "work retains a valid current continuation."
         )
 
-    paragraphs.append(
-        "Re-read `docs/agent-handoff/contract.md`, reconcile live state, and preserve failed or "
-        "not-run verification accurately."
-    )
     if authored:
         validation = (
             "Run the explicit `validate` subcommand separately for every added, "

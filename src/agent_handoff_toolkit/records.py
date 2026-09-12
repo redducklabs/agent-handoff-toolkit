@@ -26,6 +26,11 @@ LATEST_SCHEMA_VERSION = 2
 SUPPORTED_SCHEMA_VERSIONS = frozenset({SCHEMA_VERSION, LATEST_SCHEMA_VERSION})
 METADATA_OPEN = "<!-- agent-handoff-metadata"
 METADATA_CLOSE = "-->"
+# Schema v2 keeps one copy of every structured fact. The block stays visible so
+# a reviewer reading rendered Markdown still sees verification, the exact next
+# action, and the scope list that schema v1 duplicated into prose sections.
+METADATA_FENCE_OPEN = "```json agent-handoff-metadata"
+METADATA_FENCE_CLOSE = "```"
 AUDIT_SENTINEL = "> Audit record — not a handoff. Do not use this file to start or continue a session."
 
 CONTINUATION_SECTIONS = (
@@ -53,6 +58,25 @@ AUDIT_SECTIONS = (
     "External effects",
 )
 
+# Schema v2 drops every section the renderer derived byte-for-byte from
+# metadata; only narrative sections that have no metadata field remain.
+V2_DERIVED_SECTIONS = frozenset(
+    {
+        "Verification evidence",
+        "Exact next action",
+        "Remaining code by active scope",
+        "Next-session prompt",
+    }
+)
+
+CONTINUATION_SECTIONS_V2 = tuple(
+    name for name in CONTINUATION_SECTIONS if name not in V2_DERIVED_SECTIONS
+)
+
+AUDIT_SECTIONS_V2 = tuple(
+    name for name in AUDIT_SECTIONS if name not in V2_DERIVED_SECTIONS
+)
+
 SCOPE_KINDS = frozenset({"unit", "issue", "phase", "epic", "rollout", "standalone"})
 SCOPE_STATUSES = frozenset({"pending", "in-progress", "blocked", "complete"})
 NONTERMINAL_SCOPE_STATUSES = SCOPE_STATUSES - {"complete"}
@@ -68,6 +92,12 @@ MAX_CONTINUATION_TAIL_CHARACTERS = 2400
 METADATA_RE = re.compile(
     r"<!-- agent-handoff-metadata\n(?P<json>.*?)\n-->",
     re.DOTALL,
+)
+# A rendered metadata object never contains a bare fence line: JSON escapes every
+# newline, so no line inside the payload can be exactly three backticks.
+METADATA_FENCE_RE = re.compile(
+    r"^```json agent-handoff-metadata\n(?P<json>.*?)\n```$",
+    re.DOTALL | re.MULTILINE,
 )
 FENCE_OPEN_RE = re.compile(r"^[ ]{0,3}(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
 HEADING_LINE_RE = re.compile(r"^[ ]{0,3}##[ \t]+(?P<title>.*?)(?:[ \t]+#+)?[ \t]*$")
@@ -122,6 +152,7 @@ def _looks_like_record_document(value: str) -> bool:
     markers = (
         METADATA_OPEN,
         METADATA_CLOSE,
+        METADATA_FENCE_OPEN,
         AUDIT_SENTINEL,
         "# session continuation",
         "# completion audit",
@@ -210,7 +241,14 @@ def _canonical_json_section(value: object) -> str:
     return _fenced_block(payload, "json")
 
 
+def _is_v2(data: Mapping[str, object]) -> bool:
+    return data.get("schema_version") == LATEST_SCHEMA_VERSION
+
+
 def _derived_sections(data: Mapping[str, object]) -> dict[str, str]:
+    if _is_v2(data):
+        # Schema v2 has no derived sections; its visible metadata is the copy.
+        return {}
     derived: dict[str, str] = {}
     verification = data.get("verification")
     if isinstance(verification, list):
@@ -229,11 +267,14 @@ def _derived_sections(data: Mapping[str, object]) -> dict[str, str]:
     return derived
 
 
-def _expected_sections(record_type: object) -> tuple[str, ...] | None:
+def _expected_sections(
+    record_type: object, schema_version: object = SCHEMA_VERSION
+) -> tuple[str, ...] | None:
+    latest = schema_version == LATEST_SCHEMA_VERSION
     if record_type == "continuation":
-        return CONTINUATION_SECTIONS
+        return CONTINUATION_SECTIONS_V2 if latest else CONTINUATION_SECTIONS
     if record_type == "completion-audit":
-        return AUDIT_SECTIONS
+        return AUDIT_SECTIONS_V2 if latest else AUDIT_SECTIONS
     return None
 
 
@@ -1014,7 +1055,7 @@ def _validate_data(
     ):
         issues.append(_issue("schema-version", "schema_version must be 1 or 2"))
     record_type = data.get("record_type")
-    expected_sections = _expected_sections(record_type)
+    expected_sections = _expected_sections(record_type, schema_version)
     if expected_sections is None:
         issues.append(
             _issue(
@@ -1296,11 +1337,16 @@ def _extract_markdown(
     record_path: str | os.PathLike[str] | None = None,
 ) -> tuple[dict[str, Any] | None, list[ValidationIssue]]:
     normalized = text.replace("\r\n", "\n").replace("\r", "\n")
-    match = METADATA_RE.search(normalized)
+    fence_match = METADATA_FENCE_RE.search(normalized)
+    comment_match = METADATA_RE.search(normalized)
+    # Each schema version has exactly one canonical form; take whichever is
+    # present and reject the mismatch once the declared version is known.
+    match = fence_match if fence_match is not None else comment_match
     if match is None:
         return None, [
-            _issue("metadata-missing", "agent-handoff metadata comment is missing")
+            _issue("metadata-missing", "agent-handoff metadata block is missing")
         ]
+    fenced = match is fence_match
 
     issues: list[ValidationIssue] = []
     try:
@@ -1315,13 +1361,29 @@ def _extract_markdown(
     if not isinstance(metadata, dict):
         return None, [_issue("metadata-type", "metadata must be a JSON object")]
 
+    schema_version = metadata.get("schema_version")
+    if schema_version in SUPPORTED_SCHEMA_VERSIONS and fenced != (
+        schema_version == LATEST_SCHEMA_VERSION
+    ):
+        expected_form = (
+            "a fenced `json agent-handoff-metadata` block"
+            if schema_version == LATEST_SCHEMA_VERSION
+            else "an agent-handoff metadata comment"
+        )
+        issues.append(
+            _issue(
+                "metadata-form",
+                f"a schema-v{schema_version} record must use {expected_form}",
+            )
+        )
+
     record_type = metadata.get("record_type")
     if record_type == "continuation":
         if match.start() != 0:
             issues.append(
                 _issue(
                     "record-preamble",
-                    "a continuation must begin with its metadata comment",
+                    "a continuation must begin with its metadata block",
                 )
             )
         expected_title = "# Session continuation"
@@ -1339,7 +1401,7 @@ def _extract_markdown(
 
     heading_matches = _headings_outside_fences(normalized)
     actual_headings = tuple(item.title for item in heading_matches)
-    expected_headings = _expected_sections(record_type)
+    expected_headings = _expected_sections(record_type, schema_version)
     if expected_headings is not None and actual_headings != expected_headings:
         issues.append(
             _issue(
@@ -1419,7 +1481,7 @@ def render_record(data: Mapping[str, object]) -> str:
     record_type = str(data["record_type"])
     sections = data["sections"]
     assert isinstance(sections, Mapping)
-    expected_sections = _expected_sections(record_type)
+    expected_sections = _expected_sections(record_type, data.get("schema_version"))
     assert expected_sections is not None
 
     metadata = {key: value for key, value in data.items() if key != "sections"}
@@ -1429,7 +1491,12 @@ def render_record(data: Mapping[str, object]) -> str:
         indent=2,
         sort_keys=True,
     )
-    metadata_block = f"{METADATA_OPEN}\n{metadata_json}\n{METADATA_CLOSE}"
+    if _is_v2(data):
+        metadata_block = (
+            f"{METADATA_FENCE_OPEN}\n{metadata_json}\n{METADATA_FENCE_CLOSE}"
+        )
+    else:
+        metadata_block = f"{METADATA_OPEN}\n{metadata_json}\n{METADATA_CLOSE}"
     title = (
         "# Session continuation"
         if record_type == "continuation"
