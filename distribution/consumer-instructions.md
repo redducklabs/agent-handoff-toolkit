@@ -20,6 +20,12 @@ before creating or changing a continuation or completion audit.
   `lifecycle register-root`, `lifecycle resume`, and `lifecycle join` only for
   their defined lifecycle states; an existing handoff does not authorize a new
   root or immutable scope definition without an approved transition.
+- To register the first root, attempt `lifecycle register-root` with
+  `--scope-id`, `--scope-kind`, and the semantic slots as plain text in
+  `--scope-title` and `--scope-outcome`. The denial encodes the definition and
+  returns the complete bound command after `Command:`; run that verbatim. Do
+  not hand-encode `--scope-definition-b64`. A denial names the failed check
+  after `failed=`.
 - Explicitly validate the direct candidate against the locked root and lineage.
   The renderer-only terminal response is the only permitted tracked final response;
   do not add a handwritten preamble or summary, and do not retype the generated

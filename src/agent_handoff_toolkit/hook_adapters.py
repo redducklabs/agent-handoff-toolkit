@@ -6,6 +6,7 @@ normalizer's one-way session identifier with the repository-secret HMAC.
 
 from __future__ import annotations
 
+import base64
 from collections.abc import Mapping
 from dataclasses import replace
 import hashlib
@@ -15,6 +16,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shlex
 import stat
 import unicodedata
 
@@ -36,7 +38,9 @@ from .lifecycle import (
     evaluate_user_prompt,
 )
 from .lifecycle_operations import (
+    SCOPE_KINDS,
     LifecycleService,
+    _charset_code,
     canonical_record_path,
     decode_scope_definition,
     parse_bootstrap_command,
@@ -48,11 +52,20 @@ from .lifecycle_storage import (
     _directory_guard,
     _open_directory,
 )
-from .lineage import record_digest, scope_definition_digest, validate_identifier
+from .lineage import (
+    canonical_json_bytes,
+    record_digest,
+    scope_definition_digest,
+    validate_identifier,
+    validate_scope_definition,
+)
 from .records import parse_markdown, render_resume_prompt, render_terminal_response
 
 MAX_INPUT_BYTES = 128 * 1024
 MAX_REASON_BYTES = 1200
+# Host-authored turn content, bounded by the payload total rather than by the
+# lifecycle text limit that applies when the field is read.
+_CONTENT_FIELDS = frozenset({"last_assistant_message"})
 _READ_ONLY = {
     "claude": frozenset({"Read", "Glob", "Grep"}),
     "codex": frozenset({"view_image"}),
@@ -108,20 +121,25 @@ def _string(value, limit, *, multiline=False, empty=False, trimmed=True):
     return value
 
 
-def _bounded_json(value, depth=0):
+def _bounded_json(value, depth=0, field=None):
     if depth > 12:
         raise ValueError("hook object nesting exceeds bound")
     if isinstance(value, str):
         # Opaque host fields may contain surrounding whitespace, but never controls.
-        _string(value, 16384, multiline=True, empty=True, trimmed=False)
-        if len(value.encode("utf-8")) > 16384:
+        # A named content field carries model prose whose length belongs to the
+        # turn, not to the lifecycle: the payload as a whole is already bounded
+        # below, and rejecting a long one here would fail the only hook that can
+        # end the turn. The lifecycle bound is applied per field when it is read.
+        limit = MAX_INPUT_BYTES if field in _CONTENT_FIELDS else 16384
+        _string(value, limit, multiline=True, empty=True, trimmed=False)
+        if len(value.encode("utf-8")) > limit:
             raise ValueError("hook field exceeds bound")
     elif isinstance(value, Mapping):
         if len(value) > 128:
             raise ValueError("hook object exceeds bound")
         for key, item in value.items():
             _string(key, 128)
-            _bounded_json(item, depth + 1)
+            _bounded_json(item, depth + 1, key if depth == 0 else None)
     elif isinstance(value, list):
         if len(value) > 256:
             raise ValueError("hook array exceeds bound")
@@ -157,6 +175,27 @@ def decode_payload(raw: str) -> Mapping[str, object]:
     if not isinstance(payload, dict):
         raise ValueError("hook input must be an object")
     return payload
+
+
+def _final_assistant_text(value):
+    """Read the host's report of the turn's final text without failing the hook.
+
+    The field carries whatever the turn produced: null when the turn ended on a
+    tool call, empty when it emitted no text, and otherwise model prose that may
+    be untrimmed or longer than the lifecycle bound. None of that is a runtime
+    fault, and treating it as one blocks the only hook that can end the turn.
+    An unusable value becomes None, which every downstream check already reads
+    as "no compliant terminal response" and blocks on its own terms.
+    """
+
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("invalid hook text")
+    try:
+        return _string(value, 16384, multiline=True)
+    except ValueError:
+        return None
 
 
 def normalize_event(
@@ -196,7 +235,7 @@ def normalize_event(
     if name is EventName.STOP:
         if "stop_hook_active" not in payload:
             raise ValueError("Stop requires loop evidence")
-        message = _string(payload.get("last_assistant_message"), 16384, multiline=True)
+        message = _final_assistant_text(payload.get("last_assistant_message"))
     elif name is EventName.USER_PROMPT_SUBMIT:
         user = _string(payload.get("prompt"), 16384, multiline=True)
         external = external and not stop_active
@@ -366,6 +405,10 @@ def _read_record(path, root):
 
 def _candidate(event, snapshot, root):
     message = event.latest_assistant_message
+    if message is None:
+        # The turn produced no usable final text, so it offers no candidate.
+        # The caller blocks on the absent terminal record, not on this.
+        return None
     # Only renderer-owned labels and a sole final link can discover a record.
     matches = list(
         re.finditer(
@@ -431,15 +474,20 @@ def _control_command(runner, session, capability, operation, fields=()):
     )
 
 
-def _repair_bootstrap(command, runner, session, capability):
+def _repair_bootstrap(command, runner, session, capability, reasons=None):
+    def reject(code):
+        if reasons is not None:
+            reasons.append(code)
+        return None
+
     if (
         not isinstance(command, str)
         or re.fullmatch(r"[A-Za-z0-9._:/ -]+", command) is None
     ):
-        return None
+        return reject(_charset_code(command))
     tokens = command.split(" ")
     if len(tokens) < 4 or tokens[0] != "python" or tokens[2] != "lifecycle":
-        return None
+        return reject("command-shape")
     tokens[1] = runner.as_posix()
     if "--session-key" not in tokens:
         tokens[4:4] = ["--session-key", session.session_key]
@@ -449,11 +497,90 @@ def _repair_bootstrap(command, runner, session, capability):
         ("--expected-session-revision", str(session.targeted_revision)),
     ):
         if tokens.count(flag) != 1 or tokens.index(flag) + 1 >= len(tokens):
-            return None
+            return reject("flag-order")
         tokens[tokens.index(flag) + 1] = value
     corrected = " ".join(tokens)
-    parsed = parse_bootstrap_command(corrected, runner, capability)
+    parsed = parse_bootstrap_command(corrected, runner, capability, reasons)
     return (corrected, parsed) if parsed is not None else None
+
+
+def _form_register_root(command, runner, session, capability, reasons=None):
+    """Form the bound command from semantic slots the author can actually write.
+
+    The bound command's scope definition is canonical JSON in unpadded
+    base64url. That is machine-computable only, and a session that has not yet
+    registered a root has no machine: every shell tool is denied until the root
+    exists. Reading the slots here as plain text leaves the semantics with the
+    author and gives the encoding to the only machine in reach.
+
+    This widens nothing. The command emitted still has to satisfy the strict
+    fixed-token parser, which is verified before it is offered, so the boundary
+    on what can execute is exactly where it was.
+    """
+
+    def reject(code):
+        if reasons is not None:
+            reasons.append(code)
+        return None
+
+    if not isinstance(command, str) or len(command) > 8192:
+        return None
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return reject("command-quoting")
+    if (
+        len(tokens) < 4
+        or tokens[0] != "python"
+        or tokens[2] != "lifecycle"
+        or tokens[3] != "register-root"
+    ):
+        return None
+    values = {}
+    for index in range(4, len(tokens) - 1, 2):
+        flag = tokens[index]
+        if not flag.startswith("--"):
+            return reject("flag-order")
+        values[flag[2:]] = tokens[index + 1]
+    required = ("scope-id", "scope-kind", "scope-title", "scope-outcome")
+    if not all(key in values for key in required):
+        # Not an attempt at the plain-slot form; leave the caller its template.
+        return None
+    try:
+        validate_identifier(values["scope-id"], label="scope-id")
+    except ValueError:
+        return reject("scope-id")
+    if values["scope-kind"] not in SCOPE_KINDS:
+        return reject("scope-kind")
+    try:
+        definition = validate_scope_definition(
+            {"title": values["scope-title"], "outcome": values["scope-outcome"]}
+        )
+        encoded = (
+            base64.urlsafe_b64encode(canonical_json_bytes(definition))
+            .decode()
+            .rstrip("=")
+        )
+    except ValueError:
+        return reject("definition-fields")
+    formed = _control_command(
+        runner,
+        session,
+        capability,
+        "register-root",
+        (
+            ("scope-id", values["scope-id"]),
+            ("scope-kind", values["scope-kind"]),
+            ("scope-definition-b64", encoded),
+        ),
+    )
+    # The feedback channel is bounded, so a definition whose encoding will not
+    # fit has to be named rather than silently dropped back to the template.
+    if len(formed.encode()) > MAX_REASON_BYTES - 250:
+        return reject("definition-too-long")
+    if parse_bootstrap_command(formed, runner, capability) is None:
+        return reject("formed-command")
+    return formed
 
 
 def _pre_tool(event, snapshot, root, storage):
@@ -485,7 +612,8 @@ def _pre_tool(event, snapshot, root, storage):
     ):
         raise ValueError("unsafe owned runner")
     capability = storage.control_capability(session)
-    repaired = _repair_bootstrap(command, runner, session, capability)
+    reasons = []
+    repaired = _repair_bootstrap(command, runner, session, capability, reasons)
     code = "AHK-PRE-ROOT"
     note = "Use the current bound control command."
     if session.mode is not EnforcementMode.UNTRACKED:
@@ -547,6 +675,7 @@ def _pre_tool(event, snapshot, root, storage):
             return HookExecution()
     else:
         pending = session.pending_transition_reference
+        formed = _form_register_root(command, runner, session, capability, reasons)
         if pending and pending.kind == "v1-adoption" and pending.status == "approved":
             corrected = _control_command(
                 runner,
@@ -555,6 +684,13 @@ def _pre_tool(event, snapshot, root, storage):
                 "adopt-v1",
                 (("record", pending.selected_record.path),),
             )
+        elif formed is not None:
+            corrected = formed
+            note = "Semantic slots accepted and encoded; run this command."
+            # The strict parse of the plain-slot attempt failed by design.
+            # Reporting those checks beside a successful encoding would name a
+            # failure that did not happen.
+            reasons.clear()
         else:
             corrected = _control_command(
                 runner,
@@ -567,8 +703,21 @@ def _pre_tool(event, snapshot, root, storage):
                     ("scope-definition-b64", "{scope_definition_b64}"),
                 ),
             )
-            note = "Derive the three semantic slots from the initiating user request; tooling does not supply them."
-    reason = f"{code}: {note}\nCommand: {corrected}"
+            note = 'Derive the three semantic slots from the initiating user request; tooling does not supply them. Plain --scope-id --scope-kind --scope-title "..." --scope-outcome "..." is encoded for you.'
+    reason = f"{code}: {note}"
+    # Detail is additive: naming the failed check never costs the code, the
+    # corrective action, or the command the author is being handed. It is
+    # reported only for an actual attempt at a control command; a denial of an
+    # ordinary tool call has no bootstrap check to have failed.
+    detail = ",".join(dict.fromkeys(reasons))[:128] if control else ""
+    if detail:
+        detailed = f"{reason} failed={detail}\nCommand: {corrected}"
+        if len(detailed.encode()) <= MAX_REASON_BYTES:
+            reason = detailed
+        else:
+            reason = f"{reason}\nCommand: {corrected}"
+    else:
+        reason = f"{reason}\nCommand: {corrected}"
     if len(reason.encode()) > MAX_REASON_BYTES:
         raise ValueError("control feedback exceeds bound")
     return HookExecution(
@@ -754,13 +903,19 @@ def run_lifecycle_hook(platform, name, raw, repo_root, storage=None):
         decision = LifecycleDecision(DecisionKind.BLOCK, (_issue("AHK-STOP-STALE"),))
     except Exception:
         issue = _issue("AHK-HOOK-RUNTIME")
-        if (
-            snapshot
-            and snapshot.session.authorization_id
-            and event_kind is EventName.STOP
-        ):
-            decision = _blocked_stop(snapshot, (issue,))
-        else:
+        # A counted block is the only thing that arms the correction circuit.
+        # A pre-root session has no chain identity, so this used to fall to an
+        # uncounted block: the count never advanced, the circuit never armed,
+        # and the session could neither act nor legally end. This is the
+        # last-resort handler, so a failure forming the counted block still has
+        # to yield a rendered decision rather than an unhandled hook crash.
+        try:
+            decision = (
+                _blocked_stop(snapshot, (issue,), allow_session_identity=True)
+                if snapshot and event_kind is EventName.STOP
+                else LifecycleDecision(DecisionKind.BLOCK, (issue,))
+            )
+        except Exception:
             decision = LifecycleDecision(DecisionKind.BLOCK, (issue,))
     return _publish_decision(platform, event_kind, decision, storage, raw_id, snapshot)
 

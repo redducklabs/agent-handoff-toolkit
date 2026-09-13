@@ -107,6 +107,21 @@ candidates, missing owned runtime files, and lifecycle validation exceptions.
 An untracked tool-free informational response may fail open. Successful lifecycle
 checks emit no routine model context.
 
+The host's report of the turn's final assistant text is turn content, not a
+lifecycle field. It is absent or null when the turn ended on a tool call, empty
+when the turn emitted no text, and otherwise whatever prose and spacing the
+model produced. None of that is a runtime fault. A value the lifecycle cannot
+use is read as no terminal response at all, which every later check already
+blocks on; it is never trimmed or truncated into something that could pass as
+the rendered response. Only a structurally invalid value — a wrong type, or a
+control or line-separator character — remains a normalization failure.
+
+A blocked `Stop` always advances the correction count, including one that
+failed before the session registered a root. A session without a chain signs
+that count with its own session key. Without this a pre-root session whose
+`Stop` kept failing could never arm `AHK-STOP-CIRCUIT`, leaving it unable to act
+and unable to reach any legal terminal outcome.
+
 ## Enforcement boundary
 
 The validator enforces record type, section shape, scope consistency, lineage,
@@ -193,3 +208,33 @@ tracked `UserPromptSubmit` supplies. They are the entry point whenever the
 session is tracked. Authoring a record outside a tracked session — no session key
 or challenge is available — uses `render`, `validate`, and `render-tail` only;
 lifecycle credentials are never fabricated to satisfy a command.
+
+## Registering the first root
+
+Before a root exists, every mutation-capable tool is denied, so the session has
+no shell with which to canonicalize and encode a scope definition. The denial
+itself supplies the machine. Attempt `register-root` with the semantic slots as
+plain text:
+
+```
+python <runner> lifecycle register-root --scope-id <id> --scope-kind <kind> \
+  --scope-title "<title>" --scope-outcome "<outcome>"
+```
+
+The denial validates those slots, encodes the definition, and returns the
+complete bound command — session key, challenge, revision and
+`--scope-definition-b64` already filled in — after `Command:`. Run that command
+verbatim. Nothing about what may execute changes: the returned command is
+accepted only because it satisfies the same fixed-token parser as before, and
+the hook verifies that before offering it.
+
+The three semantic slots are still the author's. Derive them from the
+initiating user request; the toolkit supplies the encoding, never the meaning.
+Because the feedback channel is bounded, a definition whose encoding will not
+fit is rejected as `definition-too-long` rather than silently dropped.
+
+A pre-root denial names the check that rejected the attempt after `failed=`,
+using the same closed-vocabulary convention as blocking `Stop` feedback —
+`definition-b64-alphabet`, `definition-json-noncanonical`, `scope-kind` and the
+rest. A cause the hook can repair on its own, such as a stale challenge, is
+corrected in the returned command instead of being named.

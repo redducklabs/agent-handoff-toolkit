@@ -102,33 +102,81 @@ def canonical_record_path(value: str) -> str:
     return normalized
 
 
+def _charset_code(command: object) -> str:
+    """Name the common out-of-charset cause instead of only the charset itself.
+
+    Standard-alphabet base64 padding is the usual first attempt at encoding a
+    scope definition by hand, and its "=" is rejected by the command charset
+    before any definition check runs. Reporting only "command-charset" pointed
+    at neither the padding nor the alphabet.
+    """
+
+    if isinstance(command, str) and "=" in command:
+        return "command-charset-padding"
+    return "command-charset"
+
+
+class ScopeDefinitionError(ValueError):
+    """A rejection that names which check failed, from a closed vocabulary.
+
+    Every cause used to surface as one indistinguishable string, so an author
+    holding a payload that failed for two independent reasons could not tell
+    them apart. The code is an identifier, never author text, so naming it
+    cannot carry content into host feedback.
+    """
+
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
+
+
 def decode_scope_definition(value: str) -> dict[str, str]:
     if (
         not isinstance(value, str)
         or not 1 <= len(value) <= 4096
         or re.fullmatch(r"[A-Za-z0-9_-]+", value) is None
     ):
-        raise ValueError("invalid base64url scope definition")
+        raise ScopeDefinitionError("definition-b64-alphabet")
     try:
         raw = base64.b64decode(
             value + "=" * (-len(value) % 4), altchars=b"-_", validate=True
         )
-        definition = validate_scope_definition(json.loads(raw.decode("utf-8")))
-        canonical = canonical_json_bytes(definition)
-        if (
-            canonical != raw
-            or base64.urlsafe_b64encode(canonical).decode().rstrip("=") != value
-        ):
-            raise ValueError("scope definition must be canonical JSON")
-        return definition
+    except (ValueError, RecursionError) as error:
+        raise ScopeDefinitionError("definition-b64-decode") from error
+    try:
+        parsed = json.loads(raw.decode("utf-8"))
     except (UnicodeError, ValueError, RecursionError) as error:
-        raise ValueError("invalid canonical scope definition") from error
+        raise ScopeDefinitionError("definition-json") from error
+    try:
+        definition = validate_scope_definition(parsed)
+        canonical = canonical_json_bytes(definition)
+    except (UnicodeError, ValueError, RecursionError) as error:
+        raise ScopeDefinitionError("definition-fields") from error
+    if canonical != raw:
+        raise ScopeDefinitionError("definition-json-noncanonical")
+    if base64.urlsafe_b64encode(canonical).decode().rstrip("=") != value:
+        raise ScopeDefinitionError("definition-b64-nonminimal")
+    return definition
 
 
 def parse_bootstrap_command(
-    command: str, runner_path: Path, challenge: str
+    command: str,
+    runner_path: Path,
+    challenge: str,
+    reasons: list[str] | None = None,
 ) -> BootstrapCommand | None:
-    """Parse fixed tokens without shell evaluation; caller supplies the live challenge."""
+    """Parse fixed tokens without shell evaluation; caller supplies the live challenge.
+
+    A caller may pass ``reasons`` to collect the closed-vocabulary code for the
+    check that rejected the command. What is accepted is unchanged: the parser
+    still returns None, and the codes only make the cause visible to the author.
+    """
+
+    def reject(code: str) -> None:
+        if reasons is not None:
+            reasons.append(code)
+        return None
+
     try:
         validate_identifier(challenge, label="challenge")
         if (
@@ -136,7 +184,7 @@ def parse_bootstrap_command(
             or len(command) > 8192
             or re.fullmatch(r"[A-Za-z0-9._:/ -]+", command) is None
         ):
-            return None
+            return reject(_charset_code(command))
         tokens = command.split(" ")
         if (
             len(tokens) < 4
@@ -144,44 +192,51 @@ def parse_bootstrap_command(
             or tokens[0] != "python"
             or tokens[2] != "lifecycle"
         ):
-            return None
+            return reject("command-shape")
         runner_token = tokens[1]
         if (
             runner_token != runner_path.resolve().as_posix()
             or not Path(runner_token).is_absolute()
         ):
-            return None
+            return reject("runner-path")
         if Path(runner_token).resolve() != runner_path.resolve():
-            return None
+            return reject("runner-path")
         operation = tokens[3]
         flags = _FLAGS.get(operation)
-        if flags is None or len(tokens) != 4 + len(flags) * 2:
-            return None
+        if flags is None:
+            return reject("operation")
+        if len(tokens) != 4 + len(flags) * 2:
+            return reject("flag-count")
         arguments = {}
         for index, flag in enumerate(flags):
             if tokens[4 + index * 2] != "--" + flag:
-                return None
+                return reject("flag-order")
             value = tokens[5 + index * 2]
-            if flag.endswith("revision"):
-                if re.fullmatch(r"0|[1-9][0-9]{0,15}", value) is None:
-                    return None
-                value = int(value)
-            elif flag == "record":
-                value = canonical_record_path(value)
-            elif flag == "scope-definition-b64":
-                decode_scope_definition(value)
-            elif flag == "session-key":
-                validate_hex_digest(value, label="derived session key")
-            else:
-                validate_identifier(value, label=flag)
+            try:
+                if flag.endswith("revision"):
+                    if re.fullmatch(r"0|[1-9][0-9]{0,15}", value) is None:
+                        return reject("revision-format")
+                    value = int(value)
+                elif flag == "record":
+                    value = canonical_record_path(value)
+                elif flag == "scope-definition-b64":
+                    decode_scope_definition(value)
+                elif flag == "session-key":
+                    validate_hex_digest(value, label="derived session key")
+                else:
+                    validate_identifier(value, label=flag)
+            except ScopeDefinitionError as error:
+                return reject(error.code)
+            except ValueError:
+                return reject(flag)
             arguments[flag.replace("-", "_")] = value
         if arguments["challenge"] != challenge:
-            return None
+            return reject("challenge-stale")
         if operation == "register-root" and arguments["scope_kind"] not in SCOPE_KINDS:
-            return None
+            return reject("scope-kind")
         return BootstrapCommand(operation, arguments)
     except (ValueError, OSError, TypeError):
-        return None
+        return reject("command-runtime")
 
 
 def _immutable_scopes(scopes):

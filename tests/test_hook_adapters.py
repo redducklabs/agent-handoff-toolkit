@@ -29,7 +29,10 @@ from agent_handoff_toolkit.lifecycle import (  # noqa: E402
     LifecycleDecision,
     LifecycleIssue,
 )
-from agent_handoff_toolkit.lifecycle_operations import LifecycleService  # noqa: E402
+from agent_handoff_toolkit.lifecycle_operations import (  # noqa: E402
+    LifecycleService,
+    decode_scope_definition,
+)
 from agent_handoff_toolkit.lifecycle_storage import (  # noqa: E402
     LocalLifecycleStorage,
     StaleLifecycleState,
@@ -98,7 +101,11 @@ class NormalizationTests(unittest.TestCase):
             for event_name in ("Stop", "PreToolUse", "UserPromptSubmit"):
                 required = ["session_id", "cwd", "transcript_path"]
                 required += {
-                    "Stop": ["stop_hook_active", "last_assistant_message"],
+                    # The final assistant message is host-reported turn content,
+                    # not a required lifecycle field: absent and null are what
+                    # the host sends when the turn produced no text. Its own
+                    # contract is asserted in the content tests below.
+                    "Stop": ["stop_hook_active"],
                     "PreToolUse": ["tool_name", "tool_input"],
                     "UserPromptSubmit": ["prompt"],
                 }[event_name]
@@ -154,13 +161,29 @@ class NormalizationTests(unittest.TestCase):
             ROOT,
         )
         self.assertEqual(event.latest_assistant_message, "First\nSecond")
-        for value in (
-            " trailing ",
-            "\nleading",
-            "unsafe\u2028line",
-            "unsafe\u202etext",
-        ):
-            with self.assertRaises(ValueError):
+        # Untrimmed prose is what a turn may actually end with, so it is read
+        # rather than raised on. It is still never silently trimmed into a
+        # compliant-looking response: it reads as no usable final text at all.
+        for value in (" trailing ", "\nleading", "", "x" * 20000):
+            with self.subTest(value=value[:12]):
+                event = normalize_event(
+                    "codex", "Stop", payload(ROOT, last_assistant_message=value), ROOT
+                )
+                self.assertIsNone(event.latest_assistant_message)
+        self.assertIsNone(
+            normalize_event(
+                "codex", "Stop", payload(ROOT, last_assistant_message=None), ROOT
+            ).latest_assistant_message
+        )
+        absent = payload(ROOT, "Stop")
+        del absent["last_assistant_message"]
+        self.assertIsNone(
+            normalize_event("codex", "Stop", absent, ROOT).latest_assistant_message
+        )
+        # Structurally invalid values remain fatal: a control or line-separator
+        # character and a wrong type are host defects, not turn content.
+        for value in ("unsafe\u2028line", "unsafe\u202etext", [], 42):
+            with self.subTest(value=str(value)[:12]), self.assertRaises(ValueError):
                 normalize_event(
                     "codex", "Stop", payload(ROOT, last_assistant_message=value), ROOT
                 )
@@ -384,6 +407,199 @@ class EnforcementTests(unittest.TestCase):
         self.assert_block(
             self.invoke("PreToolUse", tool_input={"command": command}),
             "AHK-HOOK-RUNTIME",
+        )
+
+    def stop_payload(self, drop=(), **changes):
+        value = payload(self.root, "Stop", **changes)
+        for key in drop:
+            value.pop(key, None)
+        return run_hook("codex", "Stop", json.dumps(value), self.root, self.storage)
+
+    def test_stop_tolerates_every_ordinary_host_final_message(self):
+        """The host reports what the turn produced; none of it is a runtime fault.
+
+        A turn that ends on a denied tool call has no final assistant text at
+        all, and a turn that ends on prose carries whatever spacing the model
+        emitted. Treating either as a lifecycle runtime error blocks the only
+        hook that can end the turn.
+        """
+
+        self.invoke("UserPromptSubmit")
+        for label, message in (
+            ("turn ended on a tool call", None),
+            ("empty final text", ""),
+            ("whitespace only", "   \n"),
+            ("trailing newline", "Done.\n"),
+            ("leading space", " Done."),
+            ("oversized", "x" * 17000),
+        ):
+            with self.subTest(label=label):
+                output = self.stop_payload(last_assistant_message=message)
+                self.assertNotIn("AHK-HOOK-RUNTIME", output.stdout)
+        self.assertNotIn(
+            "AHK-HOOK-RUNTIME",
+            self.stop_payload(drop=("last_assistant_message",)).stdout,
+        )
+
+    def test_unusable_final_message_still_fails_closed_once_tracked(self):
+        """Tolerating the value must not turn a tracked stop into an allow."""
+
+        self.register()
+        for label, message in (
+            ("absent text", None),
+            ("empty text", ""),
+            ("oversized text", "x" * 17000),
+        ):
+            with self.subTest(label=label):
+                self.assert_block(
+                    self.stop_payload(last_assistant_message=message), "AHK-STOP-WORK"
+                )
+                # A real user turn clears the correction count, so each case is
+                # measured on its own rather than against the armed circuit.
+                self.invoke("UserPromptSubmit", turn_id="turn-" + label.split()[0])
+
+    def test_pre_root_stop_runtime_failure_arms_the_correction_circuit(self):
+        """A pre-root session must always retain a legal terminal outcome.
+
+        Without chain identity the blocked stop carried no mutation, so the
+        correction count never advanced and the circuit could never arm: the
+        session could neither act nor legally end.
+        """
+
+        self.invoke("UserPromptSubmit")
+        broken = payload(self.root, "Stop")
+        broken["stop_hook_active"] = "not-a-boolean"
+        outputs = [
+            run_hook("codex", "Stop", json.dumps(broken), self.root, self.storage)
+            for _ in range(3)
+        ]
+        self.assert_block(outputs[0], "AHK-HOOK-RUNTIME")
+        self.assertEqual(
+            self.storage.load_snapshot("session-1").session.correction_cycle_count, 3
+        )
+        self.assertIn("AHK-STOP-CIRCUIT", outputs[-1].stdout)
+
+    def test_bootstrap_rejection_names_the_failed_check(self):
+        """Every rejection cause was one indistinguishable string."""
+
+        self.invoke("UserPromptSubmit")
+        session = self.storage.load_snapshot("session-1").session
+        capability = self.storage.control_capability(session)
+        runner = (self.root / ".agent-handoff-toolkit" / "runner.py").as_posix()
+        definition = {"title": "Synthetic scope", "outcome": "A synthetic outcome"}
+        canonical = canonical_json_bytes(definition)
+        encoded = base64.urlsafe_b64encode(canonical).decode().rstrip("=")
+
+        def command(value, challenge=capability):
+            return (
+                f"python {runner} lifecycle register-root"
+                f" --session-key {session.session_key} --challenge {challenge}"
+                f" --scope-id issue-1 --scope-kind issue"
+                f" --scope-definition-b64 {value}"
+                f" --expected-session-revision {session.targeted_revision}"
+            )
+
+        # Padding is the usual first hand-encoding attempt and is rejected by the
+        # command charset before any definition check, so it gets its own code.
+        padded = json.loads(
+            self.invoke(
+                "PreToolUse",
+                tool_input={"command": command(base64.b64encode(canonical).decode())},
+            ).stdout
+        )["hookSpecificOutput"]["permissionDecisionReason"]
+        self.assertIn("failed=command-charset-padding", padded)
+        # An ordinary tool call is not a bootstrap attempt, so no check failed.
+        ordinary = json.loads(
+            self.invoke("PreToolUse", tool_input={"command": "git status"}).stdout
+        )["hookSpecificOutput"]["permissionDecisionReason"]
+        self.assertNotIn("failed=", ordinary)
+        cases = {
+            "non-canonical json": base64.urlsafe_b64encode(
+                json.dumps(definition, sort_keys=True).encode()
+            )
+            .decode()
+            .rstrip("="),
+            "unexpected field": base64.urlsafe_b64encode(
+                canonical_json_bytes({**definition, "extra": "x"})
+            )
+            .decode()
+            .rstrip("="),
+        }
+        observed = set()
+        for label, value in cases.items():
+            with self.subTest(label=label):
+                output = self.invoke(
+                    "PreToolUse", tool_input={"command": command(value)}
+                )
+                reason = json.loads(output.stdout)["hookSpecificOutput"][
+                    "permissionDecisionReason"
+                ]
+                self.assertIn("failed=", reason)
+                observed.add(reason.split("failed=")[1].split()[0])
+        self.assertEqual(len(observed), len(cases))
+        # A cause outside the definition itself gets its own code too.
+        kind = self.invoke(
+            "PreToolUse",
+            tool_input={
+                "command": command(encoded).replace(
+                    "--scope-kind issue", "--scope-kind saga"
+                )
+            },
+        )
+        kind_reason = json.loads(kind.stdout)["hookSpecificOutput"][
+            "permissionDecisionReason"
+        ]
+        self.assertIn("failed=scope-kind", kind_reason)
+        self.assertNotIn("scope-kind", observed)
+        # A stale challenge is repairable, so it is corrected rather than named:
+        # the denial echoes the real payload back with only the nonce replaced.
+        stale_reason = json.loads(
+            self.invoke(
+                "PreToolUse",
+                tool_input={"command": command(encoded, "expired-challenge")},
+            ).stdout
+        )["hookSpecificOutput"]["permissionDecisionReason"]
+        self.assertNotIn("failed=", stale_reason)
+        self.assertIn("--challenge " + capability, stale_reason)
+        self.assertIn("--scope-definition-b64 " + encoded, stale_reason)
+
+    def test_pre_root_register_root_attempt_is_encoded_by_the_hook(self):
+        """The bound command's only machine-computable field must have a machine.
+
+        A pre-root session has no shell, so it cannot canonicalize and encode a
+        scope definition. The denial accepts the semantic slots as plain text
+        and returns the formed command; the strict parser still gates what runs.
+        """
+
+        self.invoke("UserPromptSubmit")
+        runner = (self.root / ".agent-handoff-toolkit" / "runner.py").as_posix()
+        attempt = (
+            f"python {runner} lifecycle register-root --scope-id issue-1"
+            ' --scope-kind issue --scope-title "Repair the bootstrap deadlock"'
+            ' --scope-outcome "A fresh session registers its own root, unaided."'
+        )
+        reason = json.loads(
+            self.invoke("PreToolUse", tool_input={"command": attempt}).stdout
+        )["hookSpecificOutput"]["permissionDecisionReason"]
+        self.assertIn("AHK-PRE-ROOT", reason)
+        # The strict parse of the plain-slot attempt fails by design; reporting
+        # it beside a successful encoding would name a failure that never was.
+        self.assertNotIn("failed=", reason)
+        formed = reason.split("Command: ", 1)[1].strip()
+        self.assertIn("--scope-definition-b64", formed)
+        self.assertNotIn("--scope-title", formed)
+        self.assertNotIn("{scope_definition_b64}", formed)
+        # The returned command is accepted verbatim by the strict parser.
+        self.assertEqual(
+            self.invoke("PreToolUse", tool_input={"command": formed}), HookExecution()
+        )
+        encoded = formed.split("--scope-definition-b64 ")[1].split(" ")[0]
+        self.assertEqual(
+            decode_scope_definition(encoded),
+            {
+                "title": "Repair the bootstrap deadlock",
+                "outcome": "A fresh session registers its own root, unaided.",
+            },
         )
 
     def test_tracked_tools_are_silent_and_sensitive_content_never_persists(self):
@@ -702,17 +918,16 @@ class EnforcementTests(unittest.TestCase):
 
     def test_runtime_failures_from_malformed_stop_count_toward_visible_circuit(self):
         self.register()
+        # A null final message is ordinary host input; an unsafe control
+        # character in an unrelated field is a genuine normalization failure.
+        malformed = {"unrelated": "\x00"}
         for attempt in (1, 2):
-            self.assert_block(
-                self.invoke(last_assistant_message=None), "AHK-HOOK-RUNTIME"
-            )
+            self.assert_block(self.invoke(**malformed), "AHK-HOOK-RUNTIME")
             self.assertEqual(
                 self.storage.load_snapshot("session-1").session.correction_cycle_count,
                 attempt,
             )
-        self.assertFalse(
-            json.loads(self.invoke(last_assistant_message=None).stdout)["continue"]
-        )
+        self.assertFalse(json.loads(self.invoke(**malformed).stdout)["continue"])
 
     def test_field_validation_rejects_oversized_tool_input_before_attempting_state(
         self,
@@ -1083,7 +1298,7 @@ class EnforcementTests(unittest.TestCase):
         self.register()
         for index, changes in enumerate(
             (
-                {"last_assistant_message": "x" * 20000},
+                {"stop_hook_active": "not-a-boolean"},
                 {"unrelated": "\x00"},
                 {"tool_input": [1] * 300},
                 {"last_assistant_message": "\u2028"},
