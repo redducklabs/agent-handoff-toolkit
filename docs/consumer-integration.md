@@ -6,12 +6,12 @@ Run installation from an inspectable checkout of the public release rather than
 from a network downloader:
 
 ```powershell
-git clone --branch v0.3.1 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
+git clone --branch v0.3.2 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
 Set-Location agent-handoff-toolkit
-python distribution/runner.py install --target <consumer-repository> --release v0.3.1 --dry-run
-python distribution/runner.py install --target <consumer-repository> --release v0.3.1 --apply
-python distribution/runner.py sync --target <consumer-repository> --release v0.3.1 --check
-python distribution/runner.py sync --target <consumer-repository> --release v0.3.1 --apply
+python distribution/runner.py install --target <consumer-repository> --release v0.3.2 --dry-run
+python distribution/runner.py install --target <consumer-repository> --release v0.3.2 --apply
+python distribution/runner.py sync --target <consumer-repository> --release v0.3.2 --check
+python distribution/runner.py sync --target <consumer-repository> --release v0.3.2 --apply
 ```
 
 Run install and sync only in an isolated, clean Git worktree. Confirm the
@@ -185,7 +185,7 @@ Before bulk adoption, select one repository with mature handoffs and one with li
 1. Inventory local instructions, hook and skill configuration, and tracker
    conventions. Count or locate historical handoff storage only if needed to
    protect it; do not open the records.
-2. Run the v0.3.1 installer in dry-run mode from its release checkout.
+2. Run the v0.3.2 installer in dry-run mode from its release checkout.
 3. Review the proposed instruction and hook merges.
 4. Apply on a branch. Treat every record that predates this adoption as
    deprecated by policy without marking, reading, or rewriting individual files.

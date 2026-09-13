@@ -6,7 +6,17 @@ This repository provides a shared contract, deterministic validation and renderi
 
 ## Status
 
-Version 0.3.1 repairs the opt-in host smoke check. It lends the host the
+Version 0.3.2 lets a session that has not yet registered a root bootstrap one,
+see why an attempt was rejected, and reach a legal terminal outcome. The bound
+`register-root` command accepts the scope title and outcome as plain text and
+returns itself fully encoded, because before a root exists there is no shell
+with which to encode one. A rejected attempt names the check that failed after
+`failed=`, rather than returning one string for every cause. `Stop` treats the
+host's report of the turn's final text as turn content, so a turn that ended on
+a tool call no longer fails the hook, and a blocked `Stop` always advances the
+correction count so the circuit can arm without a registered chain.
+
+Version 0.3.1 repaired the opt-in host smoke check. It lends the host the
 operator's existing credential for the run, allows a real multi-turn session to
 finish, and emits hook commands the host's POSIX shell can actually execute.
 Each of those previously reported as undiscovered hooks rather than as the
@@ -69,16 +79,16 @@ disposable consumer can be installed from a verified local release source.
 
 ## Consumer installation
 
-Check out the public v0.3.1 release, inspect the proposed changes, then apply
+Check out the public v0.3.2 release, inspect the proposed changes, then apply
 them from that checkout:
 
 ```powershell
-git clone --branch v0.3.1 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
+git clone --branch v0.3.2 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
 Set-Location agent-handoff-toolkit
-python distribution/runner.py install --target <consumer-repository> --release v0.3.1 --dry-run
-python distribution/runner.py install --target <consumer-repository> --release v0.3.1 --apply
-python distribution/runner.py sync --target <consumer-repository> --release v0.3.1 --check
-python distribution/runner.py sync --target <consumer-repository> --release v0.3.1 --apply
+python distribution/runner.py install --target <consumer-repository> --release v0.3.2 --dry-run
+python distribution/runner.py install --target <consumer-repository> --release v0.3.2 --apply
+python distribution/runner.py sync --target <consumer-repository> --release v0.3.2 --check
+python distribution/runner.py sync --target <consumer-repository> --release v0.3.2 --apply
 ```
 
 Run install and sync only in an isolated, clean Git worktree with no concurrent
