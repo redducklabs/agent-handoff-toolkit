@@ -987,12 +987,22 @@ def _thaw_json(value: Any) -> Any:
 def _blocked_stop(
     snapshot: LifecycleSnapshot,
     issues: Sequence[LifecycleIssue],
+    *,
+    allow_session_identity: bool = False,
 ) -> LifecycleDecision:
     issue_values = tuple(issues)
     authorization_id = snapshot.session.authorization_id
     chain_revision = snapshot.session.chain_revision
     if authorization_id is None or chain_revision is None:
-        raise ValueError("blocking a tracked stop requires chain identity")
+        if not allow_session_identity:
+            raise ValueError("blocking a tracked stop requires chain identity")
+        # A session that has not registered a root has no chain to sign with,
+        # but its repeated blocked stops still have to advance the correction
+        # count: without that the circuit can never arm and the session has no
+        # legal terminal outcome at all. Its own key is a stable identity for
+        # the signature, and the absent chain pins the revision at zero.
+        authorization_id = snapshot.session.session_key
+        chain_revision = 0
     signature = issue_signature(authorization_id, chain_revision, issue_values)
     next_count = snapshot.session.correction_cycle_count + 1
     repeated = signature == snapshot.session.last_issue_signature
