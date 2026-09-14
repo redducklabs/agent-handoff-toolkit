@@ -582,7 +582,7 @@ def _form_register_root(command, runner, session, capability, reasons=None):
     return formed
 
 
-def _pre_tool(event, snapshot, root, storage):
+def _pre_tool(event, snapshot, root, storage, raw_id):
     session = snapshot.session
     command = (
         event.tool_input.get("command")
@@ -593,9 +593,11 @@ def _pre_tool(event, snapshot, root, storage):
         isinstance(command, str)
         and re.match(r"^python \S+ lifecycle(?: |$)", command) is not None
     )
-    if session.mode not in _UNGATED and not control:
-        return HookExecution()
-    if event.tool_capability == "intrinsic-read-only":
+    # Work is never gated. The toolkit intercepts only its own control
+    # commands, which is how a session discovers its session key, challenge and
+    # revision: UserPromptSubmit returns silently, so this denial is the sole
+    # carrier of those credentials.
+    if not control:
         return HookExecution()
     if session.current_external_user_turn_reference is None:
         return render_hook_execution(
@@ -886,7 +888,7 @@ def run_lifecycle_hook(platform, name, raw, repo_root, storage=None):
         event = normalize_event(platform, name, payload, repo_root)
         event = replace(event, session_key=snapshot.session.session_key)
         if event_kind is EventName.PRE_TOOL_USE:
-            return _pre_tool(event, snapshot, root, storage)
+            return _pre_tool(event, snapshot, root, storage, raw_id)
         if event_kind is EventName.USER_PROMPT_SUBMIT:
             return _user_prompt(event, snapshot, storage, raw_id, root)
         if snapshot.session.correction_cycle_count >= 3:
