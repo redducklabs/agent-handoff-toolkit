@@ -14,7 +14,7 @@ user's own message. Hook input is now bounded once, as a whole; what the
 lifecycle parses is still validated where it is read, and no host content
 reaches hook feedback, which is why inspecting the rest proved nothing.
 
-Version 0.3.3 lets a session that has not yet registered a root bootstrap one,
+Version 0.3.2 lets a session that has not yet registered a root bootstrap one,
 see why an attempt was rejected, and reach a legal terminal outcome. The bound
 `register-root` command accepts the scope title and outcome as plain text and
 returns itself fully encoded, because before a root exists there is no shell

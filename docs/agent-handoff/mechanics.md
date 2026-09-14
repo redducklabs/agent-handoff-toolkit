@@ -104,8 +104,62 @@ reach the host, and no prompt, reply, or transcript content can.
 Informational hooks fail open. Tracked lifecycle hooks fail closed on
 `UserPromptSubmit` and `Stop`, including corrupt tracked state, unreadable
 candidates, missing owned runtime files, and lifecycle validation exceptions.
-An untracked tool-free informational response may fail open. Successful lifecycle
-checks emit no routine model context.
+That rule applies to a `TRACKED` session; a session in `OPEN` or `ONE_OFF`
+mode fails open at both events by construction, because it has registered no
+root and so has no lifecycle state to fail closed on. An untracked tool-free
+informational response may fail open. Successful lifecycle checks emit no
+routine model context.
+
+## Enforcement modes and the write/stop advisories
+
+A session begins in `OPEN`. Nothing it does is gated: shell commands, file
+edits, MCP calls, web fetches, subagents, and todo lists all run untouched.
+The one interception that remains in `OPEN` is the toolkit's own control
+commands (`python <runner> lifecycle …`), denied and repaired exactly as
+described below under "Registering the first root". That interception is not
+a gate on work; it is the control plane, and the only channel by which a
+session learns its session key, challenge, and expected revision, because
+`UserPromptSubmit` returns silently on the normal path.
+
+A session moves to `TRACKED` only by registering a root, and to `ONE_OFF` only
+by running `lifecycle one-off`, a subcommand taking the same session binding
+as the other lifecycle commands. `one-off` grants no authority — no
+authorization ID, no chain — it only records that the session decided its
+work needs no handoff. Both `OPEN` and `ONE_OFF` stay ungated for everything
+but control commands. The legacy state value `"untracked"` loads as `OPEN`.
+
+Two advisories make undeclared drift visible without gating anything:
+
+- **`AHK-DECLARE`** fires at most once per session, in `OPEN` only, on the
+  first call to a known file-writing tool — `Write`, `Edit`, `MultiEdit`, and
+  `NotebookEdit` on Claude Code; `apply_patch` on Codex. Not `Bash`, not an
+  MCP tool, not any other tool name: classifying shell commands as read-only
+  or not is fragile, and treating `git status` as a trigger would defeat the
+  purpose. The hook allows the write (`permissionDecision: "allow"`) and
+  attaches a `systemMessage` stating that the session is changing the
+  repository with no registered root, together with both bound commands
+  ready to run — `lifecycle one-off` and `lifecycle register-root`. It never
+  fires again for that session, and never fires for a session that has
+  already declared one-off.
+- **`AHK-NO-HANDOFF`** fires at `Stop` for a session still in `OPEN` or
+  `ONE_OFF` when both hold: `git status --porcelain` is non-empty, and its
+  digest differs from the digest recorded at the session's first
+  `UserPromptSubmit`. The first condition alone would fire on work left
+  uncommitted before the session began; the second alone would fire on a
+  session that committed away pre-existing changes. Together they mean this
+  session changed the repository and left the change unfinished. A declared
+  one-off still receives this note — `one-off` suppresses `AHK-DECLARE`, not
+  `AHK-NO-HANDOFF`.
+
+Neither advisory blocks, and neither can error: a missing `git` binary, a
+directory that is not a repository, a `git` invocation that times out or
+returns unparseable output, an unreadable state file, or an unexpected
+exception in either advisory path all produce no message and no error.
+
+**The guarantee this supports.** The toolkit does not guarantee that work
+needing a handoff produces one. It guarantees that declared tracked work
+follows the lifecycle, and it reports undeclared work that ends unfinished. A
+session enforces nothing until it registers a root.
 
 ## Host input
 
@@ -236,10 +290,13 @@ lifecycle credentials are never fabricated to satisfy a command.
 
 ## Registering the first root
 
-Before a root exists, every mutation-capable tool is denied, so the session has
-no shell with which to canonicalize and encode a scope definition. The denial
-itself supplies the machine. Attempt `register-root` with the semantic slots as
-plain text:
+A session chooses whether to register a root; no tool is denied to force the
+decision. `register-root` is itself a control command, so it still goes
+through the same interception described above: it needs the session key,
+challenge, and expected revision bound into it, and the definition it carries
+must be canonicalized and encoded in the fixed form the parser accepts. A
+plain-text attempt supplies the machine that does both. Attempt `register-root`
+with the semantic slots as plain text:
 
 ```
 python <runner> lifecycle register-root --scope-id <id> --scope-kind <kind> \

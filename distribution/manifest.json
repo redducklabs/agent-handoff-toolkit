@@ -10,7 +10,7 @@
   "artifacts": [
     {
       "source": "distribution/consumer-instructions.md",
-      "sha256": "882204206707d2bd2d7945834473442da57a55a5e7b366b84e5cbc10b2c468fb",
+      "sha256": "c907ccd52962a66b6e7109991d1e94643efdb78322026b3885ba865f74b9ec32",
       "block_id": "agent-handoff-toolkit",
       "install": {
         "mode": "managed-block",
@@ -45,7 +45,7 @@
     },
     {
       "source": "docs/agent-handoff/mechanics.md",
-      "sha256": "3e29e8ad2cd9283b6c8fd48d1e9ef0bb6866caab165464b3a05972b1f4ae33b3",
+      "sha256": "147a49b85f7446909d4302e6f46ef9ee391e3390b2f6cc54aa7c4c4b7d16820e",
       "install": {
         "mode": "copy",
         "transform": "none",
@@ -67,7 +67,7 @@
     },
     {
       "source": "skills/agent-handoff/SKILL.md",
-      "sha256": "fd8387da8f49317f5b7636465ee998c5b9f5390a989d1631618fc1dc2a8c2690",
+      "sha256": "594d5f597e79fae3705c9799ed06fcbd31058f2a31b9e984992589e8f9863ec0",
       "install": {
         "mode": "copy",
         "transform": "none",

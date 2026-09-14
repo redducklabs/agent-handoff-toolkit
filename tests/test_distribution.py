@@ -46,6 +46,7 @@ DROPPED_V2_SECTIONS = (
 )
 
 REQUIRED_SKILL_GATES = {
+    "Decide whether this work is tracked",
     "Choose the record type",
     "Close gating questions",
     "Reconcile live state",
@@ -547,6 +548,10 @@ class DistributionTests(unittest.TestCase):
             "tracked lifecycle hooks fail closed",
             "does not mechanically prove",
             "no model call is required",
+            "ahk-declare",
+            "ahk-no-handoff",
+            "does not guarantee that work needing a handoff produces one",
+            "a session enforces nothing until it registers a root",
         ):
             with self.subTest(document="mechanics", phrase=phrase):
                 self.assertIn(phrase, normalized["mechanics"])
@@ -563,6 +568,8 @@ class DistributionTests(unittest.TestCase):
             "legitimate decision request",
             "corrective stop feedback",
             "already be displayed",
+            "register a root only when the work spans more than one session",
+            "neither notice blocks",
         ):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, normalized["skill"])
@@ -575,6 +582,10 @@ class DistributionTests(unittest.TestCase):
             "renderer-only terminal response",
             "corrective stop feedback",
             "already be displayed",
+            "a session runs ungated until it registers a root",
+            "ahk-declare",
+            "ahk-no-handoff",
+            "neither advisory blocks",
         ):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, normalized["consumer"])
