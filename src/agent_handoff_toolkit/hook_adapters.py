@@ -76,6 +76,14 @@ _READ_ONLY = {
     "codex": frozenset({"view_image"}),
 }
 _SHELL = {"claude": frozenset({"Bash", "PowerShell"}), "codex": frozenset({"Bash"})}
+# Tools that write repository files. Shell is deliberately absent: classifying
+# a command as read-only or not is fragile, and making `git status` an advisory
+# trigger would defeat the purpose. A missed trigger costs an advisory, not a
+# guarantee - the Stop note is the backstop and reads the worktree directly.
+_WRITE_TOOLS = {
+    "claude": frozenset({"Write", "Edit", "MultiEdit", "NotebookEdit"}),
+    "codex": frozenset({"apply_patch"}),
+}
 _ALIASES = {
     "userpromptsubmit": EventName.USER_PROMPT_SUBMIT,
     "pretooluse": EventName.PRE_TOOL_USE,
@@ -582,6 +590,68 @@ def _form_register_root(command, runner, session, capability, reasons=None):
     return formed
 
 
+def _write_advisory(event, snapshot, root, storage, raw_id):
+    """Allow the write and say, once, that nothing is tracking this session.
+
+    Never blocks and never errors: an advisory that can fail the tool call is
+    worse than no advisory. Any failure here leaves the call untouched.
+    """
+
+    try:
+        runner = root / ".agent-handoff-toolkit" / "runner.py"
+        # Recording the advisory is itself a session commit, and every commit
+        # advances targeted_revision. Building the bound commands from the
+        # pre-commit session would hand the author a revision the commit
+        # itself has already invalidated, so the capability and commands are
+        # derived from the post-commit session the mutation below will
+        # produce, and the commit uses that identical, already-built session.
+        mutated_session = replace(
+            snapshot.session,
+            write_advisory_emitted=True,
+            targeted_revision=snapshot.session.targeted_revision + 1,
+        )
+        capability = storage.control_capability(mutated_session)
+        message = (
+            "AHK-DECLARE: This session is changing the repository with no "
+            "registered root, so nothing will carry the work to a next session. "
+            "If the work ends here, run:\n"
+            + _control_command(runner, mutated_session, capability, "one-off")
+            + "\nIf it continues past this session, run register-root with the "
+            "scope title and outcome as plain text:\n"
+            + _control_command(
+                runner,
+                mutated_session,
+                capability,
+                "register-root",
+                (
+                    ("scope-id", "{scope_id}"),
+                    ("scope-kind", "{scope_kind}"),
+                    ("scope-title", '"{title}"'),
+                    ("scope-outcome", '"{outcome}"'),
+                ),
+            )
+            + "\nNeither is required; this notice appears once."
+        )
+        if len(message.encode()) > MAX_REASON_BYTES:
+            return HookExecution()
+        _commit(storage, raw_id, snapshot, LifecycleMutation(mutated_session))
+        return HookExecution(
+            stdout=json.dumps(
+                {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "allow",
+                    },
+                    "systemMessage": message,
+                },
+                separators=(",", ":"),
+            )
+        )
+    except Exception:
+        # Advisory only. A failure here must not disturb the tool call.
+        return HookExecution()
+
+
 def _pre_tool(event, snapshot, root, storage, raw_id):
     session = snapshot.session
     command = (
@@ -598,6 +668,13 @@ def _pre_tool(event, snapshot, root, storage, raw_id):
     # revision: UserPromptSubmit returns silently, so this denial is the sole
     # carrier of those credentials.
     if not control:
+        if (
+            session.mode is EnforcementMode.OPEN
+            and not session.write_advisory_emitted
+            and event.tool_name in _WRITE_TOOLS[event.host]
+            and session.current_external_user_turn_reference is not None
+        ):
+            return _write_advisory(event, snapshot, root, storage, raw_id)
         return HookExecution()
     if session.current_external_user_turn_reference is None:
         return render_hook_execution(

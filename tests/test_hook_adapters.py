@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from agent_handoff_toolkit.hook_adapters import (  # noqa: E402
+    _WRITE_TOOLS,
     HookExecution,
     normalize_event,
     render_hook_execution,
@@ -410,6 +411,16 @@ class EnforcementTests(unittest.TestCase):
         capability = self.storage.control_capability(session)
         runner = (self.root / ".agent-handoff-toolkit" / "runner.py").as_posix()
         command = f"python {runner} lifecycle join --session-key {session.session_key} --challenge {capability} --authorization-id auth-1 --expected-chain-revision 1 --expected-session-revision {session.targeted_revision}"
+        # This test asserts that mutation tools pass through untouched; the
+        # first-write advisory (Task 4) is a separate, one-time concern
+        # exercised in tests/test_enforcement_scope.py. Silence it here so it
+        # does not shadow the assertions below or shift session revisions
+        # that later assertions in this test hard-code.
+        write_tools_patch = patch.dict(
+            _WRITE_TOOLS, {"claude": frozenset(), "codex": frozenset()}
+        )
+        write_tools_patch.start()
+        self.addCleanup(write_tools_patch.stop)
         for host in ("claude", "codex"):
             for tool in ("Bash", "Write", "apply_patch", "mcp__fs__read", "unknown"):
                 self.assertEqual(
@@ -425,7 +436,10 @@ class EnforcementTests(unittest.TestCase):
                 command + "; whoami",
                 command + " && echo x",
                 command.replace(capability, "expired"),
-                command.replace("revision 1", "revision 0"),
+                command.replace(
+                    f"--expected-session-revision {session.targeted_revision}",
+                    "--expected-session-revision 0",
+                ),
             ):
                 self.assert_block(
                     self.invoke(

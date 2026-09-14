@@ -129,6 +129,33 @@ class UngatedSessionTests(unittest.TestCase):
         self.assertIsNone(session.authorization_id)
         self.assertIsNone(session.chain_revision)
 
+    def write(self, name="a.py"):
+        return self.invoke(
+            tool_name="Write",
+            tool_input={"file_path": str(self.root / name), "content": "x = 1\n"},
+        )
+
+    def test_the_first_repository_write_advises_once_and_allows(self):
+        self.invoke("UserPromptSubmit")
+        first = self.write()
+        self.assertEqual(first.exit_code, 0)
+        payload_out = json.loads(first.stdout)
+        self.assertEqual(
+            payload_out["hookSpecificOutput"]["permissionDecision"], "allow"
+        )
+        message = payload_out["systemMessage"]
+        self.assertIn("lifecycle one-off", message)
+        self.assertIn("lifecycle register-root", message)
+        # It fires once, then never again.
+        self.assertEqual(self.write("b.py"), HookExecution())
+
+    def test_bash_never_triggers_the_advisory(self):
+        self.invoke("UserPromptSubmit")
+        self.assertEqual(
+            self.invoke(tool_name="Bash", tool_input={"command": "git commit -m x"}),
+            HookExecution(),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
