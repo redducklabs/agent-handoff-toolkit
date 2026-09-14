@@ -6,6 +6,12 @@ This repository provides a shared contract, deterministic validation and renderi
 
 ## Status
 
+Version 0.4.0 narrows enforcement to declared tracked work. A session runs
+ungated until it registers a root; the first repository write after that says
+so once; and a session that ends with unfinished work is reported rather than
+prevented. The guarantee is now about declared work: the repository does not
+claim more than its mechanisms support.
+
 Version 0.3.3 stops the hook rejecting the work's own content. A tool call's
 input is the host's payload: a tracked session could not write a file over about
 4 KB, could not write a tab at all — so no Go source and no Makefile — and could
@@ -87,16 +93,16 @@ disposable consumer can be installed from a verified local release source.
 
 ## Consumer installation
 
-Check out the public v0.3.3 release, inspect the proposed changes, then apply
+Check out the public v0.4.0 release, inspect the proposed changes, then apply
 them from that checkout:
 
 ```powershell
-git clone --branch v0.3.3 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
+git clone --branch v0.4.0 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
 Set-Location agent-handoff-toolkit
-python distribution/runner.py install --target <consumer-repository> --release v0.3.3 --dry-run
-python distribution/runner.py install --target <consumer-repository> --release v0.3.3 --apply
-python distribution/runner.py sync --target <consumer-repository> --release v0.3.3 --check
-python distribution/runner.py sync --target <consumer-repository> --release v0.3.3 --apply
+python distribution/runner.py install --target <consumer-repository> --release v0.4.0 --dry-run
+python distribution/runner.py install --target <consumer-repository> --release v0.4.0 --apply
+python distribution/runner.py sync --target <consumer-repository> --release v0.4.0 --check
+python distribution/runner.py sync --target <consumer-repository> --release v0.4.0 --apply
 ```
 
 Run install and sync only in an isolated, clean Git worktree with no concurrent
