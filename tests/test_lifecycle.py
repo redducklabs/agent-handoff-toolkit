@@ -428,23 +428,35 @@ class FrozenModelTests(unittest.TestCase):
         for factory in invalid_factories:
             with self.subTest(factory=factory), self.assertRaises(ValueError):
                 factory()
+        # Tool input is host-owned payload, not a lifecycle field: its size and
+        # characters are the tool call's, and the model stores it unexamined.
+        event = make_event(
+            EventName.PRE_TOOL_USE,
+            tool_name="write",
+            tool_input={"content": "x" * 200_000, "indented": "a:\n\tb"},
+            tool_capability="mutation-capable",
+        )
+        self.assertEqual(len(event.tool_input["content"]), 200_000)
 
     def test_models_reject_unsafe_or_oversized_fields(self) -> None:
         invalid_factories = (
             lambda: make_event(EventName.STOP, host=" codex"),
             lambda: make_event(EventName.STOP, repository_root="bad\x00path"),
-            lambda: make_event(
-                EventName.PRE_TOOL_USE,
-                tool_name="write",
-                tool_input={"content": "x" * 5000},
-                tool_capability="mutation-capable",
-            ),
             lambda: LifecycleIssue("AHK-STOP-WORK", "x" * 500, "correct"),
             lambda: LifecycleDecision(DecisionKind.BLOCK, (), "x" * 2000),
         )
         for factory in invalid_factories:
             with self.subTest(factory=factory), self.assertRaises(ValueError):
                 factory()
+        # Tool input is host-owned payload, not a lifecycle field: its size and
+        # characters are the tool call's, and the model stores it unexamined.
+        event = make_event(
+            EventName.PRE_TOOL_USE,
+            tool_name="write",
+            tool_input={"content": "x" * 200_000, "indented": "a:\n\tb"},
+            tool_capability="mutation-capable",
+        )
+        self.assertEqual(len(event.tool_input["content"]), 200_000)
 
     def test_decision_and_mutation_validate_tuple_and_replacement_models(self) -> None:
         issue = LifecycleIssue("AHK-STOP-WORK", "Work remains", "Continue it")

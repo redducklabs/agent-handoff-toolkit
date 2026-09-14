@@ -179,11 +179,11 @@ def parse_bootstrap_command(
 
     try:
         validate_identifier(challenge, label="challenge")
-        if (
-            not isinstance(command, str)
-            or len(command) > 8192
-            or re.fullmatch(r"[A-Za-z0-9._:/ -]+", command) is None
-        ):
+        if not isinstance(command, str):
+            return reject("command-type")
+        if len(command) > 8192:
+            return reject("command-length")
+        if re.fullmatch(r"[A-Za-z0-9._:/ -]+", command) is None:
             return reject(_charset_code(command))
         tokens = command.split(" ")
         if (

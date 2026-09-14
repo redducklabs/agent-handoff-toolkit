@@ -61,11 +61,15 @@ from .lineage import (
 )
 from .records import parse_markdown, render_resume_prompt, render_terminal_response
 
-MAX_INPUT_BYTES = 128 * 1024
+# One bound, on the whole hook input. A tool call carries the work's payload -
+# a written file, a pasted log - and that size belongs to the work, not to the
+# lifecycle. The structural bounds below exist only to stop pathological
+# parsing; they are set where pathological begins, not where ordinary usage is.
+MAX_INPUT_BYTES = 8 * 1024 * 1024
 MAX_REASON_BYTES = 1200
-# Host-authored turn content, bounded by the payload total rather than by the
-# lifecycle text limit that applies when the field is read.
-_CONTENT_FIELDS = frozenset({"last_assistant_message"})
+_MAX_DEPTH = 64
+_MAX_ITEMS = 4096
+_MAX_KEYS = 1024
 _READ_ONLY = {
     "claude": frozenset({"Read", "Glob", "Grep"}),
     "codex": frozenset({"view_image"}),
@@ -121,38 +125,33 @@ def _string(value, limit, *, multiline=False, empty=False, trimmed=True):
     return value
 
 
-def _bounded_json(value, depth=0, field=None):
-    if depth > 12:
+def _bounded_json(value, depth=0):
+    """Guard the shape of hook input, never its content.
+
+    Strings pass through untouched. Host content is opaque here: the fields the
+    lifecycle parses are each validated where they are read, and no host content
+    ever reaches hook output, so inspecting the rest rejects real work and
+    proves nothing.
+    """
+
+    if depth > _MAX_DEPTH:
         raise ValueError("hook object nesting exceeds bound")
     if isinstance(value, str):
-        # Opaque host fields may contain surrounding whitespace, but never controls.
-        # A named content field carries model prose whose length belongs to the
-        # turn, not to the lifecycle: the payload as a whole is already bounded
-        # below, and rejecting a long one here would fail the only hook that can
-        # end the turn. The lifecycle bound is applied per field when it is read.
-        limit = MAX_INPUT_BYTES if field in _CONTENT_FIELDS else 16384
-        _string(value, limit, multiline=True, empty=True, trimmed=False)
-        if len(value.encode("utf-8")) > limit:
-            raise ValueError("hook field exceeds bound")
+        pass
     elif isinstance(value, Mapping):
-        if len(value) > 128:
+        if len(value) > _MAX_KEYS:
             raise ValueError("hook object exceeds bound")
         for key, item in value.items():
-            _string(key, 128)
-            _bounded_json(item, depth + 1, key if depth == 0 else None)
+            if not isinstance(key, str) or not 1 <= len(key) <= 256:
+                raise ValueError("invalid hook key")
+            _bounded_json(item, depth + 1)
     elif isinstance(value, list):
-        if len(value) > 256:
+        if len(value) > _MAX_ITEMS:
             raise ValueError("hook array exceeds bound")
         for item in value:
             _bounded_json(item, depth + 1)
     elif value is not None and type(value) not in {bool, int, float}:
         raise ValueError("invalid hook value")
-    if (
-        depth == 0
-        and len(json.dumps(value, ensure_ascii=False, allow_nan=False).encode())
-        > MAX_INPUT_BYTES
-    ):
-        raise ValueError("hook input exceeds bound")
 
 
 def decode_payload(raw: str) -> Mapping[str, object]:
@@ -177,25 +176,23 @@ def decode_payload(raw: str) -> Mapping[str, object]:
     return payload
 
 
-def _final_assistant_text(value):
-    """Read the host's report of the turn's final text without failing the hook.
+def _turn_content(value):
+    """Read host-reported turn content without failing the hook.
 
-    The field carries whatever the turn produced: null when the turn ended on a
-    tool call, empty when it emitted no text, and otherwise model prose that may
-    be untrimmed or longer than the lifecycle bound. None of that is a runtime
-    fault, and treating it as one blocks the only hook that can end the turn.
-    An unusable value becomes None, which every downstream check already reads
-    as "no compliant terminal response" and blocks on its own terms.
+    The host reports what the turn produced: null when a turn ended on a tool
+    call, empty when it emitted no text, otherwise prose or a pasted log with
+    whatever spacing and characters it carries. None of that is a runtime
+    fault. Treating it as one blocks the only hook that can end a turn, and on
+    UserPromptSubmit it rejects the user's own message. Content that says
+    nothing reads as absent, which every downstream check already handles.
     """
 
     if value is None:
         return None
     if not isinstance(value, str):
         raise ValueError("invalid hook text")
-    try:
-        return _string(value, 16384, multiline=True)
-    except ValueError:
-        return None
+    normalized = value.replace("\r\n", "\n").replace("\r", "\n")
+    return normalized if normalized.strip() else None
 
 
 def normalize_event(
@@ -235,17 +232,17 @@ def normalize_event(
     if name is EventName.STOP:
         if "stop_hook_active" not in payload:
             raise ValueError("Stop requires loop evidence")
-        message = _final_assistant_text(payload.get("last_assistant_message"))
+        message = _turn_content(payload.get("last_assistant_message"))
     elif name is EventName.USER_PROMPT_SUBMIT:
-        user = _string(payload.get("prompt"), 16384, multiline=True)
+        user = _turn_content(payload.get("prompt"))
         external = external and not stop_active
     else:
         tool = _string(payload.get("tool_name"), 128)
         inputs = payload.get("tool_input")
-        if (
-            not isinstance(inputs, Mapping)
-            or len(json.dumps(inputs, ensure_ascii=False).encode()) > 4096
-        ):
+        # The payload the host is acting on. Only the shell command is read,
+        # and it is bounded where it is parsed; the rest stays opaque, under
+        # the single bound applied to the whole hook input.
+        if not isinstance(inputs, Mapping):
             raise ValueError("invalid tool input")
         capability = (
             "intrinsic-read-only"
@@ -480,10 +477,11 @@ def _repair_bootstrap(command, runner, session, capability, reasons=None):
             reasons.append(code)
         return None
 
-    if (
-        not isinstance(command, str)
-        or re.fullmatch(r"[A-Za-z0-9._:/ -]+", command) is None
-    ):
+    if not isinstance(command, str):
+        return reject("command-type")
+    if len(command) > 8192:
+        return reject("command-length")
+    if re.fullmatch(r"[A-Za-z0-9._:/ -]+", command) is None:
         return reject(_charset_code(command))
     tokens = command.split(" ")
     if len(tokens) < 4 or tokens[0] != "python" or tokens[2] != "lifecycle":

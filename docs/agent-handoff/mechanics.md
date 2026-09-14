@@ -107,14 +107,39 @@ candidates, missing owned runtime files, and lifecycle validation exceptions.
 An untracked tool-free informational response may fail open. Successful lifecycle
 checks emit no routine model context.
 
-The host's report of the turn's final assistant text is turn content, not a
-lifecycle field. It is absent or null when the turn ended on a tool call, empty
-when the turn emitted no text, and otherwise whatever prose and spacing the
-model produced. None of that is a runtime fault. A value the lifecycle cannot
-use is read as no terminal response at all, which every later check already
-blocks on; it is never trimmed or truncated into something that could pass as
-the rendered response. Only a structurally invalid value — a wrong type, or a
-control or line-separator character — remains a normalization failure.
+## Host input
+
+The hook parses a small, known set of fields: the session, the repository
+location, the turn reference, the event flags, and — for a tool call — the
+shell command. Each is validated where it is read. Everything else in a hook
+payload is the work's own content, and the hook passes it through unexamined.
+
+That includes the whole of a tool call's input. A written file, a pasted log, a
+patch: their size, shape and characters belong to the tool call being made, not
+to the lifecycle. A tab is a control character; so is a form feed, and an escape
+sequence in captured output. Rejecting any of them rejects Go source, Makefiles
+and ordinary terminal output, and proves nothing, because no host content ever
+reaches hook feedback. Feedback carries issue codes, the corrective action, and
+values that match the identifier pattern — never turn content. In a tracked
+session the tool hook returns before it reads tool input at all, except to
+recognize a control command.
+
+One bound applies to the whole hook input. The structural bounds beneath it —
+nesting depth, array length, object size — exist to stop pathological parsing
+and are set where that begins, not where ordinary usage lives. A shell command
+is separately bounded where it is parsed, and a rejection there names whether
+the length, the type or the alphabet was at fault.
+
+The host's report of the turn's text — the final assistant message on `Stop`,
+the prompt on `UserPromptSubmit` — is turn content on the same terms. It is
+absent or null when a turn ended on a tool call, empty when the turn emitted no
+text, and otherwise whatever the model or the user wrote. None of that is a
+runtime fault; on `UserPromptSubmit` treating it as one rejects the user's own
+message. Line endings are normalized so that a later exact comparison is made
+on one representation, and the text is otherwise kept verbatim so it is never
+trimmed into something that could pass as the rendered response. Content that
+says nothing reads as absent, which every later check already handles. Only a
+structurally invalid value — a wrong type — remains a normalization failure.
 
 A blocked `Stop` always advances the correction count, including one that
 failed before the session registered a root. A session without a chain signs
