@@ -61,6 +61,7 @@ from .lineage import (
     validate_scope_definition,
 )
 from .records import parse_markdown, render_resume_prompt, render_terminal_response
+from .repository_state import is_dirty, worktree_digest
 
 # One bound, on the whole hook input. A tool call carries the work's payload -
 # a written file, a pasted log - and that size belongs to the work, not to the
@@ -839,6 +840,22 @@ def _user_prompt(event, snapshot, storage, raw_id, root):
         return HookExecution()
     if not event.external_user_turn:
         return HookExecution()
+    if session.worktree_baseline is None:
+        digest = worktree_digest(root)
+        if digest is not None:
+            snapshot = _commit(
+                storage,
+                raw_id,
+                snapshot,
+                LifecycleMutation(
+                    replace(
+                        snapshot.session,
+                        worktree_baseline=digest,
+                        targeted_revision=snapshot.session.targeted_revision + 1,
+                    )
+                ),
+            )
+            session = snapshot.session
     if event.current_user_reference == session.current_external_user_turn_reference:
         return HookExecution()
     if session.mode is EnforcementMode.COMPLETE:
@@ -995,7 +1012,53 @@ def run_lifecycle_hook(platform, name, raw, repo_root, storage=None):
             )
         except Exception:
             decision = LifecycleDecision(DecisionKind.BLOCK, (issue,))
-    return _publish_decision(platform, event_kind, decision, storage, raw_id, snapshot)
+    output = _publish_decision(
+        platform, event_kind, decision, storage, raw_id, snapshot
+    )
+    if (
+        event_kind is EventName.STOP
+        and output == HookExecution()
+        and snapshot is not None
+        and snapshot.session.mode in _UNGATED
+    ):
+        note = _no_handoff_note(snapshot, Path(repo_root).resolve())
+        if note is not None:
+            return note
+    return output
+
+
+def _no_handoff_note(snapshot, root):
+    """Report unfinished work at the end of an untracked session.
+
+    Both conditions must hold: the tree is dirty now, and it differs from the
+    baseline taken at the session's first user turn. The first alone fires on
+    work the user left in place beforehand; the second alone fires on a session
+    that cleaned the tree by committing pre-existing changes.
+    """
+
+    try:
+        baseline = snapshot.session.worktree_baseline
+        if baseline is None:
+            return None
+        current = worktree_digest(root)
+        if current is None or current == baseline or not is_dirty(root):
+            return None
+        return HookExecution(
+            stdout=json.dumps(
+                {
+                    "systemMessage": (
+                        "AHK-NO-HANDOFF: This session changed the repository and "
+                        "is ending with the work unfinished, with no handoff "
+                        "record. If someone continues this, register a root and "
+                        "render a continuation."
+                    )
+                },
+                separators=(",", ":"),
+            )
+        )
+    except Exception:
+        # Advisory only; never disturb the stop.
+        return None
 
 
 def _publish_decision(

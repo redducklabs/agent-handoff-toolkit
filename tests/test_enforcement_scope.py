@@ -156,6 +156,34 @@ class UngatedSessionTests(unittest.TestCase):
             HookExecution(),
         )
 
+    def test_stop_notes_unfinished_work_and_never_blocks(self):
+        import shutil
+        import subprocess
+
+        shutil.rmtree(self.root / ".git")
+        subprocess.run(["git", "init", "--quiet"], cwd=self.root, check=True)
+        self.invoke("UserPromptSubmit")
+        # Nothing changed: silent.
+        self.assertEqual(self.invoke("Stop"), HookExecution())
+        # The session dirties the tree.
+        (self.root / "changed.py").write_text("x = 1\n")
+        output = self.invoke("Stop")
+        self.assertEqual(output.exit_code, 0)
+        body = json.loads(output.stdout)
+        self.assertIn("AHK-NO-HANDOFF", body["systemMessage"])
+        self.assertNotIn("decision", body)
+        self.assertNotIn("continue", body)
+
+    def test_stop_is_silent_when_the_tree_was_already_dirty(self):
+        import shutil
+        import subprocess
+
+        shutil.rmtree(self.root / ".git")
+        subprocess.run(["git", "init", "--quiet"], cwd=self.root, check=True)
+        (self.root / "preexisting.py").write_text("x = 1\n")
+        self.invoke("UserPromptSubmit")
+        self.assertEqual(self.invoke("Stop"), HookExecution())
+
 
 if __name__ == "__main__":
     unittest.main()

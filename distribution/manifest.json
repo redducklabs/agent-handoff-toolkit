@@ -277,8 +277,19 @@
       }
     },
     {
+      "source": "src/agent_handoff_toolkit/repository_state.py",
+      "sha256": "4d0bdf716b92c4cdbbe315566633a5b4687c0ec4a48b4b28dd5953369c69725a",
+      "install": {
+        "mode": "copy",
+        "transform": "none",
+        "targets": [
+          ".agent-handoff-toolkit/src/agent_handoff_toolkit/repository_state.py"
+        ]
+      }
+    },
+    {
       "source": "src/agent_handoff_toolkit/hook_adapters.py",
-      "sha256": "58ba509b5a9f9331b4b622d90f8a4f78bae8db3d2a40f5c7eff227a8c96bcc48",
+      "sha256": "46669e04e6b3807f6801e70598f5fa7fc5cdda38389e97b428343dd272ba18a4",
       "install": {
         "mode": "copy",
         "transform": "none",

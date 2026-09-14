@@ -98,6 +98,9 @@ EXPECTED_INSTALL_TARGETS = {
     "src/agent_handoff_toolkit/lifecycle_operations.py": {
         ".agent-handoff-toolkit/src/agent_handoff_toolkit/lifecycle_operations.py"
     },
+    "src/agent_handoff_toolkit/repository_state.py": {
+        ".agent-handoff-toolkit/src/agent_handoff_toolkit/repository_state.py"
+    },
     "src/agent_handoff_toolkit/hook_adapters.py": {
         ".agent-handoff-toolkit/src/agent_handoff_toolkit/hook_adapters.py"
     },
