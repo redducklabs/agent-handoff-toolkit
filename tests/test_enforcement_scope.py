@@ -184,6 +184,42 @@ class UngatedSessionTests(unittest.TestCase):
         self.invoke("UserPromptSubmit")
         self.assertEqual(self.invoke("Stop"), HookExecution())
 
+    def test_stop_is_silent_when_a_dirty_baseline_is_committed_clean(self):
+        """The digest differs from baseline, but the tree is clean: silent.
+
+        This is the mirror of test_stop_notes_unfinished_work_and_never_blocks:
+        there the digest differs *and* the tree is dirty, so the note fires
+        without ever needing to consult is_dirty (a dirty git-status output is
+        never empty). Here the baseline itself was dirty (a preexisting
+        untracked file), the session commits it, and the tree goes clean. The
+        digest still differs from the baseline (an empty "?? file" status is
+        not the same string as an empty status), so only is_dirty(root)
+        returning False keeps this silent.
+        """
+
+        import shutil
+        import subprocess
+
+        shutil.rmtree(self.root / ".git")
+        subprocess.run(["git", "init", "--quiet"], cwd=self.root, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "test@example.invalid"],
+            cwd=self.root,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Test"], cwd=self.root, check=True
+        )
+        (self.root / "preexisting.py").write_text("x = 1\n")
+        self.invoke("UserPromptSubmit")
+        subprocess.run(["git", "add", "-A"], cwd=self.root, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "commit preexisting work", "--quiet"],
+            cwd=self.root,
+            check=True,
+        )
+        self.assertEqual(self.invoke("Stop"), HookExecution())
+
 
 if __name__ == "__main__":
     unittest.main()
