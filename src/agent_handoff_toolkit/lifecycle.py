@@ -37,10 +37,22 @@ class EventName(str, Enum):
 
 
 class EnforcementMode(str, Enum):
+    # A session enforces nothing until it declares tracked work. OPEN is the
+    # default; ONE_OFF records that the session was asked and chose not to
+    # track. UNTRACKED is the pre-v0.4.0 spelling of OPEN and is accepted only
+    # when loading state written by an earlier release.
+    OPEN = "open"
+    ONE_OFF = "one-off"
     UNTRACKED = "untracked"
     TRACKED = "tracked"
     AWAITING_DECISION = "awaiting-decision"
     COMPLETE = "complete"
+
+
+# Modes in which no root has been declared and nothing is gated except the
+# toolkit's own control commands. UNTRACKED never appears here: it is the
+# legacy spelling `_model` migrates to OPEN on load, and is never written.
+_UNGATED = frozenset({EnforcementMode.OPEN, EnforcementMode.ONE_OFF})
 
 
 class DecisionKind(str, Enum):
@@ -559,10 +571,16 @@ class SessionState:
     current_external_user_turn_reference: str | None = None
     bootstrap_challenge: str | None = None
     pending_correction_hmac: str | None = None
+    write_advisory_emitted: bool = False
+    worktree_baseline: str | None = None
 
     def __post_init__(self) -> None:
         if self.pending_correction_hmac is not None:
             _digest(self.pending_correction_hmac, "pending_correction_hmac")
+        if not isinstance(self.write_advisory_emitted, bool):
+            raise ValueError("write_advisory_emitted must be boolean")
+        if self.worktree_baseline is not None:
+            _digest(self.worktree_baseline, "worktree_baseline")
         object.__setattr__(
             self, "session_key", _identifier(self.session_key, "session_key")
         )
@@ -612,7 +630,7 @@ class SessionState:
                 "last_issue_signature",
                 _digest(self.last_issue_signature, "last_issue_signature"),
             )
-        if self.mode is EnforcementMode.UNTRACKED:
+        if self.mode in _UNGATED:
             if self.authorization_id is not None or self.chain_revision is not None:
                 raise ValueError("untracked sessions cannot identify a chain")
         elif self.authorization_id is None or self.chain_revision is None:
@@ -900,7 +918,7 @@ def evaluate_pre_tool(
         raise ValueError("snapshot must be a LifecycleSnapshot")
     if not isinstance(bootstrap_allowed, bool):
         raise ValueError("bootstrap_allowed must be boolean")
-    if snapshot.session.mode is not EnforcementMode.UNTRACKED:
+    if snapshot.session.mode not in _UNGATED:
         return LifecycleDecision(DecisionKind.ALLOW)
     if event.tool_capability in {"intrinsic-read-only", "tool-free"}:
         return LifecycleDecision(DecisionKind.ALLOW)
@@ -945,7 +963,7 @@ def evaluate_user_prompt(
                 SessionState(
                     session_key=snapshot.session.session_key,
                     targeted_revision=snapshot.session.targeted_revision + 1,
-                    mode=EnforcementMode.UNTRACKED,
+                    mode=EnforcementMode.OPEN,
                     current_external_user_turn_reference=event.current_user_reference
                     or event.turn_reference,
                 )
@@ -1204,7 +1222,7 @@ def evaluate_stop(
     if candidate is not None and not isinstance(candidate, TerminalCandidate):
         raise ValueError("candidate must be a TerminalCandidate")
     session = snapshot.session
-    if session.mode in {EnforcementMode.UNTRACKED, EnforcementMode.COMPLETE}:
+    if session.mode in _UNGATED or session.mode is EnforcementMode.COMPLETE:
         return LifecycleDecision(DecisionKind.ALLOW)
 
     stale = _stale_issues(snapshot, candidate)

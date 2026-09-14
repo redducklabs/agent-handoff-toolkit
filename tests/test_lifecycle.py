@@ -645,7 +645,7 @@ class DecisionResponseTests(unittest.TestCase):
 
 
 class EventTransitionTests(unittest.TestCase):
-    def test_external_user_reenters_completed_session_as_fresh_untracked(self):
+    def test_external_user_reenters_completed_session_as_fresh_open(self):
         snapshot = LifecycleSnapshot(
             make_chain(status="complete"), make_session(mode=EnforcementMode.COMPLETE)
         )
@@ -655,7 +655,7 @@ class EventTransitionTests(unittest.TestCase):
             current_user_reference="fresh-user",
         )
         result = evaluate_user_prompt(event, snapshot)
-        self.assertEqual(result.mutation.session.mode, EnforcementMode.UNTRACKED)
+        self.assertEqual(result.mutation.session.mode, EnforcementMode.OPEN)
         self.assertIsNone(result.mutation.session.authorization_id)
         self.assertIsNone(result.mutation.session.chain_revision)
         self.assertIsNone(result.mutation.chain)
@@ -663,11 +663,11 @@ class EventTransitionTests(unittest.TestCase):
             result.mutation.session.current_external_user_turn_reference, "fresh-user"
         )
 
-    def test_untracked_intrinsic_read_only_and_tool_free_events_allow(self) -> None:
+    def test_open_intrinsic_read_only_and_tool_free_events_allow(self) -> None:
         snapshot = LifecycleSnapshot(
             chain=None,
             session=make_session(
-                mode=EnforcementMode.UNTRACKED,
+                mode=EnforcementMode.OPEN,
                 authorization_id=None,
                 chain_revision=None,
             ),
@@ -684,11 +684,11 @@ class EventTransitionTests(unittest.TestCase):
                 self.assertEqual(decision.kind, DecisionKind.ALLOW)
                 self.assertEqual(decision.issues, ())
 
-    def test_untracked_mutation_and_unknown_tools_block_without_bootstrap(self) -> None:
+    def test_open_mutation_and_unknown_tools_block_without_bootstrap(self) -> None:
         snapshot = LifecycleSnapshot(
             chain=None,
             session=make_session(
-                mode=EnforcementMode.UNTRACKED,
+                mode=EnforcementMode.OPEN,
                 authorization_id=None,
                 chain_revision=None,
             ),
@@ -718,7 +718,7 @@ class EventTransitionTests(unittest.TestCase):
         untracked = LifecycleSnapshot(
             chain=None,
             session=make_session(
-                mode=EnforcementMode.UNTRACKED,
+                mode=EnforcementMode.OPEN,
                 authorization_id=None,
                 chain_revision=None,
             ),

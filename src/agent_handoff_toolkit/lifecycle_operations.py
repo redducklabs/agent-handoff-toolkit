@@ -32,6 +32,7 @@ from .lifecycle import (
     EventName,
     LifecycleMutation,
     RecordReference,
+    _UNGATED,
     classify_affirmation,
     render_decision_response,
 )
@@ -325,8 +326,8 @@ class LifecycleService:
     def _bootstrap(self, challenge, expected_session_revision):
         validate_identifier(challenge, label="challenge")
         snapshot = self._snapshot(expected_session_revision)
-        if snapshot.session.mode is not EnforcementMode.UNTRACKED:
-            raise ValueError("bootstrap requires an untracked session")
+        if snapshot.session.mode not in _UNGATED:
+            raise ValueError("bootstrap requires a session with no registered root")
         if (
             snapshot.session.current_external_user_turn_reference is None
             or snapshot.session.bootstrap_challenge is None

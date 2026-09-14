@@ -33,6 +33,7 @@ from .lifecycle import (
     NormalizedEvent,
     TerminalCandidate,
     _blocked_stop,
+    _UNGATED,
     classify_affirmation,
     evaluate_stop,
     evaluate_user_prompt,
@@ -592,7 +593,7 @@ def _pre_tool(event, snapshot, root, storage):
         isinstance(command, str)
         and re.match(r"^python \S+ lifecycle(?: |$)", command) is not None
     )
-    if session.mode is not EnforcementMode.UNTRACKED and not control:
+    if session.mode not in _UNGATED and not control:
         return HookExecution()
     if event.tool_capability == "intrinsic-read-only":
         return HookExecution()
@@ -614,7 +615,7 @@ def _pre_tool(event, snapshot, root, storage):
     repaired = _repair_bootstrap(command, runner, session, capability, reasons)
     code = "AHK-PRE-ROOT"
     note = "Use the current bound control command."
-    if session.mode is not EnforcementMode.UNTRACKED:
+    if session.mode not in _UNGATED:
         code = "AHK-CONTROL-BINDING"
         tokens = command.split(" ")
         flags = {
@@ -810,7 +811,7 @@ def _user_prompt(event, snapshot, storage, raw_id, root):
         decision = evaluate_user_prompt(event, updated, decision_resolved=True)
         updated = _commit(storage, raw_id, updated, decision.mutation)
     match = re.match(r"Continue from handoff: ([^\n]+)\n", event.current_user_message)
-    if match and updated.session.mode is EnforcementMode.UNTRACKED:
+    if match and updated.session.mode in _UNGATED:
         path = match.group(1)
         text, data, digest = _read_record(path, root)
         if event.current_user_message != render_resume_prompt(path, text):

@@ -790,7 +790,7 @@ class EnforcementTests(unittest.TestCase):
         )
         self.assertEqual(
             self.storage.load_snapshot("new-session").session.mode,
-            EnforcementMode.UNTRACKED,
+            EnforcementMode.OPEN,
         )
         self.assertEqual(
             self.invoke(
@@ -1381,7 +1381,7 @@ class EnforcementTests(unittest.TestCase):
             )
             self.assertEqual(
                 self.storage.load_snapshot("other-" + str(index)).session.mode,
-                EnforcementMode.UNTRACKED,
+                EnforcementMode.OPEN,
             )
         self.assertEqual(
             self.invoke("UserPromptSubmit", session_id="copy", prompt=copied),
@@ -1404,7 +1404,7 @@ class EnforcementTests(unittest.TestCase):
             HookExecution(),
         )
         fresh = self.storage.load_snapshot("session-1")
-        self.assertEqual(fresh.session.mode, EnforcementMode.UNTRACKED)
+        self.assertEqual(fresh.session.mode, EnforcementMode.OPEN)
         self.assertIsNone(fresh.chain)
         self.assertIsNone(fresh.session.authorization_id)
         self.assertIsNotNone(fresh.session.bootstrap_challenge)

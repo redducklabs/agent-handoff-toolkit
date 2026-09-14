@@ -31,6 +31,7 @@ from .lifecycle import (
     LifecycleSnapshot,
     SessionState,
     RecordReference,
+    _UNGATED,
 )
 from .lineage import canonical_json_bytes, validate_hex_digest
 
@@ -74,13 +75,30 @@ def _plain(value):
 
 
 def _model(value, model):
-    if not isinstance(value, dict) or set(value) != {
-        item.name for item in fields(model)
-    }:
+    if not isinstance(value, dict):
+        raise LifecycleStorageError("state contains unknown or missing fields")
+    names = {item.name for item in fields(model)}
+    if model is SessionState:
+        # State written before v0.4.0 has neither the advisory flag nor the
+        # worktree baseline, and spells the default mode "untracked". Filling
+        # the defaults here keeps an existing session loadable; anything else
+        # unknown is still rejected. Only a dict that is exactly the legacy
+        # shape (nothing missing beyond these two fields, nothing extra) is
+        # backfilled, so a genuinely unknown or injected field still fails
+        # the field-set check below instead of being silently dropped.
+        legacy_names = names - {"write_advisory_emitted", "worktree_baseline"}
+        if set(value) == legacy_names:
+            value = dict(value)
+            value.setdefault("write_advisory_emitted", False)
+            value.setdefault("worktree_baseline", None)
+    if set(value) != names:
         raise LifecycleStorageError("state contains unknown or missing fields")
     value = dict(value)
     if model is SessionState:
-        value["mode"] = EnforcementMode(value["mode"])
+        mode = EnforcementMode(value["mode"])
+        value["mode"] = (
+            EnforcementMode.OPEN if mode is EnforcementMode.UNTRACKED else mode
+        )
         if value["pending_decision_reference"] is not None:
             value["pending_decision_reference"] = _model(
                 value["pending_decision_reference"], DecisionRequest
@@ -611,9 +629,7 @@ class LocalLifecycleStorage:
         return RegistryEnvelope.from_bytes(data)
 
     def _snapshot(self, envelope, key):
-        session = envelope.sessions.get(
-            key, SessionState(key, 0, EnforcementMode.UNTRACKED)
-        )
+        session = envelope.sessions.get(key, SessionState(key, 0, EnforcementMode.OPEN))
         return LifecycleSnapshot(envelope.chains.get(session.authorization_id), session)
 
     def load_snapshot(self, session_key: str) -> LifecycleSnapshot:
@@ -760,7 +776,7 @@ class LocalLifecycleStorage:
             current.chain is not None
             and current.chain.status == "complete"
             and current.session.mode is EnforcementMode.COMPLETE
-            and session.mode is EnforcementMode.UNTRACKED
+            and session.mode in _UNGATED
             and chain is None
             and session.authorization_id is None
             and session.chain_revision is None
@@ -774,11 +790,7 @@ class LocalLifecycleStorage:
             and session.correction_cycle_count == 0
             and session.last_issue_signature is None
         )
-        if (
-            current.chain is not None
-            and session.mode is EnforcementMode.UNTRACKED
-            and not reentry
-        ):
+        if current.chain is not None and session.mode in _UNGATED and not reentry:
             raise LifecycleStorageError("tracked sessions cannot become untracked")
         chains, sessions = dict(envelope.chains), dict(envelope.sessions)
         if chain is not None:

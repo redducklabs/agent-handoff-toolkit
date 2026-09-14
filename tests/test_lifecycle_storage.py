@@ -21,6 +21,7 @@ from agent_handoff_toolkit.lifecycle import (
     EnforcementMode,
     LifecycleMutation,
     RecordReference,
+    SessionState,
 )
 from agent_handoff_toolkit.lifecycle_storage import (
     LifecycleStorageError,
@@ -162,7 +163,7 @@ class LifecycleStorageTests(unittest.TestCase):
         )
         fresh = replace(
             state.session,
-            mode=EnforcementMode.UNTRACKED,
+            mode=EnforcementMode.OPEN,
             targeted_revision=3,
             chain_revision=None,
             authorization_id=None,
@@ -182,7 +183,7 @@ class LifecycleStorageTests(unittest.TestCase):
             "raw-session", 2, 2, LifecycleMutation(fresh)
         )
         self.assertIsNone(result.chain)
-        self.assertEqual(result.session.mode, EnforcementMode.UNTRACKED)
+        self.assertEqual(result.session.mode, EnforcementMode.OPEN)
         self.assertEqual(self.storage.load_chain(complete.authorization_id), complete)
 
     def setUp(self):
@@ -212,7 +213,36 @@ class LifecycleStorageTests(unittest.TestCase):
         self.assertEqual(RegistryEnvelope.from_bytes(expected).to_bytes(), expected)
         snapshot = self.storage.load_snapshot("private-session")
         self.assertIsNone(snapshot.chain)
-        self.assertEqual(snapshot.session.mode, EnforcementMode.UNTRACKED)
+        self.assertEqual(snapshot.session.mode, EnforcementMode.OPEN)
+
+    def test_legacy_session_state_loads_as_open(self):
+        """State written before v0.4.0 lacks the new fields and names the old mode."""
+
+        from agent_handoff_toolkit.lifecycle_storage import _model
+
+        legacy = {
+            "session_key": "a" * 64,
+            "targeted_revision": 3,
+            "mode": "untracked",
+            "authorization_id": None,
+            "chain_revision": None,
+            "pending_decision_reference": None,
+            "pending_transition_reference": None,
+            "correction_cycle_count": 0,
+            "last_issue_signature": None,
+            "current_external_user_turn_reference": None,
+            "bootstrap_challenge": None,
+            "pending_correction_hmac": None,
+        }
+        session = _model(legacy, SessionState)
+        self.assertIs(session.mode, EnforcementMode.OPEN)
+        self.assertFalse(session.write_advisory_emitted)
+        self.assertIsNone(session.worktree_baseline)
+
+    def test_new_modes_round_trip_through_storage(self):
+        for mode in (EnforcementMode.OPEN, EnforcementMode.ONE_OFF):
+            with self.subTest(mode=mode):
+                self.assertIs(EnforcementMode(mode.value), mode)
 
     def test_rejects_corrupt_envelopes(self):
         invalid = [
@@ -450,7 +480,7 @@ class LifecycleStorageTests(unittest.TestCase):
                 replace(
                     a.session,
                     targeted_revision=2,
-                    mode=EnforcementMode.UNTRACKED,
+                    mode=EnforcementMode.OPEN,
                     authorization_id=None,
                     chain_revision=None,
                 )
