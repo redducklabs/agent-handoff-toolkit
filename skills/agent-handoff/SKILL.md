@@ -7,6 +7,18 @@ description: Use when unfinished authorized work of any kind (including code, re
 
 Read `docs/agent-handoff/contract.md` before authoring a record. Create a continuation only for unfinished authorized work. Create a completion audit when the highest authorized outcome is complete. The record must be executable from live state, not merely descriptive.
 
+## Gate: Decide whether this work is tracked
+
+A session is not tracked by default, and nothing forces the decision. Register
+a root only when the work spans more than one session, will be handed off, or
+the user expects to resume it later. Otherwise do nothing: conversation,
+investigation, ticket creation, and a fix that finishes within this session
+need no lifecycle at all, and no handoff record follows from them. If the
+toolkit offers an `AHK-DECLARE` or `AHK-NO-HANDOFF` notice, decide against that
+same rule — register a root if the work turns out to need continuity, or run
+`lifecycle one-off` to record that it does not. Neither notice blocks; treat
+either as a prompt to decide, not as an error to fix.
+
 If the session is tracked — a lifecycle hook has given you a session key,
 challenge, and expected revision — begin by running `lifecycle inspect`. Use
 `lifecycle register-root` only to establish a new authorized root, `lifecycle

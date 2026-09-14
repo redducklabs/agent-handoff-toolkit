@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from agent_handoff_toolkit.hook_adapters import (  # noqa: E402
+    _WRITE_TOOLS,
     HookExecution,
     normalize_event,
     render_hook_execution,
@@ -410,10 +411,21 @@ class EnforcementTests(unittest.TestCase):
         capability = self.storage.control_capability(session)
         runner = (self.root / ".agent-handoff-toolkit" / "runner.py").as_posix()
         command = f"python {runner} lifecycle join --session-key {session.session_key} --challenge {capability} --authorization-id auth-1 --expected-chain-revision 1 --expected-session-revision {session.targeted_revision}"
+        # This test asserts that mutation tools pass through untouched; the
+        # first-write advisory (Task 4) is a separate, one-time concern
+        # exercised in tests/test_enforcement_scope.py. Silence it here so it
+        # does not shadow the assertions below or shift session revisions
+        # that later assertions in this test hard-code.
+        write_tools_patch = patch.dict(
+            _WRITE_TOOLS, {"claude": frozenset(), "codex": frozenset()}
+        )
+        write_tools_patch.start()
+        self.addCleanup(write_tools_patch.stop)
         for host in ("claude", "codex"):
             for tool in ("Bash", "Write", "apply_patch", "mcp__fs__read", "unknown"):
-                self.assert_block(
-                    self.invoke("PreToolUse", host=host, tool_name=tool), "AHK-PRE-ROOT"
+                self.assertEqual(
+                    self.invoke("PreToolUse", host=host, tool_name=tool),
+                    HookExecution(),
                 )
             self.assertEqual(
                 self.invoke("PreToolUse", host=host, tool_input={"command": command}),
@@ -424,7 +436,10 @@ class EnforcementTests(unittest.TestCase):
                 command + "; whoami",
                 command + " && echo x",
                 command.replace(capability, "expired"),
-                command.replace("revision 1", "revision 0"),
+                command.replace(
+                    f"--expected-session-revision {session.targeted_revision}",
+                    "--expected-session-revision 0",
+                ),
             ):
                 self.assert_block(
                     self.invoke(
@@ -432,9 +447,13 @@ class EnforcementTests(unittest.TestCase):
                     ),
                     "AHK-PRE-ROOT",
                 )
-            feedback = json.loads(self.invoke("PreToolUse", host=host).stdout)[
-                "hookSpecificOutput"
-            ]["permissionDecisionReason"]
+            feedback = json.loads(
+                self.invoke(
+                    "PreToolUse",
+                    host=host,
+                    tool_input={"command": f"python {runner} lifecycle"},
+                ).stdout
+            )["hookSpecificOutput"]["permissionDecisionReason"]
             self.assertIn("--challenge " + capability, feedback)
             self.assertIn("--expected-session-revision 1", feedback)
             self.assertEqual(feedback.count("Command: "), 1)
@@ -443,6 +462,21 @@ class EnforcementTests(unittest.TestCase):
         self.assert_block(
             self.invoke("PreToolUse", tool_input={"command": command}),
             "AHK-HOOK-RUNTIME",
+        )
+
+    def test_control_command_before_any_user_turn_still_requires_root(self):
+        """AHK-PRE-ROOT still guards the control channel before any user turn.
+
+        A brand-new session has never observed an external user turn, so the
+        session key and challenge a control command needs have never been
+        disclosed to it. Now that ordinary work is never gated, this is the
+        only remaining path that yields AHK-PRE-ROOT.
+        """
+
+        runner = (self.root / ".agent-handoff-toolkit" / "runner.py").as_posix()
+        command = f"python {runner} lifecycle inspect"
+        self.assert_block(
+            self.invoke("PreToolUse", tool_input={"command": command}), "AHK-PRE-ROOT"
         )
 
     def stop_payload(self, drop=(), **changes):
@@ -544,11 +578,12 @@ class EnforcementTests(unittest.TestCase):
             ).stdout
         )["hookSpecificOutput"]["permissionDecisionReason"]
         self.assertIn("failed=command-charset-padding", padded)
-        # An ordinary tool call is not a bootstrap attempt, so no check failed.
-        ordinary = json.loads(
-            self.invoke("PreToolUse", tool_input={"command": "git status"}).stdout
-        )["hookSpecificOutput"]["permissionDecisionReason"]
-        self.assertNotIn("failed=", ordinary)
+        # An ordinary tool call is never gated, so it carries no bootstrap
+        # check at all.
+        self.assertEqual(
+            self.invoke("PreToolUse", tool_input={"command": "git status"}),
+            HookExecution(),
+        )
         cases = {
             "non-canonical json": base64.urlsafe_b64encode(
                 json.dumps(definition, sort_keys=True).encode()
@@ -790,7 +825,7 @@ class EnforcementTests(unittest.TestCase):
         )
         self.assertEqual(
             self.storage.load_snapshot("new-session").session.mode,
-            EnforcementMode.UNTRACKED,
+            EnforcementMode.OPEN,
         )
         self.assertEqual(
             self.invoke(
@@ -1381,7 +1416,7 @@ class EnforcementTests(unittest.TestCase):
             )
             self.assertEqual(
                 self.storage.load_snapshot("other-" + str(index)).session.mode,
-                EnforcementMode.UNTRACKED,
+                EnforcementMode.OPEN,
             )
         self.assertEqual(
             self.invoke("UserPromptSubmit", session_id="copy", prompt=copied),
@@ -1404,12 +1439,14 @@ class EnforcementTests(unittest.TestCase):
             HookExecution(),
         )
         fresh = self.storage.load_snapshot("session-1")
-        self.assertEqual(fresh.session.mode, EnforcementMode.UNTRACKED)
+        self.assertEqual(fresh.session.mode, EnforcementMode.OPEN)
         self.assertIsNone(fresh.chain)
         self.assertIsNone(fresh.session.authorization_id)
         self.assertIsNotNone(fresh.session.bootstrap_challenge)
         self.assertEqual(self.storage.load_chain(completed.authorization_id), completed)
-        self.assert_block(self.invoke("PreToolUse"), "AHK-PRE-ROOT")
+        # The fresh, re-entered session has no root, but ordinary work is
+        # never gated regardless.
+        self.assertEqual(self.invoke("PreToolUse"), HookExecution())
         self.assertEqual(self.invoke(), HookExecution())
 
     def test_emitted_absolute_control_command_executes_owned_runner_from_other_cwd(
@@ -1431,9 +1468,14 @@ class EnforcementTests(unittest.TestCase):
         self.storage = LocalLifecycleStorage(self.root)
         self.service = LifecycleService(self.storage, "session-1")
         self.invoke("UserPromptSubmit")
-        reason = json.loads(self.invoke("PreToolUse").stdout)["hookSpecificOutput"][
-            "permissionDecisionReason"
-        ]
+        reason = json.loads(
+            self.invoke(
+                "PreToolUse",
+                tool_input={
+                    "command": f"python {(owned / 'runner.py').as_posix()} lifecycle"
+                },
+            ).stdout
+        )["hookSpecificOutput"]["permissionDecisionReason"]
         command = reason.split("Command: ", 1)[1]
         definition = (
             base64.urlsafe_b64encode(

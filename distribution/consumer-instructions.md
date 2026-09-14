@@ -16,6 +16,22 @@ before creating or changing a continuation or completion audit.
 - A schema-v2 record stores each fact once, in its visible metadata block. No
   section restates verification, the exact next action, the scope list, or the
   next-session prompt.
+- A session runs ungated until it registers a root: shell commands, file
+  edits, MCP calls, web fetches, subagents, and todo lists all run untouched.
+  Register a root only when the work spans more than one session, will be
+  handed off, or the user expects to resume it later; otherwise do nothing —
+  no lifecycle command is required for conversation, investigation, ticket
+  creation, or a single-session fix.
+- `lifecycle one-off` records a deliberate decision that a session's work
+  needs no handoff. It grants no authority — no authorization ID, no chain —
+  and does not make the session tracked.
+- The toolkit may attach an informational `AHK-DECLARE` notice on a
+  session's first repository write with no registered root, and an
+  `AHK-NO-HANDOFF` notice at `Stop` when the repository changed during an
+  undeclared session and it ends with work uncommitted. Neither advisory
+  blocks, and neither carries a permission decision: the notice is attached
+  alongside the host's normal approval flow, which runs unchanged. Treat
+  either as a prompt to decide, not as an error to fix.
 - For schema v2, run `lifecycle inspect` before creating a tracked record. Use
   `lifecycle register-root`, `lifecycle resume`, and `lifecycle join` only for
   their defined lifecycle states; an existing handoff does not authorize a new

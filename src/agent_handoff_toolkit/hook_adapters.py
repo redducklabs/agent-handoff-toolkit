@@ -33,6 +33,7 @@ from .lifecycle import (
     NormalizedEvent,
     TerminalCandidate,
     _blocked_stop,
+    _UNGATED,
     classify_affirmation,
     evaluate_stop,
     evaluate_user_prompt,
@@ -60,6 +61,7 @@ from .lineage import (
     validate_scope_definition,
 )
 from .records import parse_markdown, render_resume_prompt, render_terminal_response
+from .repository_state import worktree_digest, worktree_state
 
 # One bound, on the whole hook input. A tool call carries the work's payload -
 # a written file, a pasted log - and that size belongs to the work, not to the
@@ -75,6 +77,14 @@ _READ_ONLY = {
     "codex": frozenset({"view_image"}),
 }
 _SHELL = {"claude": frozenset({"Bash", "PowerShell"}), "codex": frozenset({"Bash"})}
+# Tools that write repository files. Shell is deliberately absent: classifying
+# a command as read-only or not is fragile, and making `git status` an advisory
+# trigger would defeat the purpose. A missed trigger costs an advisory, not a
+# guarantee - the Stop note is the backstop and reads the worktree directly.
+_WRITE_TOOLS = {
+    "claude": frozenset({"Write", "Edit", "MultiEdit", "NotebookEdit"}),
+    "codex": frozenset({"apply_patch"}),
+}
 _ALIASES = {
     "userpromptsubmit": EventName.USER_PROMPT_SUBMIT,
     "pretooluse": EventName.PRE_TOOL_USE,
@@ -581,7 +591,74 @@ def _form_register_root(command, runner, session, capability, reasons=None):
     return formed
 
 
-def _pre_tool(event, snapshot, root, storage):
+def _write_advisory(event, snapshot, root, storage, raw_id):
+    """Say, once, that nothing is tracking this session, and decide nothing.
+
+    Never blocks and never errors: an advisory that can fail the tool call is
+    worse than no advisory. Any failure here leaves the call untouched.
+
+    The payload carries a `systemMessage` and nothing else. An earlier form
+    paired it with `permissionDecision: "allow"`, which does not merely
+    decline to block - on a real host it also satisfies the permission gate,
+    so the first repository write of every untracked session proceeded without
+    the approval the user would otherwise have been asked for. An advisory
+    must not grant an approval nobody gave it, so it now returns no decision
+    at all and the host's own permission flow runs untouched.
+    """
+
+    try:
+        runner = root / ".agent-handoff-toolkit" / "runner.py"
+        # Recording the advisory is itself a session commit, and every commit
+        # advances targeted_revision. Building the bound commands from the
+        # pre-commit session would hand the author a revision the commit
+        # itself has already invalidated, so the capability and commands are
+        # derived from the post-commit session the mutation below will
+        # produce, and the commit uses that identical, already-built session.
+        mutated_session = replace(
+            snapshot.session,
+            write_advisory_emitted=True,
+            targeted_revision=snapshot.session.targeted_revision + 1,
+        )
+        capability = storage.control_capability(mutated_session)
+        message = (
+            "AHK-DECLARE: This session is changing the repository with no "
+            "registered root, so nothing will carry the work to a next session. "
+            "If the work ends here, run:\n"
+            + _control_command(runner, mutated_session, capability, "one-off")
+            + "\nIf it continues past this session, run register-root with the "
+            "scope title and outcome as plain text:\n"
+            + _control_command(
+                runner,
+                mutated_session,
+                capability,
+                "register-root",
+                (
+                    ("scope-id", "{scope_id}"),
+                    ("scope-kind", "{scope_kind}"),
+                    ("scope-title", '"{title}"'),
+                    ("scope-outcome", '"{outcome}"'),
+                ),
+            )
+            + "\nNeither is required; this notice appears once."
+        )
+        # MAX_REASON_BYTES bounds hook *feedback* - a denial reason fed back
+        # to the model, where an oversize string costs a correction cycle. A
+        # one-shot notice on an undecided path is neither fed back nor looped,
+        # and its length is a deterministic function of the runner path, so
+        # applying that bound here only produced a silent cliff: past a repo
+        # root of roughly 145 characters no advisory ever fired, and because
+        # the flag was committed after the check, the capability and message
+        # were rebuilt on every subsequent write call. The notice is exempt.
+        _commit(storage, raw_id, snapshot, LifecycleMutation(mutated_session))
+        return HookExecution(
+            stdout=json.dumps({"systemMessage": message}, separators=(",", ":"))
+        )
+    except Exception:
+        # Advisory only. A failure here must not disturb the tool call.
+        return HookExecution()
+
+
+def _pre_tool(event, snapshot, root, storage, raw_id):
     session = snapshot.session
     command = (
         event.tool_input.get("command")
@@ -592,9 +669,18 @@ def _pre_tool(event, snapshot, root, storage):
         isinstance(command, str)
         and re.match(r"^python \S+ lifecycle(?: |$)", command) is not None
     )
-    if session.mode is not EnforcementMode.UNTRACKED and not control:
-        return HookExecution()
-    if event.tool_capability == "intrinsic-read-only":
+    # Work is never gated. The toolkit intercepts only its own control
+    # commands, which is how a session discovers its session key, challenge and
+    # revision: UserPromptSubmit returns silently, so this denial is the sole
+    # carrier of those credentials.
+    if not control:
+        if (
+            session.mode is EnforcementMode.OPEN
+            and not session.write_advisory_emitted
+            and event.tool_name in _WRITE_TOOLS[event.host]
+            and session.current_external_user_turn_reference is not None
+        ):
+            return _write_advisory(event, snapshot, root, storage, raw_id)
         return HookExecution()
     if session.current_external_user_turn_reference is None:
         return render_hook_execution(
@@ -614,7 +700,7 @@ def _pre_tool(event, snapshot, root, storage):
     repaired = _repair_bootstrap(command, runner, session, capability, reasons)
     code = "AHK-PRE-ROOT"
     note = "Use the current bound control command."
-    if session.mode is not EnforcementMode.UNTRACKED:
+    if session.mode not in _UNGATED:
         code = "AHK-CONTROL-BINDING"
         tokens = command.split(" ")
         flags = {
@@ -759,10 +845,29 @@ def _user_prompt(event, snapshot, storage, raw_id, root):
         return HookExecution()
     if not event.external_user_turn:
         return HookExecution()
+    if session.worktree_baseline is None:
+        digest = worktree_digest(root)
+        if digest is not None:
+            snapshot = _commit(
+                storage,
+                raw_id,
+                snapshot,
+                LifecycleMutation(
+                    replace(
+                        snapshot.session,
+                        worktree_baseline=digest,
+                        targeted_revision=snapshot.session.targeted_revision + 1,
+                    )
+                ),
+            )
+            session = snapshot.session
     if event.current_user_reference == session.current_external_user_turn_reference:
         return HookExecution()
     if session.mode is EnforcementMode.COMPLETE:
         reset = evaluate_user_prompt(event, snapshot)
+        # evaluate_user_prompt carries the advisory baseline and the
+        # once-per-session flag across the reentry; only the fresh bootstrap
+        # challenge is added here.
         mutation = replace(
             reset.mutation,
             session=replace(
@@ -810,7 +915,7 @@ def _user_prompt(event, snapshot, storage, raw_id, root):
         decision = evaluate_user_prompt(event, updated, decision_resolved=True)
         updated = _commit(storage, raw_id, updated, decision.mutation)
     match = re.match(r"Continue from handoff: ([^\n]+)\n", event.current_user_message)
-    if match and updated.session.mode is EnforcementMode.UNTRACKED:
+    if match and updated.session.mode in _UNGATED:
         path = match.group(1)
         text, data, digest = _read_record(path, root)
         if event.current_user_message != render_resume_prompt(path, text):
@@ -885,7 +990,7 @@ def run_lifecycle_hook(platform, name, raw, repo_root, storage=None):
         event = normalize_event(platform, name, payload, repo_root)
         event = replace(event, session_key=snapshot.session.session_key)
         if event_kind is EventName.PRE_TOOL_USE:
-            return _pre_tool(event, snapshot, root, storage)
+            return _pre_tool(event, snapshot, root, storage, raw_id)
         if event_kind is EventName.USER_PROMPT_SUBMIT:
             return _user_prompt(event, snapshot, storage, raw_id, root)
         if snapshot.session.correction_cycle_count >= 3:
@@ -915,7 +1020,58 @@ def run_lifecycle_hook(platform, name, raw, repo_root, storage=None):
             )
         except Exception:
             decision = LifecycleDecision(DecisionKind.BLOCK, (issue,))
-    return _publish_decision(platform, event_kind, decision, storage, raw_id, snapshot)
+    output = _publish_decision(
+        platform, event_kind, decision, storage, raw_id, snapshot
+    )
+    if (
+        event_kind is EventName.STOP
+        and output == HookExecution()
+        and snapshot is not None
+        and snapshot.session.mode in _UNGATED
+    ):
+        note = _no_handoff_note(snapshot, Path(repo_root).resolve())
+        if note is not None:
+            return note
+    return output
+
+
+def _no_handoff_note(snapshot, root):
+    """Report unfinished work at the end of an untracked session.
+
+    Both conditions must hold: the tree is dirty now, and it differs from the
+    baseline taken at the session's first user turn. The first alone fires on
+    work the user left in place beforehand; the second alone fires on a session
+    that cleaned the tree by committing pre-existing changes.
+    """
+
+    try:
+        baseline = snapshot.session.worktree_baseline
+        if baseline is None:
+            return None
+        # One `git status` per Stop: the digest and the dirtiness are two
+        # readings of the same porcelain output, not two subprocesses.
+        state = worktree_state(root)
+        if state is None:
+            return None
+        current, dirty = state
+        if current == baseline or not dirty:
+            return None
+        return HookExecution(
+            stdout=json.dumps(
+                {
+                    "systemMessage": (
+                        "AHK-NO-HANDOFF: The repository changed during this "
+                        "session and is ending with work uncommitted, with no "
+                        "handoff record. If someone continues this, register a "
+                        "root and render a continuation."
+                    )
+                },
+                separators=(",", ":"),
+            )
+        )
+    except Exception:
+        # Advisory only; never disturb the stop.
+        return None
 
 
 def _publish_decision(

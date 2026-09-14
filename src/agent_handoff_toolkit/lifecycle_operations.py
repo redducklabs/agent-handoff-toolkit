@@ -32,6 +32,7 @@ from .lifecycle import (
     EventName,
     LifecycleMutation,
     RecordReference,
+    _UNGATED,
     classify_affirmation,
     render_decision_response,
 )
@@ -58,6 +59,7 @@ _FLAGS = {
         "expected-session-revision",
     ),
     "adopt-v1": ("session-key", "challenge", "record", "expected-session-revision"),
+    "one-off": ("session-key", "challenge", "expected-session-revision"),
 }
 
 
@@ -325,8 +327,8 @@ class LifecycleService:
     def _bootstrap(self, challenge, expected_session_revision):
         validate_identifier(challenge, label="challenge")
         snapshot = self._snapshot(expected_session_revision)
-        if snapshot.session.mode is not EnforcementMode.UNTRACKED:
-            raise ValueError("bootstrap requires an untracked session")
+        if snapshot.session.mode not in _UNGATED:
+            raise ValueError("bootstrap requires a session with no registered root")
         if (
             snapshot.session.current_external_user_turn_reference is None
             or snapshot.session.bootstrap_challenge is None
@@ -397,6 +399,22 @@ class LifecycleService:
                 else []
             ),
         }
+
+    def one_off(self, *, challenge, expected_session_revision):
+        """Record that the session was asked to declare and chose not to track.
+
+        This grants no authority. It suppresses the write-time advisory only;
+        a session that ends with unfinished work is still reported at Stop.
+        """
+
+        snapshot = self._bootstrap(challenge, expected_session_revision)
+        session = replace(
+            snapshot.session,
+            mode=EnforcementMode.ONE_OFF,
+            targeted_revision=snapshot.session.targeted_revision + 1,
+        )
+        self._commit(snapshot, session)
+        return {"mode": "one-off"}
 
     def register_root(
         self,

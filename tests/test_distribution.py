@@ -46,6 +46,7 @@ DROPPED_V2_SECTIONS = (
 )
 
 REQUIRED_SKILL_GATES = {
+    "Decide whether this work is tracked",
     "Choose the record type",
     "Close gating questions",
     "Reconcile live state",
@@ -97,6 +98,9 @@ EXPECTED_INSTALL_TARGETS = {
     },
     "src/agent_handoff_toolkit/lifecycle_operations.py": {
         ".agent-handoff-toolkit/src/agent_handoff_toolkit/lifecycle_operations.py"
+    },
+    "src/agent_handoff_toolkit/repository_state.py": {
+        ".agent-handoff-toolkit/src/agent_handoff_toolkit/repository_state.py"
     },
     "src/agent_handoff_toolkit/hook_adapters.py": {
         ".agent-handoff-toolkit/src/agent_handoff_toolkit/hook_adapters.py"
@@ -215,16 +219,16 @@ class DistributionTests(unittest.TestCase):
         manifest = load_manifest()
 
         self.assertEqual(manifest["manifest_version"], 2)
-        self.assertEqual(manifest["toolkit_version"], "0.3.3")
+        self.assertEqual(manifest["toolkit_version"], "0.4.0")
         self.assertEqual(manifest["text_hash"], "utf8-lf-sha256-v1")
         self.assertIn(
-            '__version__ = "0.3.3"',
+            '__version__ = "0.4.0"',
             (ROOT / "src/agent_handoff_toolkit/__init__.py").read_text(
                 encoding="utf-8"
             ),
         )
         self.assertIn(
-            'version = "0.3.3"',
+            'version = "0.4.0"',
             (ROOT / "pyproject.toml").read_text(encoding="utf-8"),
         )
         self.assertEqual(manifest["record_schema_version"], 2)
@@ -544,6 +548,10 @@ class DistributionTests(unittest.TestCase):
             "tracked lifecycle hooks fail closed",
             "does not mechanically prove",
             "no model call is required",
+            "ahk-declare",
+            "ahk-no-handoff",
+            "does not guarantee that work needing a handoff produces one",
+            "a session enforces nothing until it registers a root",
         ):
             with self.subTest(document="mechanics", phrase=phrase):
                 self.assertIn(phrase, normalized["mechanics"])
@@ -560,6 +568,8 @@ class DistributionTests(unittest.TestCase):
             "legitimate decision request",
             "corrective stop feedback",
             "already be displayed",
+            "register a root only when the work spans more than one session",
+            "neither notice blocks",
         ):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, normalized["skill"])
@@ -572,6 +582,10 @@ class DistributionTests(unittest.TestCase):
             "renderer-only terminal response",
             "corrective stop feedback",
             "already be displayed",
+            "a session runs ungated until it registers a root",
+            "ahk-declare",
+            "ahk-no-handoff",
+            "neither advisory blocks",
         ):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, normalized["consumer"])
@@ -997,18 +1011,18 @@ class DistributionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             consumer = Path(directory)
             result = run_source_cli(
-                "install", "--apply", target=consumer, release="v0.3.3"
+                "install", "--apply", target=consumer, release="v0.4.0"
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            check = run_source_cli("sync", "--check", target=consumer, release="v0.3.3")
+            check = run_source_cli("sync", "--check", target=consumer, release="v0.4.0")
             self.assertEqual(check.returncode, 0, check.stderr)
             state = json.loads(
                 (consumer / ".agent-handoff-toolkit/install-state.json").read_text(
                     encoding="utf-8"
                 )
             )
-            self.assertEqual(state["release"], "v0.3.3")
-            self.assertEqual(state["toolkit_version"], "0.3.3")
+            self.assertEqual(state["release"], "v0.4.0")
+            self.assertEqual(state["toolkit_version"], "0.4.0")
             self.assertEqual(state["state_version"], 1)
             self.assertEqual(state["record_schema_version"], 2)
             self.assertEqual(
@@ -1196,11 +1210,11 @@ class DistributionTests(unittest.TestCase):
             legacy_record.write_bytes(legacy_bytes)
 
             upgraded = run_source_cli(
-                "sync", "--apply", target=consumer, release="v0.3.3"
+                "sync", "--apply", target=consumer, release="v0.4.0"
             )
             self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
             current = run_source_cli(
-                "sync", "--check", target=consumer, release="v0.3.3"
+                "sync", "--check", target=consumer, release="v0.4.0"
             )
 
             self.assertEqual(current.returncode, 0, current.stderr)
@@ -1227,8 +1241,8 @@ class DistributionTests(unittest.TestCase):
                     encoding="utf-8"
                 )
             )
-            self.assertEqual(state["release"], "v0.3.3")
-            self.assertEqual(state["toolkit_version"], "0.3.3")
+            self.assertEqual(state["release"], "v0.4.0")
+            self.assertEqual(state["toolkit_version"], "0.4.0")
             self.assertEqual(state["record_schema_version"], 2)
             installed_source = (
                 consumer / ".agent-handoff-toolkit" / "src" / "agent_handoff_toolkit"
@@ -1271,7 +1285,7 @@ class DistributionTests(unittest.TestCase):
                 json.dumps(modified), encoding="utf-8", newline="\n"
             )
             conflict = run_source_cli(
-                "sync", "--check", target=conflicted, release="v0.3.3"
+                "sync", "--check", target=conflicted, release="v0.4.0"
             )
             self.assertEqual(conflict.returncode, 2)
             self.assertIn("managed-json-modified", conflict.stdout)
@@ -1298,7 +1312,7 @@ class DistributionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             consumer = Path(directory)
             installed = run_source_cli(
-                "install", "--apply", target=consumer, release="v0.3.3"
+                "install", "--apply", target=consumer, release="v0.4.0"
             )
             self.assertEqual(installed.returncode, 0, installed.stderr)
             installed_configs = {

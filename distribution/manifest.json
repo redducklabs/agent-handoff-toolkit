@@ -1,6 +1,6 @@
 {
   "manifest_version": 2,
-  "toolkit_version": "0.3.3",
+  "toolkit_version": "0.4.0",
   "record_schema_version": 2,
   "runtime": {
     "python_command": "python",
@@ -10,7 +10,7 @@
   "artifacts": [
     {
       "source": "distribution/consumer-instructions.md",
-      "sha256": "882204206707d2bd2d7945834473442da57a55a5e7b366b84e5cbc10b2c468fb",
+      "sha256": "d594ec8331c02f4c7d0316de9b881e06a3b176987f15c1d6c9d15d429c87a293",
       "block_id": "agent-handoff-toolkit",
       "install": {
         "mode": "managed-block",
@@ -45,7 +45,7 @@
     },
     {
       "source": "docs/agent-handoff/mechanics.md",
-      "sha256": "3e29e8ad2cd9283b6c8fd48d1e9ef0bb6866caab165464b3a05972b1f4ae33b3",
+      "sha256": "5074bf4baacc71c2d2e25438c3e7000b465f38c944572f9daf8842d7208f3b5d",
       "install": {
         "mode": "copy",
         "transform": "none",
@@ -56,7 +56,7 @@
     },
     {
       "source": "docs/consumer-integration.md",
-      "sha256": "b68571dcf00e541f93277a1ff356ba8c9c5eb02a44366a21e35064a586b650e6",
+      "sha256": "6c74e8a7d67aa996fac4ef94d309cf60e4d58c30bb1c5f78b1eb81d5ef7a58ac",
       "install": {
         "mode": "copy",
         "transform": "none",
@@ -67,7 +67,7 @@
     },
     {
       "source": "skills/agent-handoff/SKILL.md",
-      "sha256": "fd8387da8f49317f5b7636465ee998c5b9f5390a989d1631618fc1dc2a8c2690",
+      "sha256": "594d5f597e79fae3705c9799ed06fcbd31058f2a31b9e984992589e8f9863ec0",
       "install": {
         "mode": "copy",
         "transform": "none",
@@ -168,7 +168,7 @@
     },
     {
       "source": "src/agent_handoff_toolkit/__init__.py",
-      "sha256": "2b48183772695688a69c7993f853b4d9ec130175dcc0f891e69172d7191bf62f",
+      "sha256": "a67ff737d0e96202ead67d285cec6abe921dc2c4e757139f281bac36a123da95",
       "install": {
         "mode": "copy",
         "transform": "none",
@@ -190,7 +190,7 @@
     },
     {
       "source": "src/agent_handoff_toolkit/cli.py",
-      "sha256": "ed7a3f46d1fec87f171018e3891dcaa3787e62f413385665ca98b66521c4c8cb",
+      "sha256": "aeff2412849983ce7e69046a26887f5cc675ca1c82843b0134dbf9640e9cec1e",
       "install": {
         "mode": "copy",
         "transform": "none",
@@ -201,7 +201,7 @@
     },
     {
       "source": "src/agent_handoff_toolkit/acceptance.py",
-      "sha256": "9315ea23960e4fc52dd6ecdbace379e0053dcdcbb6f1427396c7a9e09b2ff4ad",
+      "sha256": "a73a4712c4bff3a4b2ea75e8a3a0e13ca28a59221214b6f025acf37b1169a99b",
       "install": {
         "mode": "copy",
         "transform": "none",
@@ -245,7 +245,7 @@
     },
     {
       "source": "src/agent_handoff_toolkit/lifecycle.py",
-      "sha256": "e9d50d319422ef59aa976e5de9b0295e38ce502b8f762af0617a50dd89bf2402",
+      "sha256": "ccd5a98517f7eafd0a3996d0210ec04d3fc7a8c0afb01a73d0f02753e426ab5a",
       "install": {
         "mode": "copy",
         "transform": "none",
@@ -256,7 +256,7 @@
     },
     {
       "source": "src/agent_handoff_toolkit/lifecycle_storage.py",
-      "sha256": "ccd9f6e6a7ea50e4c25653f4d026707c5cb16a89a782b2e32b5943703bc603c5",
+      "sha256": "13e0ea963b8d5cf0a48d791b403280afe3e0e768e32d2103471eca7e83b7ce2c",
       "install": {
         "mode": "copy",
         "transform": "none",
@@ -267,7 +267,7 @@
     },
     {
       "source": "src/agent_handoff_toolkit/lifecycle_operations.py",
-      "sha256": "3641a67f9231c35268d51693388b6b8a933295db307218c6c0497f9d035b3535",
+      "sha256": "64edbc532ea0f662ae6d56ee9f9803ea2316a5cb8e30c5f81056db8956ec41bf",
       "install": {
         "mode": "copy",
         "transform": "none",
@@ -277,8 +277,19 @@
       }
     },
     {
+      "source": "src/agent_handoff_toolkit/repository_state.py",
+      "sha256": "e47aea9ecbfb4579640e44df67c6e36b6522fd9d28482355a3a6059b05db808f",
+      "install": {
+        "mode": "copy",
+        "transform": "none",
+        "targets": [
+          ".agent-handoff-toolkit/src/agent_handoff_toolkit/repository_state.py"
+        ]
+      }
+    },
+    {
       "source": "src/agent_handoff_toolkit/hook_adapters.py",
-      "sha256": "a48b0bc61b93745f285b179adbbad24b7c1300e41ed25c465ae10e07ecc39954",
+      "sha256": "f93c713d77e59d55508c68469ed8baa7e6d86490de1d5ec626d83f5e3c0f47df",
       "install": {
         "mode": "copy",
         "transform": "none",
