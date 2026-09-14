@@ -26,7 +26,6 @@ from agent_handoff_toolkit.lifecycle import (  # noqa: E402
     SessionState,
     TerminalCandidate,
     classify_affirmation,
-    evaluate_pre_tool,
     evaluate_stop,
     evaluate_user_prompt,
     issue_signature,
@@ -661,77 +660,6 @@ class EventTransitionTests(unittest.TestCase):
         self.assertIsNone(result.mutation.chain)
         self.assertEqual(
             result.mutation.session.current_external_user_turn_reference, "fresh-user"
-        )
-
-    def test_open_intrinsic_read_only_and_tool_free_events_allow(self) -> None:
-        snapshot = LifecycleSnapshot(
-            chain=None,
-            session=make_session(
-                mode=EnforcementMode.OPEN,
-                authorization_id=None,
-                chain_revision=None,
-            ),
-        )
-        for capability in ("intrinsic-read-only", "tool-free"):
-            event = make_event(
-                EventName.PRE_TOOL_USE,
-                tool_name="read" if capability == "intrinsic-read-only" else None,
-                tool_input={} if capability == "intrinsic-read-only" else None,
-                tool_capability=capability,
-            )
-            with self.subTest(capability=capability):
-                decision = evaluate_pre_tool(event, snapshot, bootstrap_allowed=False)
-                self.assertEqual(decision.kind, DecisionKind.ALLOW)
-                self.assertEqual(decision.issues, ())
-
-    def test_open_mutation_and_unknown_tools_block_without_bootstrap(self) -> None:
-        snapshot = LifecycleSnapshot(
-            chain=None,
-            session=make_session(
-                mode=EnforcementMode.OPEN,
-                authorization_id=None,
-                chain_revision=None,
-            ),
-        )
-        for capability in ("mutation-capable", "unknown"):
-            event = make_event(
-                EventName.PRE_TOOL_USE,
-                tool_name="write",
-                tool_input={"path": "D:/repo/file.py"},
-                tool_capability=capability,
-            )
-            with self.subTest(capability=capability):
-                decision = evaluate_pre_tool(event, snapshot, bootstrap_allowed=False)
-                self.assertEqual(decision.kind, DecisionKind.BLOCK)
-                self.assertEqual(
-                    {issue.code for issue in decision.issues},
-                    {"AHK-PRETOOL-TRACKING"},
-                )
-
-    def test_validated_bootstrap_and_tracked_tools_allow(self) -> None:
-        event = make_event(
-            EventName.PRE_TOOL_USE,
-            tool_name="shell",
-            tool_input={"command": "bounded bootstrap"},
-            tool_capability="mutation-capable",
-        )
-        untracked = LifecycleSnapshot(
-            chain=None,
-            session=make_session(
-                mode=EnforcementMode.OPEN,
-                authorization_id=None,
-                chain_revision=None,
-            ),
-        )
-        tracked = LifecycleSnapshot(chain=make_chain(), session=make_session())
-
-        self.assertEqual(
-            evaluate_pre_tool(event, untracked, bootstrap_allowed=True).kind,
-            DecisionKind.ALLOW,
-        )
-        self.assertEqual(
-            evaluate_pre_tool(event, tracked, bootstrap_allowed=False).kind,
-            DecisionKind.ALLOW,
         )
 
     def test_external_user_turn_resets_correction_cycle_and_pending_decision(

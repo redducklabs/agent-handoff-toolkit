@@ -135,20 +135,34 @@ Two advisories make undeclared drift visible without gating anything:
   `NotebookEdit` on Claude Code; `apply_patch` on Codex. Not `Bash`, not an
   MCP tool, not any other tool name: classifying shell commands as read-only
   or not is fragile, and treating `git status` as a trigger would defeat the
-  purpose. The hook allows the write (`permissionDecision: "allow"`) and
-  attaches a `systemMessage` stating that the session is changing the
-  repository with no registered root, together with both bound commands
-  ready to run — `lifecycle one-off` and `lifecycle register-root`. It never
-  fires again for that session, and never fires for a session that has
-  already declared one-off.
+  purpose. The hook emits a bare top-level `systemMessage` and no
+  `hookSpecificOutput`, so it returns no permission decision at all and the
+  host's own permission flow runs exactly as it would with no hook installed.
+  It deliberately does not send `permissionDecision: "allow"`: on a real host
+  that value does not merely decline to block, it also satisfies the
+  permission gate, which would have let the first repository write of every
+  untracked session proceed without the approval the user would otherwise be
+  asked for. An advisory must not grant an approval nobody gave it. The
+  message states that the session is changing the repository with no
+  registered root, and carries both bound commands ready to run —
+  `lifecycle one-off` and `lifecycle register-root`. It never fires again for
+  that session, and never fires for a session that has already declared
+  one-off. The message is exempt from the `MAX_REASON_BYTES` bound, which
+  applies to blocking feedback fed back to the model; a notice on an
+  undecided path is never fed back and never loops, and bounding it only
+  silenced the advisory in repositories with long paths.
 - **`AHK-NO-HANDOFF`** fires at `Stop` for a session still in `OPEN` or
   `ONE_OFF` when both hold: `git status --porcelain` is non-empty, and its
   digest differs from the digest recorded at the session's first
-  `UserPromptSubmit`. The first condition alone would fire on work left
-  uncommitted before the session began; the second alone would fire on a
-  session that committed away pre-existing changes. Together they mean this
-  session changed the repository and left the change unfinished. A declared
-  one-off still receives this note — `one-off` suppresses `AHK-DECLARE`, not
+  `UserPromptSubmit`. Both facts come from one `git status` read, so the note
+  costs one subprocess per `Stop`. The first condition alone would fire on
+  work left uncommitted before the session began; the second alone would fire
+  on a session that committed away pre-existing changes. Together they mean
+  the repository changed while the session was open and is ending with work
+  uncommitted, which is what the note says — not that the session made the
+  change. The mechanism cannot establish that: a person saving a file in
+  their editor mid-turn satisfies both conditions too. A declared one-off
+  still receives this note — `one-off` suppresses `AHK-DECLARE`, not
   `AHK-NO-HANDOFF`.
 
 Neither advisory blocks, and neither can error: a missing `git` binary, a

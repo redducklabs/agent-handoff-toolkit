@@ -169,6 +169,15 @@ The design depends on emitting a message without blocking:
 - `PreToolUse`: `permissionDecision: "allow"` together with a message allows the
   call and attaches the message.
 
+**Verified, and revised.** Against Claude Code 2.1.269 both forms surface the
+message as an `informational` system event. Under the default permission mode,
+however, `permissionDecision: "allow"` also satisfies the permission gate — the
+write completed with no prompt and an empty `permission_denials` — while a bare
+top-level `systemMessage` with no `hookSpecificOutput` left the gate intact and
+the host asked for approval as usual. Attaching a message therefore does not
+require a decision field, and `AHK-DECLARE` ships without one: an advisory must
+not grant an approval nobody gave it.
+
 The placement of `additionalContext` is not settled. Documentation summarised it
 as a top-level field, but the toolkit's own working code nests it under
 `hookSpecificOutput` for `UserPromptSubmit`. The implementation must verify

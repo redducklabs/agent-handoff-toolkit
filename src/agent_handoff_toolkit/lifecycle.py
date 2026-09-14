@@ -904,39 +904,6 @@ def verify_decision_response(
     ) and hmac.compare_digest(request.reason_hmac, reason_hmac)
 
 
-def evaluate_pre_tool(
-    event: NormalizedEvent,
-    snapshot: LifecycleSnapshot,
-    *,
-    bootstrap_allowed: bool,
-) -> LifecycleDecision:
-    """Apply the pure capability gate before a tool invocation."""
-
-    if event.event is not EventName.PRE_TOOL_USE:
-        raise ValueError("evaluate_pre_tool requires a pre-tool-use event")
-    if not isinstance(snapshot, LifecycleSnapshot):
-        raise ValueError("snapshot must be a LifecycleSnapshot")
-    if not isinstance(bootstrap_allowed, bool):
-        raise ValueError("bootstrap_allowed must be boolean")
-    if snapshot.session.mode not in _UNGATED:
-        return LifecycleDecision(DecisionKind.ALLOW)
-    if event.tool_capability in {"intrinsic-read-only", "tool-free"}:
-        return LifecycleDecision(DecisionKind.ALLOW)
-    if bootstrap_allowed:
-        return LifecycleDecision(DecisionKind.ALLOW)
-    issue = LifecycleIssue(
-        "AHK-PRETOOL-TRACKING",
-        "Mutation-capable or unknown tools require an authorization root.",
-        "Register, resume, join, or adopt an authorization root before using the tool.",
-        actual=event.tool_capability or "missing",
-    )
-    return LifecycleDecision(
-        DecisionKind.BLOCK,
-        (issue,),
-        f"{issue.code}: {issue.summary}\nCorrect by {issue.corrective_action}",
-    )
-
-
 def evaluate_user_prompt(
     event: NormalizedEvent,
     snapshot: LifecycleSnapshot,
@@ -957,6 +924,12 @@ def evaluate_user_prompt(
     if not event.external_user_turn:
         return LifecycleDecision(DecisionKind.ALLOW)
     if snapshot.session.mode is EnforcementMode.COMPLETE:
+        # Reentry discards the completed chain's identity, but not the two
+        # fields that describe the *host* session rather than the chain: the
+        # advisory worktree baseline taken at its first user turn, and the
+        # once-per-session flag for the write advisory. Rebuilding this state
+        # from scratch reset both, which left the Stop backstop blind for the
+        # reentry turn and let the advisory fire a second time in one session.
         return LifecycleDecision(
             DecisionKind.ALLOW,
             mutation=LifecycleMutation(
@@ -966,6 +939,8 @@ def evaluate_user_prompt(
                     mode=EnforcementMode.OPEN,
                     current_external_user_turn_reference=event.current_user_reference
                     or event.turn_reference,
+                    worktree_baseline=snapshot.session.worktree_baseline,
+                    write_advisory_emitted=snapshot.session.write_advisory_emitted,
                 )
             ),
         )

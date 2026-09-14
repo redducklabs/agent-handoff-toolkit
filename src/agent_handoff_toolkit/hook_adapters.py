@@ -61,7 +61,7 @@ from .lineage import (
     validate_scope_definition,
 )
 from .records import parse_markdown, render_resume_prompt, render_terminal_response
-from .repository_state import is_dirty, worktree_digest
+from .repository_state import worktree_digest, worktree_state
 
 # One bound, on the whole hook input. A tool call carries the work's payload -
 # a written file, a pasted log - and that size belongs to the work, not to the
@@ -592,10 +592,18 @@ def _form_register_root(command, runner, session, capability, reasons=None):
 
 
 def _write_advisory(event, snapshot, root, storage, raw_id):
-    """Allow the write and say, once, that nothing is tracking this session.
+    """Say, once, that nothing is tracking this session, and decide nothing.
 
     Never blocks and never errors: an advisory that can fail the tool call is
     worse than no advisory. Any failure here leaves the call untouched.
+
+    The payload carries a `systemMessage` and nothing else. An earlier form
+    paired it with `permissionDecision: "allow"`, which does not merely
+    decline to block - on a real host it also satisfies the permission gate,
+    so the first repository write of every untracked session proceeded without
+    the approval the user would otherwise have been asked for. An advisory
+    must not grant an approval nobody gave it, so it now returns no decision
+    at all and the host's own permission flow runs untouched.
     """
 
     try:
@@ -633,20 +641,17 @@ def _write_advisory(event, snapshot, root, storage, raw_id):
             )
             + "\nNeither is required; this notice appears once."
         )
-        if len(message.encode()) > MAX_REASON_BYTES:
-            return HookExecution()
+        # MAX_REASON_BYTES bounds hook *feedback* - a denial reason fed back
+        # to the model, where an oversize string costs a correction cycle. A
+        # one-shot notice on an undecided path is neither fed back nor looped,
+        # and its length is a deterministic function of the runner path, so
+        # applying that bound here only produced a silent cliff: past a repo
+        # root of roughly 145 characters no advisory ever fired, and because
+        # the flag was committed after the check, the capability and message
+        # were rebuilt on every subsequent write call. The notice is exempt.
         _commit(storage, raw_id, snapshot, LifecycleMutation(mutated_session))
         return HookExecution(
-            stdout=json.dumps(
-                {
-                    "hookSpecificOutput": {
-                        "hookEventName": "PreToolUse",
-                        "permissionDecision": "allow",
-                    },
-                    "systemMessage": message,
-                },
-                separators=(",", ":"),
-            )
+            stdout=json.dumps({"systemMessage": message}, separators=(",", ":"))
         )
     except Exception:
         # Advisory only. A failure here must not disturb the tool call.
@@ -860,6 +865,9 @@ def _user_prompt(event, snapshot, storage, raw_id, root):
         return HookExecution()
     if session.mode is EnforcementMode.COMPLETE:
         reset = evaluate_user_prompt(event, snapshot)
+        # evaluate_user_prompt carries the advisory baseline and the
+        # once-per-session flag across the reentry; only the fresh bootstrap
+        # challenge is added here.
         mutation = replace(
             reset.mutation,
             session=replace(
@@ -1040,17 +1048,22 @@ def _no_handoff_note(snapshot, root):
         baseline = snapshot.session.worktree_baseline
         if baseline is None:
             return None
-        current = worktree_digest(root)
-        if current is None or current == baseline or not is_dirty(root):
+        # One `git status` per Stop: the digest and the dirtiness are two
+        # readings of the same porcelain output, not two subprocesses.
+        state = worktree_state(root)
+        if state is None:
+            return None
+        current, dirty = state
+        if current == baseline or not dirty:
             return None
         return HookExecution(
             stdout=json.dumps(
                 {
                     "systemMessage": (
-                        "AHK-NO-HANDOFF: This session changed the repository and "
-                        "is ending with the work unfinished, with no handoff "
-                        "record. If someone continues this, register a root and "
-                        "render a continuation."
+                        "AHK-NO-HANDOFF: The repository changed during this "
+                        "session and is ending with work uncommitted, with no "
+                        "handoff record. If someone continues this, register a "
+                        "root and render a continuation."
                     )
                 },
                 separators=(",", ":"),

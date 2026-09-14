@@ -1,11 +1,13 @@
 """Ungated sessions run their work without interference."""
 
+from dataclasses import replace
 import json
 import os
 from pathlib import Path
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -14,7 +16,12 @@ from agent_handoff_toolkit.hook_adapters import (  # noqa: E402
     HookExecution,
     run_lifecycle_hook,
 )
-from agent_handoff_toolkit.lifecycle import EnforcementMode  # noqa: E402
+from agent_handoff_toolkit.lifecycle import (  # noqa: E402
+    ChainState,
+    EnforcementMode,
+    LifecycleMutation,
+    RecordReference,
+)
 from agent_handoff_toolkit.lifecycle_operations import LifecycleService  # noqa: E402
 from agent_handoff_toolkit.lifecycle_storage import LocalLifecycleStorage  # noqa: E402
 
@@ -135,18 +142,68 @@ class UngatedSessionTests(unittest.TestCase):
             tool_input={"file_path": str(self.root / name), "content": "x = 1\n"},
         )
 
-    def test_the_first_repository_write_advises_once_and_allows(self):
+    def test_the_first_repository_write_advises_once_and_decides_nothing(self):
+        """The notice must not carry a permission decision of any kind.
+
+        `permissionDecision: "allow"` does not merely decline to block: on a
+        real host it also satisfies the permission gate, so the write would
+        proceed without the approval the user would otherwise be asked for.
+        An advisory may not grant an approval nobody gave it, so the payload
+        is a bare `systemMessage` and the host's permission flow runs
+        untouched.
+        """
+
         self.invoke("UserPromptSubmit")
         first = self.write()
         self.assertEqual(first.exit_code, 0)
         payload_out = json.loads(first.stdout)
-        self.assertEqual(
-            payload_out["hookSpecificOutput"]["permissionDecision"], "allow"
-        )
+        self.assertEqual(set(payload_out), {"systemMessage"})
+        self.assertNotIn("hookSpecificOutput", payload_out)
         message = payload_out["systemMessage"]
         self.assertIn("lifecycle one-off", message)
         self.assertIn("lifecycle register-root", message)
         # It fires once, then never again.
+        self.assertEqual(self.write("b.py"), HookExecution())
+
+    def test_the_advisory_survives_a_runner_path_longer_than_the_feedback_bound(
+        self,
+    ):
+        """A long repository root must not silence the notice.
+
+        The message runs roughly 885 bytes plus twice the runner path, so
+        MAX_REASON_BYTES - the bound on blocking *feedback* - used to drop it
+        entirely past a repository root of about 145 characters, and rebuild
+        it on every write call thereafter because the once-per-session flag
+        was committed only after the length check.
+        """
+
+        from agent_handoff_toolkit import hook_adapters
+
+        deep = self.root
+        for _ in range(6):
+            deep = deep / ("d" * 30)
+        deep.mkdir(parents=True)
+        long_runner = deep / "runner.py"
+        long_runner.write_text("# owned runner\n")
+        self.assertGreater(len(long_runner.as_posix()), 184)
+
+        original = hook_adapters._control_command
+
+        def with_long_runner(runner, *args, **kwargs):
+            return original(long_runner, *args, **kwargs)
+
+        self.invoke("UserPromptSubmit")
+        with unittest.mock.patch.object(
+            hook_adapters, "_control_command", with_long_runner
+        ):
+            first = self.write()
+        message = json.loads(first.stdout)["systemMessage"]
+        self.assertGreater(len(message.encode()), hook_adapters.MAX_REASON_BYTES)
+        self.assertIn("lifecycle one-off", message)
+        # The flag was still committed, so it never rebuilds.
+        self.assertTrue(
+            self.storage.load_snapshot("session-1").session.write_advisory_emitted
+        )
         self.assertEqual(self.write("b.py"), HookExecution())
 
     def test_bash_never_triggers_the_advisory(self):
@@ -170,9 +227,111 @@ class UngatedSessionTests(unittest.TestCase):
         output = self.invoke("Stop")
         self.assertEqual(output.exit_code, 0)
         body = json.loads(output.stdout)
-        self.assertIn("AHK-NO-HANDOFF", body["systemMessage"])
+        message = body["systemMessage"]
+        self.assertIn("AHK-NO-HANDOFF", message)
+        # The mechanism sees a changed tree, not who changed it.
+        self.assertIn("The repository changed during this session", message)
+        self.assertNotIn("This session changed the repository", message)
         self.assertNotIn("decision", body)
         self.assertNotIn("continue", body)
+
+    def test_reentry_after_a_completed_chain_keeps_the_stop_backstop(self):
+        """A COMPLETE -> OPEN reentry must not blind the backstop for a turn.
+
+        The reentry mutation builds a fresh SessionState. It used to set only
+        the four chain-identity fields, so the worktree baseline and the
+        once-per-session advisory flag - which describe the host session, not
+        the chain - silently fell back to their defaults.
+        """
+
+        import shutil
+        import subprocess
+
+        shutil.rmtree(self.root / ".git")
+        subprocess.run(["git", "init", "--quiet"], cwd=self.root, check=True)
+        self.invoke("UserPromptSubmit")
+        self.write()
+        opened = self.storage.load_snapshot("session-1").session
+        self.assertIsNotNone(opened.worktree_baseline)
+        self.assertTrue(opened.write_advisory_emitted)
+
+        # Land the session where a published completion audit leaves it: a
+        # tracked chain registered, then completed. The reentry path the fix
+        # covers is only reachable from a COMPLETE session over a complete
+        # chain, and a chain has to start active at revision one.
+        record = RecordReference(
+            "record-1", (self.root / "record-1.md").as_posix(), "a" * 64
+        )
+        active = ChainState("auth-a", "root-a", ("a" * 64,), 1, "active", record)
+        tracked = self.storage.compare_and_swap(
+            "session-1",
+            0,
+            opened.targeted_revision,
+            LifecycleMutation(
+                replace(
+                    opened,
+                    targeted_revision=opened.targeted_revision + 1,
+                    mode=EnforcementMode.TRACKED,
+                    authorization_id="auth-a",
+                    chain_revision=1,
+                ),
+                active,
+            ),
+        ).session
+        self.storage.compare_and_swap(
+            "session-1",
+            1,
+            tracked.targeted_revision,
+            LifecycleMutation(
+                replace(
+                    tracked,
+                    targeted_revision=tracked.targeted_revision + 1,
+                    mode=EnforcementMode.COMPLETE,
+                    chain_revision=2,
+                ),
+                replace(active, status="complete", targeted_revision=2),
+            ),
+        )
+
+        # Re-enter with a fresh external user turn.
+        self.invoke("UserPromptSubmit", turn_id="turn-2")
+        reentered = self.storage.load_snapshot("session-1").session
+        self.assertIs(reentered.mode, EnforcementMode.OPEN)
+        self.assertEqual(reentered.worktree_baseline, opened.worktree_baseline)
+        self.assertTrue(reentered.write_advisory_emitted)
+
+        # The backstop still sees the change the reentry turn makes.
+        (self.root / "changed.py").write_text("x = 1\n")
+        output = self.invoke("Stop")
+        self.assertEqual(output.exit_code, 0)
+        self.assertIn("AHK-NO-HANDOFF", json.loads(output.stdout)["systemMessage"])
+
+    def test_stop_reads_the_worktree_with_exactly_one_git_status(self):
+        """The note costs one subprocess per Stop, not one per fact."""
+
+        import shutil
+        import subprocess
+        from unittest.mock import patch
+
+        from agent_handoff_toolkit import repository_state
+
+        shutil.rmtree(self.root / ".git")
+        subprocess.run(["git", "init", "--quiet"], cwd=self.root, check=True)
+        self.invoke("UserPromptSubmit")
+        (self.root / "changed.py").write_text("x = 1\n")
+
+        real = repository_state.subprocess.run
+        calls = []
+
+        def counted(*args, **kwargs):
+            calls.append(args[0])
+            return real(*args, **kwargs)
+
+        with patch.object(repository_state.subprocess, "run", counted):
+            output = self.invoke("Stop")
+        self.assertIn("AHK-NO-HANDOFF", json.loads(output.stdout)["systemMessage"])
+        self.assertEqual(len(calls), 1, calls)
+        self.assertEqual(calls[0], ["git", "status", "--porcelain"])
 
     def test_stop_is_silent_when_the_tree_was_already_dirty(self):
         import shutil
