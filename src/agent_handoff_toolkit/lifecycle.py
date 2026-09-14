@@ -153,6 +153,39 @@ def _freeze_json(value: Any) -> Any:
     return value
 
 
+def _turn_text(value: object, *, label: str) -> str | None:
+    """Read host-reported turn content without rejecting what it contains.
+
+    A turn's text is the work's, not the lifecycle's: a pasted log carries tabs
+    and escape sequences, a written file carries whatever its language uses.
+    None of that is a lifecycle fault, and no host content reaches hook output,
+    so there is nothing here to police. Only line endings are normalized, so
+    that a later exact comparison is made on one representation. Text that
+    carries no content at all reads as absent.
+    """
+
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{label} must be text")
+    normalized = value.replace("\r\n", "\n").replace("\r", "\n")
+    return normalized if normalized.strip() else None
+
+
+def _frozen_opaque(value: object, *, label: str) -> Mapping[str, object]:
+    """Freeze host-owned tool input without inspecting its content.
+
+    The hook reads exactly one field of this mapping, the shell command, and
+    validates it where it is read. Everything else is the host's payload: its
+    size, shape and characters belong to the tool call being made. The hook
+    input as a whole is bounded once, on the way in.
+    """
+
+    if not isinstance(value, Mapping) or not all(isinstance(key, str) for key in value):
+        raise ValueError(f"{label} must be a mapping with text keys")
+    return _freeze_json(_thaw_json(value))
+
+
 def _frozen_mapping(value: object, *, limit: int, label: str) -> Mapping[str, object]:
     if not isinstance(value, Mapping) or not all(isinstance(key, str) for key in value):
         raise ValueError(f"{label} must be a mapping with text keys")
@@ -230,27 +263,13 @@ class NormalizedEvent:
         object.__setattr__(
             self,
             "latest_assistant_message",
-            _optional_text(
-                self.latest_assistant_message,
-                limit=16384,
-                label="latest_assistant_message",
-            ),
+            _turn_text(self.latest_assistant_message, label="latest_assistant_message"),
         )
         object.__setattr__(
             self,
             "current_user_message",
-            _optional_text(
-                self.current_user_message,
-                limit=16384,
-                label="current_user_message",
-            ),
+            _turn_text(self.current_user_message, label="current_user_message"),
         )
-        if self.current_user_reference is not None:
-            object.__setattr__(
-                self,
-                "current_user_reference",
-                _identifier(self.current_user_reference, "current_user_reference"),
-            )
         if self.tool_name is not None:
             object.__setattr__(
                 self, "tool_name", _text(self.tool_name, limit=128, label="tool_name")
@@ -259,7 +278,7 @@ class NormalizedEvent:
             object.__setattr__(
                 self,
                 "tool_input",
-                _frozen_mapping(self.tool_input, limit=4096, label="tool_input"),
+                _frozen_opaque(self.tool_input, label="tool_input"),
             )
         if (
             self.tool_capability is not None

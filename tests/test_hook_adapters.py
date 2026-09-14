@@ -107,7 +107,10 @@ class NormalizationTests(unittest.TestCase):
                     # contract is asserted in the content tests below.
                     "Stop": ["stop_hook_active"],
                     "PreToolUse": ["tool_name", "tool_input"],
-                    "UserPromptSubmit": ["prompt"],
+                    # The prompt is host-reported turn content like the final
+                    # assistant message: absent, empty or huge is the user's
+                    # message, not a host defect, and rejecting it rejects them.
+                    "UserPromptSubmit": [],
                 }[event_name]
                 if host == "codex":
                     required.append("turn_id")
@@ -136,15 +139,16 @@ class NormalizationTests(unittest.TestCase):
                     with self.subTest(missing=field), self.assertRaises(ValueError):
                         normalize_event(host, event_name, data, ROOT)
 
-    def test_rejects_spoofed_host_event_cwd_and_nested_unbounded_input(self):
+    def test_rejects_spoofed_host_event_cwd_and_malformed_fields(self):
+        """What the lifecycle parses stays strict: identity, location, types."""
+
         for changes in (
             {"hook_event_name": "Stop"},
             {"cwd": str(ROOT.parent)},
-            {"tool_input": {"nested": ["x"] * 257}},
-            {"tool_input": {"command": "x" * 4097}},
             {"external_user_turn": "true"},
-            {"extra": "\t"},
-            {"extra": "\u2028"},
+            {"tool_input": ["not", "a", "mapping"]},
+            {"tool_name": 42},
+            {"session_id": None},
         ):
             with self.subTest(changes=list(changes)), self.assertRaises(ValueError):
                 normalize_event(
@@ -152,6 +156,28 @@ class NormalizationTests(unittest.TestCase):
                 )
         with self.assertRaises(ValueError):
             normalize_event("CODEX", "Stop", payload(ROOT), ROOT)
+
+    def test_accepts_the_payload_the_work_actually_carries(self):
+        """Size, shape and characters of tool input belong to the tool call.
+
+        Each of these was rejected, which blocked the write rather than proving
+        anything: no host content reaches hook output, and in a tracked session
+        the hook never reads tool input beyond the shell command.
+        """
+
+        for label, changes in (
+            ("a long array", {"tool_input": {"edits": ["x"] * 300}}),
+            ("a long command", {"tool_input": {"command": "x" * 4097}}),
+            ("a tab in an unrelated field", {"extra": "\t"}),
+            ("a line separator", {"extra": "\u2028"}),
+            ("tab-indented content", {"tool_input": {"content": "a:\n\tb\n"}}),
+            ("a 200 KB file", {"tool_input": {"content": "x" * 200_000}}),
+        ):
+            with self.subTest(label=label):
+                event = normalize_event(
+                    "codex", "PreToolUse", payload(ROOT, "PreToolUse", **changes), ROOT
+                )
+                self.assertIsNotNone(event.tool_input)
 
     def test_source_line_endings_normalize_without_trimming_message(self):
         event = normalize_event(
@@ -162,14 +188,25 @@ class NormalizationTests(unittest.TestCase):
         )
         self.assertEqual(event.latest_assistant_message, "First\nSecond")
         # Untrimmed prose is what a turn may actually end with, so it is read
-        # rather than raised on. It is still never silently trimmed into a
-        # compliant-looking response: it reads as no usable final text at all.
-        for value in (" trailing ", "\nleading", "", "x" * 20000):
+        # rather than raised on, and kept verbatim so the later comparison
+        # against the rendered response is made on exactly what was emitted.
+        for value in (" trailing ", "\nleading", "x" * 20000, "a\tb"):
             with self.subTest(value=value[:12]):
                 event = normalize_event(
                     "codex", "Stop", payload(ROOT, last_assistant_message=value), ROOT
                 )
-                self.assertIsNone(event.latest_assistant_message)
+                self.assertEqual(event.latest_assistant_message, value)
+        # Text carrying no content at all reads as absent.
+        for value in ("", "   \n"):
+            with self.subTest(value=repr(value)):
+                self.assertIsNone(
+                    normalize_event(
+                        "codex",
+                        "Stop",
+                        payload(ROOT, last_assistant_message=value),
+                        ROOT,
+                    ).latest_assistant_message
+                )
         self.assertIsNone(
             normalize_event(
                 "codex", "Stop", payload(ROOT, last_assistant_message=None), ROOT
@@ -180,9 +217,8 @@ class NormalizationTests(unittest.TestCase):
         self.assertIsNone(
             normalize_event("codex", "Stop", absent, ROOT).latest_assistant_message
         )
-        # Structurally invalid values remain fatal: a control or line-separator
-        # character and a wrong type are host defects, not turn content.
-        for value in ("unsafe\u2028line", "unsafe\u202etext", [], 42):
+        # A wrong type is a host defect rather than turn content, and stays fatal.
+        for value in ([], 42, {"a": 1}):
             with self.subTest(value=str(value)[:12]), self.assertRaises(ValueError):
                 normalize_event(
                     "codex", "Stop", payload(ROOT, last_assistant_message=value), ROOT
@@ -918,9 +954,9 @@ class EnforcementTests(unittest.TestCase):
 
     def test_runtime_failures_from_malformed_stop_count_toward_visible_circuit(self):
         self.register()
-        # A null final message is ordinary host input; an unsafe control
-        # character in an unrelated field is a genuine normalization failure.
-        malformed = {"unrelated": "\x00"}
+        # Ordinary host content is never a fault, so drive this with a genuine
+        # normalization failure: the loop-evidence flag must be boolean.
+        malformed = {"stop_hook_active": "not-a-boolean"}
         for attempt in (1, 2):
             self.assert_block(self.invoke(**malformed), "AHK-HOOK-RUNTIME")
             self.assertEqual(
@@ -929,13 +965,20 @@ class EnforcementTests(unittest.TestCase):
             )
         self.assertFalse(json.loads(self.invoke(**malformed).stdout)["continue"])
 
-    def test_field_validation_rejects_oversized_tool_input_before_attempting_state(
-        self,
-    ):
-        self.assert_block(
-            self.invoke("PreToolUse", tool_input={"command": "x" * 8192}),
-            "AHK-HOOK-RUNTIME",
+    def test_large_tool_input_never_blocks_and_never_reaches_state(self):
+        """The payload is the work's; it must neither fail nor be recorded."""
+
+        self.register()
+        sentinel = "sensitive-synthetic-sentinel"
+        self.assertEqual(
+            self.invoke(
+                "PreToolUse",
+                tool_name="Write",
+                tool_input={"file_path": "a.py", "content": sentinel + "x" * 200_000},
+            ),
+            HookExecution(),
         )
+        self.assertNotIn(sentinel, self.storage.registry_path.read_text())
 
     def test_candidate_source_whitespace_binds_digest_and_predecessor(self):
         self.register()
@@ -1299,9 +1342,9 @@ class EnforcementTests(unittest.TestCase):
         for index, changes in enumerate(
             (
                 {"stop_hook_active": "not-a-boolean"},
-                {"unrelated": "\x00"},
-                {"tool_input": [1] * 300},
-                {"last_assistant_message": "\u2028"},
+                {"transcript_path": 42},
+                {"last_assistant_message": []},
+                {"cwd": str(ROOT.parent)},
             ),
             1,
         ):
