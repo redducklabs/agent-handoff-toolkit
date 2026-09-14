@@ -240,9 +240,40 @@ class LifecycleStorageTests(unittest.TestCase):
         self.assertIsNone(session.worktree_baseline)
 
     def test_new_modes_round_trip_through_storage(self):
-        for mode in (EnforcementMode.OPEN, EnforcementMode.ONE_OFF):
+        """Persist each new mode and both new fields, then reload from disk.
+
+        A second storage instance over the same state root is what makes this
+        a round trip: the reloaded session is parsed back out of the written
+        envelope bytes, not handed back from anything the writer kept.
+        """
+
+        for index, mode in enumerate((EnforcementMode.OPEN, EnforcementMode.ONE_OFF)):
             with self.subTest(mode=mode):
-                self.assertIs(EnforcementMode(mode.value), mode)
+                session_id = f"round-trip-{index}"
+                before = self.storage.load_snapshot(session_id).session
+                self.storage.compare_and_swap(
+                    session_id,
+                    0,
+                    before.targeted_revision,
+                    LifecycleMutation(
+                        replace(
+                            before,
+                            targeted_revision=before.targeted_revision + 1,
+                            mode=mode,
+                            write_advisory_emitted=True,
+                            worktree_baseline="b" * 64,
+                        )
+                    ),
+                )
+                reader = LocalLifecycleStorage(self.repo, state_root=self.state)
+                reloaded = reader.load_snapshot(session_id).session
+                self.assertIs(reloaded.mode, mode)
+                self.assertTrue(reloaded.write_advisory_emitted)
+                self.assertEqual(reloaded.worktree_baseline, "b" * 64)
+                self.assertIn(
+                    f'"mode":"{mode.value}"',
+                    self.storage.registry_path.read_text(),
+                )
 
     def test_rejects_corrupt_envelopes(self):
         invalid = [
