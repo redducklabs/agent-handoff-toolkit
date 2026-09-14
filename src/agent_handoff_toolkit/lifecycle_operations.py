@@ -59,6 +59,7 @@ _FLAGS = {
         "expected-session-revision",
     ),
     "adopt-v1": ("session-key", "challenge", "record", "expected-session-revision"),
+    "one-off": ("session-key", "challenge", "expected-session-revision"),
 }
 
 
@@ -398,6 +399,22 @@ class LifecycleService:
                 else []
             ),
         }
+
+    def one_off(self, *, challenge, expected_session_revision):
+        """Record that the session was asked to declare and chose not to track.
+
+        This grants no authority. It suppresses the write-time advisory only;
+        a session that ends with unfinished work is still reported at Stop.
+        """
+
+        snapshot = self._bootstrap(challenge, expected_session_revision)
+        session = replace(
+            snapshot.session,
+            mode=EnforcementMode.ONE_OFF,
+            targeted_revision=snapshot.session.targeted_revision + 1,
+        )
+        self._commit(snapshot, session)
+        return {"mode": "one-off"}
 
     def register_root(
         self,

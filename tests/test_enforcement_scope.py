@@ -14,6 +14,8 @@ from agent_handoff_toolkit.hook_adapters import (  # noqa: E402
     HookExecution,
     run_lifecycle_hook,
 )
+from agent_handoff_toolkit.lifecycle import EnforcementMode  # noqa: E402
+from agent_handoff_toolkit.lifecycle_operations import LifecycleService  # noqa: E402
 from agent_handoff_toolkit.lifecycle_storage import LocalLifecycleStorage  # noqa: E402
 
 from test_hook_adapters import payload  # noqa: E402
@@ -112,6 +114,20 @@ class UngatedSessionTests(unittest.TestCase):
         )
         blocked = self.invoke("Stop", last_assistant_message="I am done.")
         self.assertIn("AHK-STOP-WORK", json.loads(blocked.stdout)["reason"])
+
+    def test_one_off_records_the_declaration_and_grants_nothing(self):
+        self.invoke("UserPromptSubmit")
+        service = LifecycleService(self.storage, "session-1")
+        snapshot = self.storage.load_snapshot("session-1")
+        result = service.one_off(
+            challenge=snapshot.session.bootstrap_challenge,
+            expected_session_revision=snapshot.session.targeted_revision,
+        )
+        self.assertEqual(result, {"mode": "one-off"})
+        session = self.storage.load_snapshot("session-1").session
+        self.assertIs(session.mode, EnforcementMode.ONE_OFF)
+        self.assertIsNone(session.authorization_id)
+        self.assertIsNone(session.chain_revision)
 
 
 if __name__ == "__main__":

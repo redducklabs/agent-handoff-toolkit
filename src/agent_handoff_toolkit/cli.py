@@ -134,7 +134,10 @@ def _lifecycle_parser():
         "adopt-v1", help="adopt the selected v1 record after trusted adjacent approval"
     )
     adopt.add_argument("--record", required=True)
-    for command in (register, resume, join, adopt):
+    one_off = commands.add_parser(
+        "one-off", help="declare that this session's work needs no handoff"
+    )
+    for command in (register, resume, join, adopt, one_off):
         command.add_argument("--session-key", required=True)
         command.add_argument("--challenge", required=True)
         command.add_argument("--expected-session-revision", type=int, required=True)
@@ -204,11 +207,13 @@ def _lifecycle_main(argv):
         service = LifecycleService.for_control(
             storage, session_key, capability, args["expected_session_revision"]
         )
-        if operation not in {"register-root", "resume", "join", "adopt-v1"}:
+        if operation not in {"register-root", "resume", "join", "adopt-v1", "one-off"}:
             args.pop("challenge")
         if operation == "inspect":
             service.consume_control()
             result = service.inspect()
+        elif operation == "one-off":
+            result = service.one_off(**args)
         elif operation == "request-decision":
             reconfigure = getattr(sys.stdin, "reconfigure", None)
             if callable(reconfigure):

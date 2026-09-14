@@ -190,7 +190,7 @@
     },
     {
       "source": "src/agent_handoff_toolkit/cli.py",
-      "sha256": "ed7a3f46d1fec87f171018e3891dcaa3787e62f413385665ca98b66521c4c8cb",
+      "sha256": "aeff2412849983ce7e69046a26887f5cc675ca1c82843b0134dbf9640e9cec1e",
       "install": {
         "mode": "copy",
         "transform": "none",
@@ -267,7 +267,7 @@
     },
     {
       "source": "src/agent_handoff_toolkit/lifecycle_operations.py",
-      "sha256": "5ef39a82f0615a98f0a6d76cdbc42a46d4c192a7d82ce004048baddd5de3bac8",
+      "sha256": "64edbc532ea0f662ae6d56ee9f9803ea2316a5cb8e30c5f81056db8956ec41bf",
       "install": {
         "mode": "copy",
         "transform": "none",
