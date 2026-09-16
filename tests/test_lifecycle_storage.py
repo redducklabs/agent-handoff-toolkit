@@ -642,8 +642,11 @@ class LifecycleStorageTests(unittest.TestCase):
 
         with tempfile.TemporaryFile(dir=self.root) as lock:
             calls = []
+            # The exclusive acquisition polls the non-blocking mode: `LK_LOCK`
+            # gives up after roughly ten seconds where `flock` waits.
             windows = SimpleNamespace(
                 LK_LOCK=101,
+                LK_NBLCK=103,
                 LK_UNLCK=102,
                 locking=lambda fd, kind, count: calls.append((fd, kind, count)),
             )
@@ -660,7 +663,7 @@ class LifecycleStorageTests(unittest.TestCase):
             self.assertEqual(
                 calls,
                 [
-                    (lock.fileno(), 101, 1),
+                    (lock.fileno(), 103, 1),
                     (lock.fileno(), 102, 1),
                     (lock.fileno(), 201),
                     (lock.fileno(), 202),
@@ -915,6 +918,134 @@ class LifecycleStorageTests(unittest.TestCase):
         self.assertTrue(resolved.is_relative_to(cache))
         self.assertEqual(len(resolved.name), 64)
         self.assertNotIn(self.repo.name, str(resolved))
+
+
+class LockContentionTests(unittest.TestCase):
+    """`msvcrt.locking` gives up where `fcntl.flock` waits.
+
+    `fcntl.flock(LOCK_EX)` waits indefinitely. `msvcrt.locking(LK_LOCK, 1)`
+    retries for roughly ten seconds and then raises `OSError`. That `OSError`
+    reached the hook boundary and was rendered as an `AHK-HOOK-RUNTIME` block -
+    a transient malfunction presented as a policy decision. Every worktree of a
+    repository shares one state root, so two concurrent sessions contend on the
+    same `registry.lock` and this is reachable in ordinary use.
+    """
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+
+    def fake_msvcrt(self, failures):
+        """Model the real primitive: give up with EDEADLOCK while contended."""
+
+        calls = []
+
+        def locking(descriptor, mode, length):
+            calls.append(mode)
+            if mode != module.LK_UNLCK and len(calls) <= failures:
+                raise OSError(errno.EDEADLOCK, "Resource deadlock avoided")
+
+        module = SimpleNamespace(LK_LOCK=1, LK_NBLCK=2, LK_UNLCK=0, locking=locking)
+        return module, calls
+
+    def test_windows_lock_waits_for_a_contended_region_instead_of_raising(self):
+        from agent_handoff_toolkit import lifecycle_storage
+
+        module, calls = self.fake_msvcrt(failures=3)
+        with patch.dict(sys.modules, {"msvcrt": module}):
+            descriptor = os.open(
+                self.root / "registry.lock", os.O_RDWR | os.O_CREAT, 0o600
+            )
+            try:
+                lifecycle_storage._lock_descriptor(descriptor, windows=True)
+                lifecycle_storage._unlock_descriptor(descriptor, windows=True)
+            finally:
+                os.close(descriptor)
+        self.assertGreater(len(calls), 3, "the contended region must be retried")
+
+    def test_windows_lock_surfaces_a_non_contention_error(self):
+        """Waiting out contention must not swallow a genuine lock failure."""
+
+        from agent_handoff_toolkit import lifecycle_storage
+
+        def locking(descriptor, mode, length):
+            raise OSError(errno.EBADF, "Bad file descriptor")
+
+        module = SimpleNamespace(LK_LOCK=1, LK_NBLCK=2, LK_UNLCK=0, locking=locking)
+        with patch.dict(sys.modules, {"msvcrt": module}):
+            descriptor = os.open(
+                self.root / "registry.lock", os.O_RDWR | os.O_CREAT, 0o600
+            )
+            try:
+                with self.assertRaises(OSError) as raised:
+                    lifecycle_storage._lock_descriptor(descriptor, windows=True)
+            finally:
+                os.close(descriptor)
+        self.assertEqual(raised.exception.errno, errno.EBADF)
+
+    def test_probing_the_lock_reports_contention_instead_of_waiting_for_it(self):
+        """A diagnosis must never inherit the acquisition's unbounded wait.
+
+        `lifecycle doctor` is the recovery command for a broken runtime. If its
+        lock check queued behind the holder it would hang exactly when a
+        consumer needs an answer, so it probes and reports instead.
+        """
+
+        from agent_handoff_toolkit import lifecycle_storage
+
+        lock = self.root / "registry.lock"
+        self.assertEqual(lifecycle_storage.probe_lock(lock), "ok")
+        held = lifecycle_storage._open_private(lock, os.O_RDWR | os.O_CREAT)
+        try:
+            lifecycle_storage._lock_descriptor(held, windows=os.name == "nt")
+            try:
+                self.assertEqual(lifecycle_storage.probe_lock(lock), "contended")
+            finally:
+                lifecycle_storage._unlock_descriptor(held, windows=os.name == "nt")
+        finally:
+            os.close(held)
+        self.assertEqual(lifecycle_storage.probe_lock(lock), "ok")
+
+    @unittest.skipUnless(os.name == "nt", "the give-up window is Windows-only")
+    def test_real_contention_beyond_the_give_up_window_still_completes(self):
+        """The reproduction: hold the lock past the window a hook must survive.
+
+        Held for longer than `msvcrt.locking`'s roughly ten-second retry, a
+        second session used to receive `OSError` and block. It must now wait.
+        """
+
+        holder = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import os,sys,time;"
+                "sys.path.insert(0,sys.argv[1]);"
+                "from agent_handoff_toolkit.lifecycle_storage import "
+                "_open_private,_lock_descriptor,_unlock_descriptor;"
+                "import pathlib;"
+                "d=_open_private(pathlib.Path(sys.argv[2]),os.O_RDWR|os.O_CREAT);"
+                "_lock_descriptor(d,windows=True);"
+                "print('held',flush=True);"
+                "time.sleep(13);"
+                "_unlock_descriptor(d,windows=True);os.close(d)",
+                str(Path(__file__).resolve().parents[1] / "src"),
+                str(self.root / "registry.lock"),
+            ],
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        self.addCleanup(holder.stdout.close)
+        self.addCleanup(holder.wait)
+        self.assertEqual(holder.stdout.readline().strip(), "held")
+        descriptor = os.open(self.root / "registry.lock", os.O_RDWR, 0o600)
+        try:
+            from agent_handoff_toolkit import lifecycle_storage
+
+            lifecycle_storage._lock_descriptor(descriptor, windows=True)
+            lifecycle_storage._unlock_descriptor(descriptor, windows=True)
+        finally:
+            os.close(descriptor)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,15 @@ This repository provides a shared contract, deterministic validation and renderi
 
 ## Status
 
+Version 0.5.0 stops the toolkit presenting its own malfunctions as policy
+decisions. Managed hook commands now locate the runner by walking up from the
+working directory, so a session working in a subdirectory is no longer denied
+every tool it would need to recover; the Windows lock waits for a contended
+region instead of giving up; and a runtime fault blocks only a session that
+declared tracked work, naming its failing stage and exception either way. The
+read-only `lifecycle doctor` command is the supported recovery entry point when
+the hook flow itself is broken.
+
 Version 0.4.0 narrows enforcement to declared tracked work. A session runs
 ungated until it registers a root; the first repository write after that says
 so once; and a session that ends with unfinished work is reported rather than
@@ -93,16 +102,16 @@ disposable consumer can be installed from a verified local release source.
 
 ## Consumer installation
 
-Check out the public v0.4.0 release, inspect the proposed changes, then apply
+Check out the public v0.5.0 release, inspect the proposed changes, then apply
 them from that checkout:
 
 ```powershell
-git clone --branch v0.4.0 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
+git clone --branch v0.5.0 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
 Set-Location agent-handoff-toolkit
-python distribution/runner.py install --target <consumer-repository> --release v0.4.0 --dry-run
-python distribution/runner.py install --target <consumer-repository> --release v0.4.0 --apply
-python distribution/runner.py sync --target <consumer-repository> --release v0.4.0 --check
-python distribution/runner.py sync --target <consumer-repository> --release v0.4.0 --apply
+python distribution/runner.py install --target <consumer-repository> --release v0.5.0 --dry-run
+python distribution/runner.py install --target <consumer-repository> --release v0.5.0 --apply
+python distribution/runner.py sync --target <consumer-repository> --release v0.5.0 --check
+python distribution/runner.py sync --target <consumer-repository> --release v0.5.0 --apply
 ```
 
 Run install and sync only in an isolated, clean Git worktree with no concurrent

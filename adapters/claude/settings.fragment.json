@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python .agent-handoff-toolkit/runner.py hook --platform claude --event session-start"
+            "command": "python -c \"import pathlib,runpy;w=pathlib.Path.cwd();r=next((p for p in ((d/'.agent-handoff-toolkit'/'runner.py') for d in (w,*w.parents)) if p.is_file()),None);r and runpy.run_path(str(r),run_name='__main__')\" hook --platform claude --event session-start"
           }
         ]
       }
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python .agent-handoff-toolkit/runner.py hook --platform claude --event user-prompt-submit"
+            "command": "python -c \"import pathlib,runpy;w=pathlib.Path.cwd();r=next((p for p in ((d/'.agent-handoff-toolkit'/'runner.py') for d in (w,*w.parents)) if p.is_file()),None);r and runpy.run_path(str(r),run_name='__main__')\" hook --platform claude --event user-prompt-submit"
           }
         ]
       }
@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python .agent-handoff-toolkit/runner.py hook --platform claude --event pre-tool-use"
+            "command": "python -c \"import pathlib,runpy;w=pathlib.Path.cwd();r=next((p for p in ((d/'.agent-handoff-toolkit'/'runner.py') for d in (w,*w.parents)) if p.is_file()),None);r and runpy.run_path(str(r),run_name='__main__')\" hook --platform claude --event pre-tool-use"
           }
         ]
       }
@@ -38,7 +38,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python .agent-handoff-toolkit/runner.py hook --platform claude --event post-tool-use"
+            "command": "python -c \"import pathlib,runpy;w=pathlib.Path.cwd();r=next((p for p in ((d/'.agent-handoff-toolkit'/'runner.py') for d in (w,*w.parents)) if p.is_file()),None);r and runpy.run_path(str(r),run_name='__main__')\" hook --platform claude --event post-tool-use"
           }
         ]
       }
@@ -48,7 +48,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python .agent-handoff-toolkit/runner.py hook --platform claude --event stop"
+            "command": "python -c \"import pathlib,runpy;w=pathlib.Path.cwd();r=next((p for p in ((d/'.agent-handoff-toolkit'/'runner.py') for d in (w,*w.parents)) if p.is_file()),None);r and runpy.run_path(str(r),run_name='__main__')\" hook --platform claude --event stop"
           }
         ]
       }

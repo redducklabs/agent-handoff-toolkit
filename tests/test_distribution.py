@@ -16,6 +16,38 @@ from urllib.parse import quote
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = ROOT / "distribution" / "manifest.json"
 
+# The hook command locates its runner by walking up from the hook process's
+# working directory. A cwd-relative path made every session in a subdirectory
+# fail to start Python at all, and a missing script file exits 2, which every
+# host reads as a deliberate block. The walk is also the only form that is
+# correct in a worktree: it finds the runner pinned by the checkout the agent
+# is actually working in.
+RUNNER_LOCATOR = (
+    "import pathlib,runpy;"
+    "w=pathlib.Path.cwd();"
+    "r=next((p for p in ((d/'.agent-handoff-toolkit'/'runner.py') "
+    "for d in (w,*w.parents)) if p.is_file()),None);"
+    "r and runpy.run_path(str(r),run_name='__main__')"
+)
+
+
+# A bootstrap failure means the installed runtime could not be imported at all,
+# which is install corruption and still fails closed. It names the stage so a
+# consumer can tell it apart from a lifecycle decision.
+BOOTSTRAP_REASON = (
+    "AHK-HOOK-RUNTIME: Repair lifecycle runtime and retry. failed=stage:import-runtime"
+)
+
+
+def hook_command(python_command: str, platform: str, event: str) -> str:
+    """Return the managed hook command string for one host event."""
+
+    return (
+        f'{python_command} -c "{RUNNER_LOCATOR}" '
+        f"hook --platform {platform} --event {event}"
+    )
+
+
 # Schema v2 keeps one copy of every structured fact, so a v2 template carries
 # only the narrative sections that have no metadata field.
 CONTINUATION_SECTIONS = [
@@ -140,7 +172,7 @@ def install_copy_artifacts(consumer: Path) -> None:
 
 
 def run_installed_command(
-    command: str, consumer: Path, input_text: str = ""
+    command: str, consumer: Path, input_text: str = "", cwd: Path | None = None
 ) -> subprocess.CompletedProcess[str]:
     arguments = shlex.split(command, posix=os.name != "nt")
     if os.name == "nt":
@@ -156,7 +188,7 @@ def run_installed_command(
         raise AssertionError(f"unsupported hook command: {command}")
     return subprocess.run(
         [sys.executable, *arguments[1:]],
-        cwd=consumer,
+        cwd=cwd if cwd is not None else consumer,
         input=input_text,
         capture_output=True,
         text=True,
@@ -219,16 +251,16 @@ class DistributionTests(unittest.TestCase):
         manifest = load_manifest()
 
         self.assertEqual(manifest["manifest_version"], 2)
-        self.assertEqual(manifest["toolkit_version"], "0.4.0")
+        self.assertEqual(manifest["toolkit_version"], "0.5.0")
         self.assertEqual(manifest["text_hash"], "utf8-lf-sha256-v1")
         self.assertIn(
-            '__version__ = "0.4.0"',
+            '__version__ = "0.5.0"',
             (ROOT / "src/agent_handoff_toolkit/__init__.py").read_text(
                 encoding="utf-8"
             ),
         )
         self.assertIn(
-            'version = "0.4.0"',
+            'version = "0.5.0"',
             (ROOT / "pyproject.toml").read_text(encoding="utf-8"),
         )
         self.assertEqual(manifest["record_schema_version"], 2)
@@ -552,6 +584,15 @@ class DistributionTests(unittest.TestCase):
             "ahk-no-handoff",
             "does not guarantee that work needing a handoff produces one",
             "a session enforces nothing until it registers a root",
+            # A malfunction is not a decision, the locator is not relative to
+            # the working directory, and the recovery path takes no credentials.
+            "runtime faults are not policy decisions",
+            "an unknown mode is not a tracked mode",
+            "exit status never signals a fault",
+            "locating the runner",
+            "walking upward from the hook process's working directory",
+            "`claude_project_dir` is deliberately not used",
+            "lifecycle doctor",
         ):
             with self.subTest(document="mechanics", phrase=phrase):
                 self.assertIn(phrase, normalized["mechanics"])
@@ -586,6 +627,8 @@ class DistributionTests(unittest.TestCase):
             "ahk-declare",
             "ahk-no-handoff",
             "neither advisory blocks",
+            "never blocks a session that declared no tracked work",
+            "lifecycle doctor",
         ):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, normalized["consumer"])
@@ -801,9 +844,12 @@ class DistributionTests(unittest.TestCase):
                 self.assertEqual(hook["type"], "command")
                 self.assertEqual(
                     hook["command"],
-                    f"{python_command} .agent-handoff-toolkit/runner.py hook "
-                    f"--platform {platform} --event {cli_event}",
+                    hook_command(python_command, platform, cli_event),
                 )
+                # A cwd-relative script path is what wedged consumer sessions:
+                # Python never found the file, exited 2, and the host read that
+                # as a block. No managed command may carry one again.
+                self.assertNotIn(" .agent-handoff-toolkit/runner.py", hook["command"])
                 if platform == "codex":
                     self.assertEqual(hook["commandWindows"], hook["command"])
 
@@ -975,7 +1021,7 @@ class DistributionTests(unittest.TestCase):
                                     "hookSpecificOutput": {
                                         "hookEventName": "PreToolUse",
                                         "permissionDecision": "deny",
-                                        "permissionDecisionReason": "AHK-HOOK-RUNTIME: Repair lifecycle runtime and retry.",
+                                        "permissionDecisionReason": BOOTSTRAP_REASON,
                                     }
                                 },
                             )
@@ -984,7 +1030,7 @@ class DistributionTests(unittest.TestCase):
                                 output,
                                 {
                                     "decision": "block",
-                                    "reason": "AHK-HOOK-RUNTIME: Repair lifecycle runtime and retry.",
+                                    "reason": BOOTSTRAP_REASON,
                                 },
                             )
 
@@ -1011,18 +1057,18 @@ class DistributionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             consumer = Path(directory)
             result = run_source_cli(
-                "install", "--apply", target=consumer, release="v0.4.0"
+                "install", "--apply", target=consumer, release="v0.5.0"
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            check = run_source_cli("sync", "--check", target=consumer, release="v0.4.0")
+            check = run_source_cli("sync", "--check", target=consumer, release="v0.5.0")
             self.assertEqual(check.returncode, 0, check.stderr)
             state = json.loads(
                 (consumer / ".agent-handoff-toolkit/install-state.json").read_text(
                     encoding="utf-8"
                 )
             )
-            self.assertEqual(state["release"], "v0.4.0")
-            self.assertEqual(state["toolkit_version"], "0.4.0")
+            self.assertEqual(state["release"], "v0.5.0")
+            self.assertEqual(state["toolkit_version"], "0.5.0")
             self.assertEqual(state["state_version"], 1)
             self.assertEqual(state["record_schema_version"], 2)
             self.assertEqual(
@@ -1210,11 +1256,11 @@ class DistributionTests(unittest.TestCase):
             legacy_record.write_bytes(legacy_bytes)
 
             upgraded = run_source_cli(
-                "sync", "--apply", target=consumer, release="v0.4.0"
+                "sync", "--apply", target=consumer, release="v0.5.0"
             )
             self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
             current = run_source_cli(
-                "sync", "--check", target=consumer, release="v0.4.0"
+                "sync", "--check", target=consumer, release="v0.5.0"
             )
 
             self.assertEqual(current.returncode, 0, current.stderr)
@@ -1241,8 +1287,8 @@ class DistributionTests(unittest.TestCase):
                     encoding="utf-8"
                 )
             )
-            self.assertEqual(state["release"], "v0.4.0")
-            self.assertEqual(state["toolkit_version"], "0.4.0")
+            self.assertEqual(state["release"], "v0.5.0")
+            self.assertEqual(state["toolkit_version"], "0.5.0")
             self.assertEqual(state["record_schema_version"], 2)
             installed_source = (
                 consumer / ".agent-handoff-toolkit" / "src" / "agent_handoff_toolkit"
@@ -1285,7 +1331,7 @@ class DistributionTests(unittest.TestCase):
                 json.dumps(modified), encoding="utf-8", newline="\n"
             )
             conflict = run_source_cli(
-                "sync", "--check", target=conflicted, release="v0.4.0"
+                "sync", "--check", target=conflicted, release="v0.5.0"
             )
             self.assertEqual(conflict.returncode, 2)
             self.assertIn("managed-json-modified", conflict.stdout)
@@ -1312,7 +1358,7 @@ class DistributionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             consumer = Path(directory)
             installed = run_source_cli(
-                "install", "--apply", target=consumer, release="v0.4.0"
+                "install", "--apply", target=consumer, release="v0.5.0"
             )
             self.assertEqual(installed.returncode, 0, installed.stderr)
             installed_configs = {
@@ -1351,6 +1397,63 @@ class DistributionTests(unittest.TestCase):
                 with self.subTest(platform=platform, event="malformed"):
                     self.assertEqual(malformed.returncode, 0, malformed.stderr)
                     self.assertEqual(malformed.stdout, "")
+
+    def test_hook_commands_reach_the_runner_from_any_subdirectory(self) -> None:
+        """A session working below the repository root must still run the hook.
+
+        The managed command used to name the runner by a path relative to the
+        hook process's working directory. One level down, Python could not open
+        the file and exited 2 - which `PreToolUse`, `UserPromptSubmit` and
+        `Stop` all read as a deliberate block, wedging the session in a state it
+        could not leave, because leaving needed the very tools being denied.
+        """
+
+        with tempfile.TemporaryDirectory() as directory:
+            consumer = Path(directory).resolve()
+            release = f"v{load_manifest()['toolkit_version']}"
+            installed = run_source_cli(
+                "install", "--apply", target=consumer, release=release
+            )
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+            nested = consumer / "infra" / "modules" / "network"
+            nested.mkdir(parents=True)
+            config = json.loads(
+                (consumer / ".claude" / "settings.json").read_text(encoding="utf-8")
+            )
+
+            for working_directory in (consumer, consumer / "infra", nested):
+                command = config["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+                result = run_installed_command(
+                    command, consumer, "{}", cwd=working_directory
+                )
+                with self.subTest(cwd=str(working_directory)):
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stderr, "")
+                    output = json.loads(result.stdout)
+                    self.assertEqual(
+                        output["hookSpecificOutput"]["hookEventName"], "SessionStart"
+                    )
+
+    def test_hook_commands_fail_open_when_no_install_is_reachable(self) -> None:
+        """An unlocatable runner is not a policy decision and must not block.
+
+        Exiting 2 is the host's block signal. When the walk finds no install,
+        no toolkit code ran, there is no lifecycle state, and there is nothing
+        to decide - so the command must exit 0 and say nothing. An install that
+        is present but broken is a different case and still fails closed.
+        """
+
+        python_command = load_manifest()["runtime"]["python_command"]
+        with tempfile.TemporaryDirectory() as directory:
+            bare = Path(directory).resolve()
+            for platform in ("claude", "codex"):
+                for event in ("session-start", "user-prompt-submit", "stop"):
+                    command = hook_command(python_command, platform, event)
+                    result = run_installed_command(command, bare, "{}", cwd=bare)
+                    with self.subTest(platform=platform, event=event):
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(result.stdout, "")
+                        self.assertEqual(result.stderr, "")
 
 
 if __name__ == "__main__":

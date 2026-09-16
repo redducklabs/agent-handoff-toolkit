@@ -77,6 +77,9 @@ _READ_ONLY = {
     "codex": frozenset({"view_image"}),
 }
 _SHELL = {"claude": frozenset({"Bash", "PowerShell"}), "codex": frozenset({"Bash"})}
+# Lifecycle subcommands that carry no session key, challenge or revision, and
+# so have nothing the control interception could bind into them.
+_UNBOUND_CONTROL = frozenset({"doctor"})
 # Tools that write repository files. Shell is deliberately absent: classifying
 # a command as read-only or not is fragile, and making `git status` an advisory
 # trigger would defeat the purpose. A missed trigger costs an advisory, not a
@@ -222,11 +225,15 @@ def normalize_event(
     root = Path(repo_root).resolve()
     if not cwd.is_absolute() or not cwd.resolve().is_relative_to(root):
         raise ValueError("hook cwd is outside repository")
-    if "transcript_path" not in payload:
-        raise ValueError("missing transcript field")
+    # The host reports where the transcript is. Absent, null or blank means it
+    # has none to report - a turn that produced no transcript, or a host that
+    # does not carry one - and that is not a runtime fault. The reference is
+    # recorded metadata that no lifecycle check consumes, so an empty report
+    # reads as absent. Only a wrong type or a relative path remains a fault.
     transcript = payload.get("transcript_path")
-    if platform != "codex" or transcript is not None:
-        transcript = _string(transcript, 4096)
+    if transcript is not None:
+        transcript = _string(transcript, 4096, empty=True, trimmed=False)
+        transcript = transcript if transcript.strip() else None
     if transcript is not None and not Path(transcript).is_absolute():
         raise ValueError("transcript reference must be absolute")
     turn = payload.get("turn_id")
@@ -347,6 +354,60 @@ def render_hook_execution(
 
 def _issue(code):
     return LifecycleIssue(code, "Lifecycle check failed.", _ACTIONS[code])
+
+
+def _runtime_issue(stage, error=None):
+    """Name the failing stage and exception class on an opaque runtime fault.
+
+    Every other denial names the checks that failed after `failed=`; this one
+    discarded the exception, leaving a consumer no way to tell a malformed
+    payload from unreachable state. Both values are bounded identifiers fixed
+    in source - a stage label and a Python class name - so no host content can
+    reach the feedback channel through here.
+    """
+
+    details = ["stage:" + stage]
+    name = type(error).__name__ if error is not None else ""
+    if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", name):
+        details.append("error:" + name.replace("_", "-"))
+    number = getattr(error, "errno", None)
+    if type(number) is int:
+        details.append("errno:" + str(number))
+    return LifecycleIssue(
+        "AHK-HOOK-RUNTIME",
+        "Lifecycle check failed.",
+        _ACTIONS["AHK-HOOK-RUNTIME"],
+        detail_codes=tuple(details),
+    )
+
+
+def _runtime_advisory(issue):
+    """Report a malfunction without deciding anything.
+
+    A runtime fault is not a policy decision. Emitting a bare top-level
+    `systemMessage` returns no permission decision and no stop decision at all,
+    so the host behaves exactly as it would with no hook installed while the
+    fault stays visible and diagnosable.
+    """
+
+    return HookExecution(
+        stdout=json.dumps(
+            {"systemMessage": _reason(LifecycleDecision(DecisionKind.BLOCK, (issue,)))},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    )
+
+
+def _declared_tracked(snapshot):
+    """Report whether the session opted in to enforcement.
+
+    An unknown mode is not tracked: state that could not be read cannot show
+    that a session declared anything, and a session that declared nothing is
+    ungated by construction.
+    """
+
+    return snapshot is not None and snapshot.session.mode not in _UNGATED
 
 
 def _commit(storage, raw_id, snapshot, mutation):
@@ -665,10 +726,16 @@ def _pre_tool(event, snapshot, root, storage, raw_id):
         if event.tool_name in _SHELL[event.host]
         else None
     )
-    control = (
-        isinstance(command, str)
-        and re.match(r"^python \S+ lifecycle(?: |$)", command) is not None
+    invocation = (
+        re.match(r"^python \S+ lifecycle(?: (\S+))?(?: |$)", command)
+        if isinstance(command, str)
+        else None
     )
+    # `doctor` is the one lifecycle command that takes no session binding, so
+    # there is nothing for the interception to carry into it. It is read only,
+    # and denying it would reproduce the deadlock it exists to break: the only
+    # path to a challenge runs through the hook flow that is failing.
+    control = invocation is not None and invocation.group(1) not in _UNBOUND_CONTROL
     # Work is never gated. The toolkit intercepts only its own control
     # commands, which is how a session discovers its session key, challenge and
     # revision: UserPromptSubmit returns silently, so this denial is the sole
@@ -977,18 +1044,23 @@ def run_lifecycle_hook(platform, name, raw, repo_root, storage=None):
     event_kind = event_name(name)
     snapshot = None
     raw_id = None
+    stage = "decode-input"
     try:
         payload = decode_payload(raw)
         root = Path(repo_root).resolve()
         raw_id = _string(payload.get("session_id"), 4096)
         if storage is None:
+            stage = "open-state"
             state_root = os.environ.get("AHK_STATE_ROOT")
             storage = LocalLifecycleStorage(
                 root, state_root=Path(state_root) if state_root else None
             )
+        stage = "load-state"
         snapshot = storage.load_snapshot(raw_id)
+        stage = "normalize-event"
         event = normalize_event(platform, name, payload, repo_root)
         event = replace(event, session_key=snapshot.session.session_key)
+        stage = "evaluate"
         if event_kind is EventName.PRE_TOOL_USE:
             return _pre_tool(event, snapshot, root, storage, raw_id)
         if event_kind is EventName.USER_PROMPT_SUBMIT:
@@ -1004,18 +1076,23 @@ def run_lifecycle_hook(platform, name, raw, repo_root, storage=None):
             )
     except StaleLifecycleState:
         decision = LifecycleDecision(DecisionKind.BLOCK, (_issue("AHK-STOP-STALE"),))
-    except Exception:
-        issue = _issue("AHK-HOOK-RUNTIME")
-        # A counted block is the only thing that arms the correction circuit.
-        # A pre-root session has no chain identity, so this used to fall to an
-        # uncounted block: the count never advanced, the circuit never armed,
-        # and the session could neither act nor legally end. This is the
-        # last-resort handler, so a failure forming the counted block still has
-        # to yield a rendered decision rather than an unhandled hook crash.
+    except Exception as error:
+        issue = _runtime_issue(stage, error)
+        # A runtime fault is a malfunction, not a policy decision. A session
+        # that declared no tracked work is ungated by construction, so there is
+        # nothing here to enforce and blocking only removes the session's way
+        # out - it was denied the very tools needed to repair the fault. Report
+        # it on the advisory channel instead, which carries no decision at all.
+        if not _declared_tracked(snapshot):
+            return _runtime_advisory(issue)
+        # Declared tracked work keeps the documented fail-closed guarantee. A
+        # counted block is the only thing that arms the correction circuit, and
+        # this is the last-resort handler, so a failure forming the counted
+        # block still has to yield a rendered decision rather than a crash.
         try:
             decision = (
                 _blocked_stop(snapshot, (issue,), allow_session_identity=True)
-                if snapshot and event_kind is EventName.STOP
+                if event_kind is EventName.STOP
                 else LifecycleDecision(DecisionKind.BLOCK, (issue,))
             )
         except Exception:
@@ -1122,23 +1199,27 @@ def _publish_decision(
                             current,
                             retry=False,
                         )
-                except Exception:
+                except Exception as error:
+                    issue = _runtime_issue("republish-stale", error)
+                    if not _declared_tracked(snapshot):
+                        return _runtime_advisory(issue)
                     return render_hook_execution(
                         platform,
                         event_kind,
-                        LifecycleDecision(
-                            DecisionKind.BLOCK, (_issue("AHK-HOOK-RUNTIME"),)
-                        ),
+                        LifecycleDecision(DecisionKind.BLOCK, (issue,)),
                     )
             return render_hook_execution(
                 platform,
                 event_kind,
                 LifecycleDecision(DecisionKind.BLOCK, (_issue("AHK-STOP-STALE"),)),
             )
-        except Exception:
+        except Exception as error:
+            issue = _runtime_issue("commit-state", error)
+            if not _declared_tracked(snapshot):
+                return _runtime_advisory(issue)
             return render_hook_execution(
                 platform,
                 event_kind,
-                LifecycleDecision(DecisionKind.BLOCK, (_issue("AHK-HOOK-RUNTIME"),)),
+                LifecycleDecision(DecisionKind.BLOCK, (issue,)),
             )
     return output

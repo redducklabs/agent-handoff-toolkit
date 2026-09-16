@@ -1,6 +1,7 @@
 """Behavioral tests for lifecycle commands and the shell-free bootstrap gate."""
 
 import base64
+import errno
 from dataclasses import FrozenInstanceError, replace
 import hashlib
 import hmac
@@ -1359,6 +1360,72 @@ class OperationsTests(unittest.TestCase):
                 expected_session_revision=approved.session.targeted_revision,
             )
         self.assertEqual(self.storage.registry_path.read_bytes(), before)
+
+
+class DoctorTests(unittest.TestCase):
+    """`lifecycle` was unreachable exactly when a session needed it.
+
+    `inspect` and `register-root` require a session key, challenge and expected
+    revision, and those are issued only through the `PreToolUse` denial. When
+    the hook flow was broken there was no path to a challenge, so no path to
+    registering a root: the toolkit's whole purpose was unavailable precisely
+    when a session needed it. `doctor` is the out-of-band entry point - read
+    only, session-bound to nothing, and reporting what a consumer cannot
+    otherwise see.
+    """
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        (self.root / ".git").mkdir()
+        fence = patch.dict(
+            os.environ, {"GIT_CEILING_DIRECTORIES": self.root.parent.as_posix()}
+        )
+        fence.start()
+        self.addCleanup(fence.stop)
+
+    def run_doctor(self, *arguments):
+        output, errors = io.StringIO(), io.StringIO()
+        with (
+            patch.dict(os.environ, {"AHK_STATE_ROOT": str(self.root / "state")}),
+            patch("pathlib.Path.cwd", return_value=self.root),
+            patch("sys.stdout", output),
+            patch("sys.stderr", errors),
+        ):
+            status = main(["lifecycle", "doctor", *arguments])
+        return status, output.getvalue(), errors.getvalue()
+
+    def test_doctor_reports_runtime_health_without_any_session_binding(self):
+        status, output, errors = self.run_doctor()
+        self.assertEqual((status, errors), (0, ""))
+        report = json.loads(output)
+        self.assertEqual(report["storage"], "ok")
+        self.assertEqual(report["lock"], "ok")
+        self.assertEqual(report["repository_root"], self.root.as_posix())
+        self.assertTrue(report["state_root"].endswith("state"))
+        self.assertIn("toolkit_version", report)
+        self.assertNotIn("secret", output)
+
+    def test_doctor_reports_an_unreachable_state_root_instead_of_failing(self):
+        with patch(
+            "agent_handoff_toolkit.lifecycle_storage.LocalLifecycleStorage.__init__",
+            side_effect=OSError(errno.EACCES, "Permission denied"),
+        ):
+            status, output, errors = self.run_doctor()
+        report = json.loads(output)
+        self.assertEqual((status, errors), (0, ""))
+        self.assertEqual(report["storage"], "PermissionError")
+        self.assertIsNone(report["lock"])
+
+    def test_doctor_reports_one_sessions_mode_without_disclosing_its_key(self):
+        status, output, _ = self.run_doctor("--session-id", "session-probe")
+        report = json.loads(output)
+        self.assertEqual((status, report["session"]["mode"]), (0, "open"))
+        self.assertFalse(report["session"]["has_authorization"])
+        self.assertEqual(report["session"]["correction_cycle_count"], 0)
+        self.assertNotIn("session-probe", output)
+        self.assertNotIn("session_key", output)
 
 
 if __name__ == "__main__":

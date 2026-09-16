@@ -50,8 +50,20 @@ before creating or changing a continuation or completion audit.
   a blocked exact action. Comply with corrective Stop feedback: an attempted
   message may already be displayed, but it is not a compliant terminal outcome.
   Blocking feedback names the failed checks after `failed=`.
+- A toolkit malfunction never blocks a session that declared no tracked work.
+  An `AHK-HOOK-RUNTIME` report on such a session arrives as a notice carrying
+  no permission decision, and names its failing stage and exception after
+  `failed=`. If the hook runtime looks broken, run
+  `python .agent-handoff-toolkit/runner.py lifecycle doctor` from the
+  repository root. It is read-only, needs no session key or challenge, and is
+  the supported recovery entry point precisely because every other lifecycle
+  command needs credentials that only a working hook flow can issue. Add
+  `--session-id <host session id>` to see one session's enforcement mode.
 - Validate new or materially replaced records with
-  `python .agent-handoff-toolkit/runner.py validate <record>`.
+  `python .agent-handoff-toolkit/runner.py validate <record>`. Explicit
+  commands like this one resolve their relative runner path against the
+  current directory, so run them from the repository root. The installed hook
+  commands are not relative and work from any subdirectory.
 - Render the required terminal response with
   `python .agent-handoff-toolkit/runner.py render-tail <record>`. Its output is
   the whole response; send it verbatim with nothing before or after it.
