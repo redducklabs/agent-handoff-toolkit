@@ -110,6 +110,75 @@ root and so has no lifecycle state to fail closed on. An untracked tool-free
 informational response may fail open. Successful lifecycle checks emit no
 routine model context.
 
+## Runtime faults are not policy decisions
+
+A malfunction of the toolkit is not a decision about the work. `AHK-HOOK-RUNTIME`
+marks a fault the hook could not evaluate past — a malformed payload, state that
+could not be read, an unexpected exception — and how it is reported depends
+entirely on what the session had declared when it happened.
+
+A fault blocks only when the session's own state was read and shows a declared
+mode outside `OPEN` and `ONE_OFF`. That is the fail-closed guarantee above, and
+it is unchanged. In every other case — a session that declared nothing, or one
+whose mode could not be determined because reading state is what failed — the
+fault is reported as a bare top-level `systemMessage` carrying no permission
+decision and no stop decision, so the host behaves exactly as it would with no
+hook installed. An unknown mode is not a tracked mode: state that could not be
+read cannot show that a session declared anything, and a session that declared
+nothing is ungated by construction, so there is no policy for the fault to
+enforce. Blocking there only removed the session's way out, denying it the
+tools its own repair required.
+
+Every `AHK-HOOK-RUNTIME` report, blocking or advisory, names its failing stage
+and the exception class after `failed=`, alongside the platform error number
+where the exception carries one. Both are bounded identifiers fixed in source —
+a stage label and a Python class name — so this detail cannot carry turn content
+any more than the validator codes it sits beside.
+
+The hook command's exit status never signals a fault. Exit 2 is the host's block
+signal at `PreToolUse`, `UserPromptSubmit` and `Stop`, indistinguishable from a
+deliberate denial, so a decision is always rendered on the structured channel
+and the status stays silent. The one boundary that still fails closed without
+knowing the mode is a runtime that cannot be imported at all: the module that
+would report the mode is the one failing, and a missing owned runtime file is
+install corruption rather than a transient fault.
+
+## Locating the runner
+
+Each managed hook command finds `.agent-handoff-toolkit/runner.py` by walking
+upward from the hook process's working directory, and does nothing at all when
+no install is found there. Naming the runner by a path relative to that working
+directory does not work: hosts run hook commands in the directory the agent is
+working in, so any session below the repository root failed to start Python,
+and a missing script file exits 2 — which every gated event reads as a block.
+
+The walk is also the only form that is correct across checkouts. A worktree
+carries its own copy of the install, so the walk runs the runner pinned by the
+checkout the agent is actually working in. `CLAUDE_PROJECT_DIR` is deliberately
+not used: Claude Code documents that it stays at the project root the session
+started in even after the agent enters a worktree, so locating the runner
+through it would run one checkout's pinned release against another's. Codex
+documents no equivalent variable, and the walk needs none on either host.
+
+The runner still takes the repository it operates on from its working
+directory, unchanged.
+
+## Recovering a broken hook runtime
+
+`lifecycle inspect`, `register-root`, `resume` and `join` require a session key,
+challenge and expected revision, and those are issued only through the
+`PreToolUse` denial. A session whose hook flow is failing therefore has no path
+to a challenge, no path to registering a root, and no path to any lifecycle
+command — the toolkit is unavailable exactly when a session needs it.
+
+`lifecycle doctor` is the out-of-band entry point. It takes no session binding
+because it decides nothing and changes nothing, and for the same reason it is
+the one lifecycle subcommand the control interception does not intercept. It
+reports where state resolves, whether it opens, whether its lock is reachable,
+which runner is installed and which one is running, and — given a raw host
+session ID — that session's enforcement mode. The derived session key and the
+local HMAC secret never appear in its output.
+
 ## Enforcement modes and the write/stop advisories
 
 A session begins in `OPEN`. Nothing it does is gated: shell commands, file

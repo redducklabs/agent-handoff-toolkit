@@ -5,6 +5,15 @@ Read `docs/agent-handoff/contract.md` and `docs/agent-handoff/mechanics.md` befo
 - Preserve the continuation/completion-audit distinction.
 - Keep the core package independent of Claude Code, Codex, GitHub, and tracker APIs.
 - Informational hooks fail open; tracked lifecycle hooks fail closed. Explicit CLI validation fails closed.
+- A runtime fault is a malfunction, not a policy decision. It blocks only a
+  session whose declared mode was actually read and is outside `OPEN` and
+  `ONE_OFF`; otherwise it is reported as a notice carrying no decision. Every
+  `AHK-HOOK-RUNTIME` report names its failing stage and exception after
+  `failed=`, and no hook command exits 2.
+- Managed hook commands locate the runner by walking up from the hook
+  process's working directory. Never reintroduce a path relative to it: hosts
+  run hooks in the agent's directory, and a missing script file exits 2, which
+  every gated event reads as a block.
 - Never claim semantic truth is mechanically verified. Validation proves structure and internal consistency only.
 - Add or update tests before implementation changes and run the full verification commands in `README.md` before reporting success.
 - Do not add secrets, credentials, prompts, replies, transcripts, or customer data to fixtures or logs.

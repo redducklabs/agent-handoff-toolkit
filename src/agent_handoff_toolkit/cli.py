@@ -12,7 +12,12 @@ import tempfile
 from typing import Sequence
 
 from .acceptance import AcceptancePrerequisiteError, format_result, run_acceptance
-from .hooks import MAX_HOOK_INPUT_BYTES, observe_context, run_hook
+from .hooks import (
+    MAX_HOOK_INPUT_BYTES,
+    hook_runtime_reason,
+    observe_context,
+    run_hook,
+)
 from .records import render_record, render_terminal_response, validate_markdown
 
 
@@ -137,6 +142,15 @@ def _lifecycle_parser():
     one_off = commands.add_parser(
         "one-off", help="declare that this session's work needs no handoff"
     )
+    # Read-only and bound to nothing. Every other lifecycle command needs a
+    # session key, challenge and revision, and those are issued only by the
+    # hook flow - so when that flow is broken, `lifecycle` is unreachable by
+    # construction. This is the supported out-of-band entry point, and it takes
+    # no credentials because it decides nothing and changes nothing.
+    doctor = commands.add_parser(
+        "doctor", help="print a read-only runtime diagnosis with no session binding"
+    )
+    doctor.add_argument("--session-id")
     for command in (register, resume, join, adopt, one_off):
         command.add_argument("--session-key", required=True)
         command.add_argument("--challenge", required=True)
@@ -170,6 +184,73 @@ def _lifecycle_parser():
     return parser
 
 
+def _doctor_report(session_id=None):
+    """Describe the hook runtime without deciding or changing anything.
+
+    Reports only what a consumer cannot otherwise see: where state resolves,
+    whether it opens, whether its lock is reachable, and - when a raw host
+    session ID is supplied - that session's enforcement mode. The derived
+    session key and the local HMAC secret never appear.
+    """
+
+    from . import __version__
+    from .lifecycle_storage import (
+        LocalLifecycleStorage,
+        probe_lock,
+        resolve_lifecycle_state_root,
+    )
+
+    repository = _repository_root(Path.cwd())
+    runner = repository / ".agent-handoff-toolkit" / "runner.py"
+    report = {
+        "toolkit_version": __version__,
+        "python_version": ".".join(str(part) for part in sys.version_info[:3]),
+        "repository_root": repository.as_posix(),
+        "installed_runner": runner.as_posix() if runner.is_file() else None,
+        "running_from": _source_root().as_posix(),
+        "state_root_override": "AHK_STATE_ROOT" in os.environ,
+        "state_root": None,
+        "storage": None,
+        "lock": None,
+        "registry_present": None,
+        "session": None,
+    }
+    override = os.environ.get("AHK_STATE_ROOT")
+    try:
+        report["state_root"] = (
+            Path(override) if override else resolve_lifecycle_state_root(repository)
+        ).as_posix()
+    except Exception as error:
+        report["state_root"] = type(error).__name__
+        return report
+    try:
+        storage = LocalLifecycleStorage(
+            repository, state_root=Path(override) if override else None
+        )
+    except Exception as error:
+        report["storage"] = type(error).__name__
+        return report
+    report["storage"] = "ok"
+    report["registry_present"] = storage.registry_path.is_file()
+    try:
+        # Probed, never acquired: the waiting acquisition has no deadline, and
+        # a diagnosis that hangs behind another session is no diagnosis.
+        report["lock"] = probe_lock(storage.state_root / "registry.lock")
+    except Exception as error:
+        report["lock"] = type(error).__name__
+    if session_id:
+        try:
+            session = storage.load_snapshot(session_id).session
+            report["session"] = {
+                "mode": session.mode.value,
+                "has_authorization": session.authorization_id is not None,
+                "correction_cycle_count": session.correction_cycle_count,
+            }
+        except Exception as error:
+            report["session"] = type(error).__name__
+    return report
+
+
 def _lifecycle_main(argv):
     # Imports remain local so legacy informational hooks retain their behavior.
     from .lifecycle import RecordReference
@@ -194,6 +275,15 @@ def _lifecycle_main(argv):
             raise ValueError("duplicate lifecycle flag")
         args = vars(_lifecycle_parser().parse_args(argv))
         operation = args.pop("operation")
+        if operation == "doctor":
+            print(
+                json.dumps(
+                    _doctor_report(args.get("session_id")),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
+            return 0
         session_key = args.pop("session_key")
         capability = args["challenge"]
         state_root = os.environ.get("AHK_STATE_ROOT")
@@ -347,13 +437,28 @@ def main(argv: Sequence[str] | None = None) -> int:
             sys.stdout.flush()
             sys.stderr.flush()
             return output.exit_code
-        except Exception:
+        except Exception as error:
+            # Exit 2 is the host's block signal: it denies the tool, erases the
+            # prompt, or refuses the stop, and is indistinguishable from a
+            # deliberate denial. `run_hook` already renders every decision it
+            # can, so reaching here means the runtime itself is unusable. Say
+            # so on the structured channel and leave the status silent.
             event = args.event.lower().replace("-", "").replace("_", "")
-            if event in {"stop", "pretooluse", "userpromptsubmit"}:
-                sys.stderr.write(
-                    "AHK-HOOK-RUNTIME: Repair lifecycle runtime and retry."
-                )
-                return 2
+            if event not in {"stop", "pretooluse", "userpromptsubmit"}:
+                return 0
+            reason = hook_runtime_reason("dispatch-hook", error)
+            if event == "pretooluse":
+                value = {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": reason,
+                    }
+                }
+            else:
+                value = {"decision": "block", "reason": reason}
+            sys.stdout.write(json.dumps(value, separators=(",", ":")))
+            sys.stdout.flush()
             return 0
 
     if args.command == "acceptance":

@@ -54,6 +54,23 @@ _SESSION_START_REMINDER = (
 )
 
 
+def hook_runtime_reason(stage: str, error: BaseException | None = None) -> str:
+    """Render an opaque runtime fault with its failing stage and exception.
+
+    The detail matches the `failed=` convention every other denial already
+    uses. Both values are bounded identifiers fixed in source - a stage label
+    and a Python class name - so no host content reaches the host through here.
+    """
+
+    details = ["stage:" + stage]
+    name = type(error).__name__ if error is not None else ""
+    if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", name):
+        details.append("error:" + name.replace("_", "-"))
+    return "AHK-HOOK-RUNTIME: Repair lifecycle runtime and retry. failed=" + ",".join(
+        details
+    )
+
+
 @dataclass(frozen=True)
 class HookExecution:
     stdout: str = ""
@@ -309,9 +326,14 @@ def run_hook(
         from .hook_adapters import run_lifecycle_hook
 
         return run_lifecycle_hook(platform, event, raw, repo_root, storage)
-    except Exception:
-        # Also covers missing owned adapter/lifecycle modules. Never echo errors.
-        reason = "AHK-HOOK-RUNTIME: Repair lifecycle runtime and retry."
+    except Exception as error:
+        # Reached only when the owned adapter or lifecycle modules cannot load,
+        # which is install corruption rather than a transient fault: the module
+        # that would report whether this session declared tracked work is the
+        # one failing, so this boundary keeps failing closed. It still names the
+        # stage and the exception class, both fixed identifiers - never the
+        # message, which could carry host content.
+        reason = hook_runtime_reason("load-adapter", error)
         if name == "pretooluse":
             value = {
                 "hookSpecificOutput": {

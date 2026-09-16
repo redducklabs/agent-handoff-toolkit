@@ -6,12 +6,12 @@ Run installation from an inspectable checkout of the public release rather than
 from a network downloader:
 
 ```powershell
-git clone --branch v0.4.0 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
+git clone --branch v0.5.0 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
 Set-Location agent-handoff-toolkit
-python distribution/runner.py install --target <consumer-repository> --release v0.4.0 --dry-run
-python distribution/runner.py install --target <consumer-repository> --release v0.4.0 --apply
-python distribution/runner.py sync --target <consumer-repository> --release v0.4.0 --check
-python distribution/runner.py sync --target <consumer-repository> --release v0.4.0 --apply
+python distribution/runner.py install --target <consumer-repository> --release v0.5.0 --dry-run
+python distribution/runner.py install --target <consumer-repository> --release v0.5.0 --apply
+python distribution/runner.py sync --target <consumer-repository> --release v0.5.0 --check
+python distribution/runner.py sync --target <consumer-repository> --release v0.5.0 --apply
 ```
 
 Run install and sync only in an isolated, clean Git worktree. Confirm the
@@ -178,6 +178,42 @@ An installed runner requires the explicit, local pinned release checkout for
 the disposable installation; an unavailable or unsafe release source exits
 with a bounded prerequisite error rather than attempting an unverified run.
 
+## Recovering a broken hook runtime
+
+Every other lifecycle command needs a session key, challenge and expected
+revision, and the hook flow is the only thing that issues them. When that flow
+is what is failing, use the one command that needs none:
+
+```bash
+python .agent-handoff-toolkit/runner.py lifecycle doctor
+python .agent-handoff-toolkit/runner.py lifecycle doctor --session-id <host session id>
+```
+
+It is read-only, changes nothing, requires no release checkout, and reports
+where lifecycle state resolves, whether it opens, whether its lock is
+reachable, which runner is installed and which one is running, and — with
+`--session-id` — that session's enforcement mode. The derived session key and
+the local HMAC secret never appear in its output.
+
+Read the report against these rules:
+
+- `lock` of `contended` means another session currently holds it, which is
+  normal: every worktree of a repository shares one state root. The lock is
+  probed rather than acquired, so this report never waits.
+- `storage`, `state_root` or `lock` naming an exception class means state is
+  unreachable. Sessions that declared no tracked work are unaffected: a fault
+  there is reported as a notice and blocks nothing.
+- `session.mode` of `open` or `one-off` means nothing is gated. A denial on
+  such a session is a defect, not a policy decision; include the `failed=`
+  detail from the message when reporting it.
+- `installed_runner` and `running_from` differing means a hook resolved a
+  different checkout's install than the one you are reading.
+
+Explicit commands such as `validate`, `render-tail` and `doctor` name the
+runner by a path relative to the current directory, so run them from the
+repository root. The installed hook commands locate the runner by walking
+upward and work from any subdirectory.
+
 ## Pilot migrations
 
 Before bulk adoption, select one repository with mature handoffs and one with little or no handoff policy. In each pilot:
@@ -185,7 +221,7 @@ Before bulk adoption, select one repository with mature handoffs and one with li
 1. Inventory local instructions, hook and skill configuration, and tracker
    conventions. Count or locate historical handoff storage only if needed to
    protect it; do not open the records.
-2. Run the v0.4.0 installer in dry-run mode from its release checkout.
+2. Run the v0.5.0 installer in dry-run mode from its release checkout.
 3. Review the proposed instruction and hook merges.
 4. Apply on a branch. Treat every record that predates this adoption as
    deprecated by policy without marking, reading, or rewriting individual files.

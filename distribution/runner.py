@@ -21,7 +21,15 @@ def _bootstrap_hook_failure(arguments: list[str]) -> str | None:
         return ""
     if event not in {"user-prompt-submit", "pre-tool-use", "stop"}:
         return None
-    reason = "AHK-HOOK-RUNTIME: Repair lifecycle runtime and retry."
+    # The installed runtime could not be imported at all, so nothing here can
+    # tell whether the session declared tracked work. That is install
+    # corruption rather than a transient fault, and it keeps failing closed -
+    # but it still names the stage, so a consumer can tell it apart from a
+    # lifecycle decision.
+    reason = (
+        "AHK-HOOK-RUNTIME: Repair lifecycle runtime and retry. "
+        "failed=stage:import-runtime"
+    )
     if event == "pre-tool-use":
         value = {
             "hookSpecificOutput": {

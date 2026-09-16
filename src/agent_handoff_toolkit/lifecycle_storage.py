@@ -19,6 +19,7 @@ from pathlib import Path
 import secrets
 import stat
 import subprocess
+import time
 from types import MappingProxyType
 
 from .lifecycle import (
@@ -37,6 +38,13 @@ from .lineage import canonical_json_bytes, validate_hex_digest
 
 MAX_REGISTRY_BYTES = 1024 * 1024
 _WINDOWS = os.name == "nt"
+# Errors the platform raises for a region another holder owns, as opposed to a
+# genuine failure of the call. Windows reports EACCES for a refused
+# non-blocking attempt and EDEADLOCK when its own bounded retry gives up.
+_LOCK_CONTENTION_ERRNOS = frozenset(
+    {errno.EACCES, errno.EAGAIN, errno.EDEADLOCK, errno.EDEADLK}
+)
+_LOCK_POLL_SECONDS = 0.05
 
 
 class LifecycleStorageError(ValueError):
@@ -425,15 +433,69 @@ def _open_private(path, flags, *, mode=0o600):
 
 
 def _lock_descriptor(descriptor, *, windows):
+    """Wait for the exclusive region on both platforms.
+
+    `fcntl.flock(LOCK_EX)` waits for as long as the holder keeps the lock.
+    `msvcrt.locking(LK_LOCK, 1)` does not: it retries for roughly ten seconds
+    and then raises. Every worktree of a repository shares one state root, so
+    two concurrent sessions contend on one `registry.lock` in ordinary use, and
+    that `OSError` reached the hook boundary and was rendered as a policy
+    block. Poll the non-blocking mode instead, so contention waits and only a
+    genuine failure of the call is raised.
+    """
+
     if windows:
         import msvcrt
 
-        os.lseek(descriptor, 0, os.SEEK_SET)
-        msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
+        while True:
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            try:
+                msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+                return
+            except OSError as error:
+                if error.errno not in _LOCK_CONTENTION_ERRNOS:
+                    raise
+            time.sleep(_LOCK_POLL_SECONDS)
     else:
         import fcntl
 
         fcntl.flock(descriptor, fcntl.LOCK_EX)
+
+
+def probe_lock(path) -> str:
+    """Report whether the exclusive lock is free, without waiting for it.
+
+    The waiting acquisition above has no deadline, matching `flock`. A
+    diagnosis must never inherit that: `lifecycle doctor` is the recovery
+    command for a broken runtime, and a lock check that queued behind the
+    holder would hang exactly when a consumer needs an answer.
+    """
+
+    descriptor = _open_private(path, os.O_RDWR | os.O_CREAT)
+    try:
+        if _WINDOWS:
+            import msvcrt
+
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            try:
+                msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+            except OSError as error:
+                if error.errno in _LOCK_CONTENTION_ERRNOS:
+                    return "contended"
+                raise
+        else:
+            import fcntl
+
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as error:
+                if error.errno in _LOCK_CONTENTION_ERRNOS:
+                    return "contended"
+                raise
+        _unlock_descriptor(descriptor, windows=_WINDOWS)
+        return "ok"
+    finally:
+        os.close(descriptor)
 
 
 def _unlock_descriptor(descriptor, *, windows):

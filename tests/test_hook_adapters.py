@@ -2,6 +2,7 @@
 
 import base64
 from dataclasses import replace
+import errno
 import hashlib
 import json
 import os
@@ -100,7 +101,11 @@ class NormalizationTests(unittest.TestCase):
     def test_rejects_missing_wrong_type_oversize_null_and_unsafe_fields(self):
         for host in ("claude", "codex"):
             for event_name in ("Stop", "PreToolUse", "UserPromptSubmit"):
-                required = ["session_id", "cwd", "transcript_path"]
+                # `transcript_path` is the host's report of where a transcript
+                # is, on the same terms as turn content: absent, null or blank
+                # means it has none to report. Its own contract - a wrong type
+                # or a relative path is still a fault - is asserted below.
+                required = ["session_id", "cwd"]
                 required += {
                     # The final assistant message is host-reported turn content,
                     # not a required lifecycle field: absent and null are what
@@ -117,12 +122,6 @@ class NormalizationTests(unittest.TestCase):
                     required.append("turn_id")
                 for field in required:
                     for value in (None, [], 42, "\x00", "x" * 131073):
-                        if (
-                            host == "codex"
-                            and field == "transcript_path"
-                            and value is None
-                        ):
-                            continue
                         data = payload(ROOT, event_name)
                         data[field] = value
                         with (
@@ -464,6 +463,41 @@ class EnforcementTests(unittest.TestCase):
             "AHK-HOOK-RUNTIME",
         )
 
+    def test_the_read_only_diagnosis_is_never_intercepted(self):
+        """The recovery command must not need what a broken hook cannot issue.
+
+        The control interception exists to carry a session key, challenge and
+        revision into commands that need them. `doctor` needs none: it decides
+        nothing and changes nothing. Denying it would reproduce the deadlock it
+        exists to break - the only path to a challenge running through the hook
+        that is failing.
+        """
+
+        runner = (self.root / ".agent-handoff-toolkit" / "runner.py").as_posix()
+        for command in (
+            f"python {runner} lifecycle doctor",
+            f"python {runner} lifecycle doctor --session-id abc",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(
+                    self.invoke("PreToolUse", tool_input={"command": command}),
+                    HookExecution(),
+                )
+        # Everything that does take a session binding is still intercepted.
+        self.assert_block(
+            self.invoke(
+                "PreToolUse", tool_input={"command": f"python {runner} lifecycle"}
+            ),
+            "AHK-PRE-ROOT",
+        )
+        self.assert_block(
+            self.invoke(
+                "PreToolUse",
+                tool_input={"command": f"python {runner} lifecycle doctor-evil"},
+            ),
+            "AHK-PRE-ROOT",
+        )
+
     def test_control_command_before_any_user_turn_still_requires_root(self):
         """AHK-PRE-ROOT still guards the control channel before any user turn.
 
@@ -528,12 +562,14 @@ class EnforcementTests(unittest.TestCase):
                 # measured on its own rather than against the armed circuit.
                 self.invoke("UserPromptSubmit", turn_id="turn-" + label.split()[0])
 
-    def test_pre_root_stop_runtime_failure_arms_the_correction_circuit(self):
-        """A pre-root session must always retain a legal terminal outcome.
+    def test_runtime_fault_never_blocks_a_session_that_declared_nothing(self):
+        """A malfunction is not a policy decision, and must not end the session.
 
-        Without chain identity the blocked stop carried no mutation, so the
-        correction count never advanced and the circuit could never arm: the
-        session could neither act nor legally end.
+        A session that has registered no root is ungated by construction, so a
+        toolkit fault at `Stop` has no policy to enforce and nothing to protect.
+        Blocking there wedged consumer repositories: the turn could not end, and
+        the correction circuit was the only way out. The fault is now reported
+        on the advisory channel, which carries no decision at all.
         """
 
         self.invoke("UserPromptSubmit")
@@ -543,11 +579,114 @@ class EnforcementTests(unittest.TestCase):
             run_hook("codex", "Stop", json.dumps(broken), self.root, self.storage)
             for _ in range(3)
         ]
-        self.assert_block(outputs[0], "AHK-HOOK-RUNTIME")
+        for output in outputs:
+            self.assertEqual(output.exit_code, 0)
+            self.assertEqual(output.stderr, "")
+            data = json.loads(output.stdout)
+            self.assertNotIn("decision", data)
+            self.assertNotIn("hookSpecificOutput", data)
+            self.assertNotIn("continue", data)
+            self.assertIn("AHK-HOOK-RUNTIME", data["systemMessage"])
+        # Nothing blocked, so nothing counted toward the circuit.
         self.assertEqual(
-            self.storage.load_snapshot("session-1").session.correction_cycle_count, 3
+            self.storage.load_snapshot("session-1").session.correction_cycle_count, 0
         )
-        self.assertIn("AHK-STOP-CIRCUIT", outputs[-1].stdout)
+
+    def test_runtime_fault_still_fails_closed_once_the_session_is_tracked(self):
+        """Declared tracked work keeps the documented fail-closed guarantee."""
+
+        self.register()
+        broken = payload(self.root, "Stop")
+        broken["stop_hook_active"] = "not-a-boolean"
+        for attempt in (1, 2):
+            output = run_hook(
+                "codex", "Stop", json.dumps(broken), self.root, self.storage
+            )
+            self.assert_block(output, "AHK-HOOK-RUNTIME")
+            self.assertEqual(
+                self.storage.load_snapshot("session-1").session.correction_cycle_count,
+                attempt,
+            )
+
+    def test_runtime_fault_names_its_stage_and_exception(self):
+        """A blocking generic string is unactionable by design.
+
+        Every other denial names the checks that failed after `failed=`. This
+        one discarded the exception entirely, so a consumer had no way to tell
+        a malformed payload from unreachable state.
+        """
+
+        self.register()
+        broken = payload(self.root, "Stop")
+        broken["stop_hook_active"] = "not-a-boolean"
+        reason = json.loads(
+            run_hook(
+                "codex", "Stop", json.dumps(broken), self.root, self.storage
+            ).stdout
+        )["reason"]
+        self.assertIn("failed=", reason)
+        details = reason.split("failed=")[1].split()[0].split(",")
+        self.assertIn("stage:normalize-event", details)
+        self.assertIn("error:ValueError", details)
+        self.assertLessEqual(len(reason.encode()), 1200)
+
+    def test_unreadable_state_is_reported_rather_than_enforced(self):
+        """The mode is unknown when state cannot be read, so nothing is decided.
+
+        Windows lock contention reached here as an `OSError` and was rendered as
+        a block. A session that may never have declared anything must not be
+        stopped by a fault in reading state that belongs to the toolkit.
+        """
+
+        with patch.object(
+            LocalLifecycleStorage,
+            "load_snapshot",
+            side_effect=OSError(errno.EACCES, "Permission denied"),
+        ):
+            output = self.invoke("Stop")
+        data = json.loads(output.stdout)
+        self.assertEqual(output.exit_code, 0)
+        self.assertNotIn("decision", data)
+        self.assertIn("stage:load-state", data["systemMessage"])
+        # OSError resolves to its concrete subclass, which is the useful name.
+        self.assertIn("error:PermissionError", data["systemMessage"])
+        self.assertIn("errno:13", data["systemMessage"])
+
+    def test_runtime_fault_on_a_tool_call_returns_no_permission_decision(self):
+        """A denied `Bash` or `Write` is what removes a session's way out."""
+
+        with patch.object(
+            LocalLifecycleStorage,
+            "load_snapshot",
+            side_effect=OSError(errno.EACCES, "Permission denied"),
+        ):
+            output = self.invoke("PreToolUse")
+        data = json.loads(output.stdout)
+        self.assertEqual(output.exit_code, 0)
+        self.assertNotIn("hookSpecificOutput", data)
+        self.assertIn("AHK-HOOK-RUNTIME", data["systemMessage"])
+
+    def test_absent_null_or_blank_transcript_reference_is_not_a_fault(self):
+        """The host reports where the transcript is; having none is not an error.
+
+        A `Stop` payload carrying `transcript_path: ""` blocked every turn with
+        no detail. The reference is recorded metadata that no check consumes, so
+        an empty report reads as absent. Only a wrong type remains a fault.
+        """
+
+        self.invoke("UserPromptSubmit")
+        for label, value in (("null", None), ("empty", ""), ("blank", "   ")):
+            with self.subTest(label=label):
+                output = self.stop_payload(transcript_path=value)
+                self.assertNotIn("AHK-HOOK-RUNTIME", output.stdout)
+        self.assertNotIn(
+            "AHK-HOOK-RUNTIME", self.stop_payload(drop=("transcript_path",)).stdout
+        )
+        for label, value in (("wrong type", 7), ("relative", "handoffs/t.jsonl")):
+            with self.subTest(label=label):
+                self.assertIn(
+                    "AHK-HOOK-RUNTIME", self.stop_payload(transcript_path=value).stdout
+                )
 
     def test_bootstrap_rejection_names_the_failed_check(self):
         """Every rejection cause was one indistinguishable string."""

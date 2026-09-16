@@ -128,7 +128,15 @@ class HostHookTests(unittest.TestCase):
                     self.assertEqual(stdout.getvalue(), execution.stdout)
                     self.assertEqual(stderr.getvalue(), execution.stderr)
 
-    def test_cli_runtime_failure_is_open_only_for_advisory_events(self):
+    def test_cli_last_resort_failure_never_exits_with_the_block_status(self):
+        """Exit 2 is the host's block signal and must never carry a malfunction.
+
+        A hook command that exits 2 denies the tool, erases the prompt, or
+        refuses the stop, and is indistinguishable from a deliberate denial.
+        The last-resort handler renders a structured decision on stdout instead,
+        so what happened is visible and the exit status says nothing.
+        """
+
         for event in (
             "session-start",
             "post-tool-use",
@@ -147,15 +155,41 @@ class HostHookTests(unittest.TestCase):
                 mock_patch("sys.stderr", stderr),
             ):
                 code = main(["hook", "--platform", "codex", "--event", event])
-            if event in ("session-start", "post-tool-use"):
-                self.assertEqual(
-                    (code, stdout.getvalue(), stderr.getvalue()), (0, "", "")
-                )
-            else:
-                self.assertEqual(code, 2)
-                self.assertEqual(stdout.getvalue(), "")
-                self.assertIn("AHK-HOOK-RUNTIME", stderr.getvalue())
-                self.assertNotIn("sensitive", stderr.getvalue())
+            with self.subTest(event=event):
+                self.assertEqual(code, 0)
+                self.assertEqual(stderr.getvalue(), "")
+                if event in ("session-start", "post-tool-use"):
+                    self.assertEqual(stdout.getvalue(), "")
+                    continue
+                reason = json.dumps(json.loads(stdout.getvalue()))
+                self.assertIn("AHK-HOOK-RUNTIME", reason)
+                self.assertIn("stage:dispatch-hook", reason)
+                self.assertIn("error:RuntimeError", reason)
+                self.assertNotIn("sensitive", reason)
+
+    def test_adapter_import_failure_names_the_stage_and_still_fails_closed(self):
+        """A missing owned runtime file is install corruption, not a fault here.
+
+        The runner cannot tell whether the session declared tracked work when
+        the module that would answer that is the one failing to load, so this
+        boundary keeps blocking. It must still say what failed.
+        """
+
+        for event, key in (
+            ("stop", "reason"),
+            ("user-prompt-submit", "reason"),
+            ("pre-tool-use", "permissionDecisionReason"),
+        ):
+            with mock_patch.dict(
+                sys.modules, {"agent_handoff_toolkit.hook_adapters": None}
+            ):
+                output = execute_hook("claude", event, "{}", Path.cwd())
+            data = json.loads(output.stdout)
+            reason = data.get(key) or data["hookSpecificOutput"][key]
+            with self.subTest(event=event):
+                self.assertEqual(output.exit_code, 0)
+                self.assertIn("AHK-HOOK-RUNTIME", reason)
+                self.assertIn("stage:load-adapter", reason)
 
     def test_cli_bounds_input_read_before_dispatch(self):
         class BoundedInput(io.StringIO):
