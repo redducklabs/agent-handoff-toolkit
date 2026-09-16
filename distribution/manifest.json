@@ -256,7 +256,7 @@
     },
     {
       "source": "src/agent_handoff_toolkit/lifecycle_storage.py",
-      "sha256": "92fc473d25b1f9e04fc440e98ab7c99940da52836067b97132951a96c14ed238",
+      "sha256": "40d3725ba3e8f1e375981859651849a2b92a4cd3a00debb44a73377449a93bcf",
       "install": {
         "mode": "copy",
         "transform": "none",

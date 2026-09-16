@@ -41,8 +41,18 @@ _WINDOWS = os.name == "nt"
 # Errors the platform raises for a region another holder owns, as opposed to a
 # genuine failure of the call. Windows reports EACCES for a refused
 # non-blocking attempt and EDEADLOCK when its own bounded retry gives up.
+# EDEADLOCK is a Linux and Windows alias that macOS does not define, so the
+# names are resolved rather than referenced: importing this module must not
+# depend on which spellings a platform happens to publish.
 _LOCK_CONTENTION_ERRNOS = frozenset(
-    {errno.EACCES, errno.EAGAIN, errno.EDEADLOCK, errno.EDEADLK}
+    number
+    for number in (
+        errno.EACCES,
+        errno.EAGAIN,
+        getattr(errno, "EDEADLOCK", None),
+        getattr(errno, "EDEADLK", None),
+    )
+    if number is not None
 )
 _LOCK_POLL_SECONDS = 0.05
 
