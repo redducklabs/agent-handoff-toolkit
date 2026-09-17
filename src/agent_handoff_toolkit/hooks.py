@@ -47,10 +47,8 @@ _MILESTONE_MESSAGES = {
 # the `agent-handoff` skill instead of directing sessions that never touch a
 # record to read the whole contract.
 _SESSION_START_REMINDER = (
-    "Use the `agent-handoff` skill before creating or changing a handoff record. "
-    "If the incoming session context explicitly links a current schema-v1 "
-    "continuation, reconcile that record with live state and do not repeat "
-    "completed work. Do not search or inspect deprecated legacy handoffs."
+    "Use the `agent-handoff` skill for any handoff record; do not search or "
+    "inspect deprecated legacy handoffs."
 )
 
 

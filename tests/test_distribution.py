@@ -1431,7 +1431,7 @@ class DistributionTests(unittest.TestCase):
                         self.assertNotIn("docs/agent-handoff/contract.md", context)
                         if event == "SessionStart":
                             self.assertIn(
-                                "Do not search or inspect deprecated legacy handoffs.",
+                                "do not search or inspect deprecated legacy handoffs",
                                 context,
                             )
 
