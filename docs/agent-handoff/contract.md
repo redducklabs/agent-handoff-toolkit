@@ -130,14 +130,16 @@ handoff-document structure.
 
 ## Final response
 
-A continuation response says `This session is stopped because authorized work
-remains` and `What you need to do: Start a new session from the continuation
-handoff below`, carries a `Continue from handoff` block with the absolute path,
-names the exact next action, target, constraints, and completion gate, lists
-only the stored essential blockers, decisions, and validation gates, and ends
-with an absolute clickable Markdown link. It must not reproduce the handoff
-document. Completion responses label their link **Audit record (not a handoff)**
-and generate no restart prompt.
+A continuation response says `Stopping here. Work remains on "<root title>"`
+and `What you need to do: start a new session and paste the block below`,
+carries a `Continue from handoff` block with the absolute path, names the exact
+next action, target, constraints, and completion gate, lists only the stored
+essential blockers, decisions, and validation gates, and ends with an absolute
+clickable Markdown link. Where the record declares more than one scope it also
+states how many are complete. It must not reproduce the handoff document.
+Completion responses state what was completed, tally the verification results,
+say that nothing further is required, label their link **Audit record (not a
+handoff)**, and generate no restart prompt.
 
 The renderer is the only source of a schema-v2 terminal response: there is no
 handwritten preamble, and the normalized terminal message must have byte-exact

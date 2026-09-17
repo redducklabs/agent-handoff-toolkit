@@ -63,12 +63,26 @@ approved transition evidence.
 
 For a continuation, the response tail contains exactly:
 
-1. `This session is stopped because authorized work remains.`
-2. `What you need to do: Start a new session from the continuation handoff below.`
-3. One fenced `text` block beginning with `Continue from handoff` and the absolute handoff path for use in the new session.
-4. The exact action, target, constraints, and completion gate from metadata.
-5. Only the stored essential blockers, decisions, and validation gates.
-6. An absolute clickable Markdown link to the continuation as the final non-whitespace line.
+1. `Stopping here. Work remains on "<root title>".`, naming the authorized
+   root's immutable definition.
+2. `Progress: <complete> of <total> scopes complete.`, counted over
+   `active_scopes` and omitted when there is only one scope.
+3. `What you need to do: start a new session and paste the block below.`
+4. One fenced `text` block beginning with `Continue from handoff` and the absolute handoff path for use in the new session.
+5. The exact action, target, constraints, and completion gate from metadata, labelled `Next action`, `Where`, `Constraints` and `Done when`.
+6. The stored essential blockers, decisions, and validation gates, under `Also:`.
+7. An absolute clickable Markdown link to the continuation as the final non-whitespace line.
+
+A completion audit's response is three lines and the link: what was completed
+and its outcome, the verification tally (`<p> passed, <f> failed, <n> not
+run`), and `Nothing further is required of you.` A failing entry is still
+counted there; the contract forbids hiding one, and a tally that omitted it
+would report a completion the evidence does not support. A bare link said
+none of this.
+
+A decision request's response keeps its four-line structure, which the HMAC
+verification depends on, and reads `Paused: I need one decision from you.`
+and `This blocks: <blocked action field>`.
 
 The complete generated tail, including its fence and link, is limited to 300 words and 2,400 characters. It must not reproduce the handoff document. The detailed record remains the source of truth; the tail is only a concise pointer and executable start. Completion responses label their link **Audit record (not a handoff)** and do not generate a restart prompt. The tail joins `exact_action` list items with `; `.
 
@@ -82,9 +96,34 @@ and the response links an audit rather than a continuation.
 
 ## Lifecycle enforcement
 
-Tracked sessions have four permitted stop outcomes: continue working, await a
-legitimate decision request, create a valid continuation, or complete the
-authorized root with an audit. Executable work remaining is not a decision
+Tracked sessions have five permitted stop outcomes: continue working, await a
+legitimate decision request, create a valid continuation, complete the
+authorized root with an audit, or end the turn on the canonical progress line.
+
+`Stop` runs at every turn end, not at the end of a session, so requiring a
+record at every one of them made "I have opened the pull request, watching CI"
+cost a full continuation. The progress line is the alternative:
+
+```text
+In progress: "<root title>". Last handoff: <path or none yet>. Say "continue" to keep going, or ask for a handoff.
+```
+
+Nothing else record-less is accepted, and the comparison is exact. The
+guarantee it leaves is: every turn end is a record, an audit, a decision
+response, or that line, and a session that *ends* on that line is reported at
+`SessionEnd`. That is weaker on paper than "every turn end is a record", and
+the evidence is that the stronger rule was being paid for in tens of thousands
+of tokens of record text per task per day.
+
+The line is published by `lifecycle inspect` as `progress_response`, not in
+blocking feedback. It contains the declared goal in the user's own words, and
+feedback carries issue codes, the corrective action and bounded identifiers
+only — never authored text.
+
+`SessionEnd` is an informational hook and fails open. It emits a
+`systemMessage` only when the session is `TRACKED` and its last stop was a
+progress line, naming the tracked work and how to resume it. Everything else,
+including an unreadable state file, produces no message at all. Executable work remaining is not a decision
 request. A decision request must name one bounded question, blocked action, and
 recognized authority category; it cannot change the root or scope definition.
 
@@ -100,6 +139,17 @@ when it fails. The toolkit supplies the encoding and never the meaning: here the
 user supplied the meaning in their own turn, which is also the strongest
 authorization evidence the design has — the root is bound to the turn that asked
 for it.
+
+### Record paths are locators, not identity
+
+A chain crosses checkouts: the same repository is one worktree here, another
+there, and `/mnt/d/...` under WSL, so an absolute path recorded in one of them
+names a file that does not exist in another. Wherever a stored record path is
+read or compared, the record's basename under this checkout's `handoffs/` is
+used and the record's SHA-256 is the evidence. A record whose digest matches
+the one the caller already expects is that record, whichever checkout wrote
+the path; one whose digest differs is refused with the same code as before,
+and the path the retry resolved to is reported after `candidate=`.
 
 A session resumes a tracked chain when the **first line** of its prompt is
 `Continue from handoff: <absolute path>`. Everything after that line is the

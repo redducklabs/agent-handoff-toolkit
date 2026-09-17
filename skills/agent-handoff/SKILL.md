@@ -105,6 +105,11 @@ python .agent-handoff-toolkit/runner.py render-tail <record-path>
 
 That command emits `render_terminal_response`, the exact output `Stop` enforces; for schema v1 it emits the established v1 tail.
 
+A tracked turn that is simply not finished does not need a record. End it on
+the exact `progress_response` from `lifecycle inspect` and nothing else; any
+other record-less message is blocked. A session that ends on that line is
+reported to the user, so use it to pause, not to conclude.
+
 If progress genuinely requires user authority, register a legitimate decision request rather than asking whether to continue or stop. A decision request must name the blocked exact action and recognized authority category; it does not change the authorized root.
 
 Comply with corrective Stop feedback. Blocking feedback names the failed checks after `failed=`. The attempted message may already be displayed before correction, but that display is not a compliant terminal outcome. Make the minimal correction, then send only the renderer-only terminal response required by the current tracked state.

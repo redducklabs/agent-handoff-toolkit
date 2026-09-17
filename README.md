@@ -63,13 +63,17 @@ items.
 - Recorded repository and tracker state is a timestamped snapshot. A resumed session reconciles live state before acting.
 - Verification results are classified as `pass`, `fail`, or `not-run`; skipped checks are never reported as passing. Record one entry per gate the next session would rerun, not one per invocation.
 - A schema-v2 record stores each fact once, in a visible metadata block at the top of the document. No narrative section restates verification, the exact next action, the scope list, or the next-session prompt. Schema-v1 records keep their metadata comment and their derived sections.
-- A continuation response says `This session is stopped because authorized work
-  remains` and `What you need to do: Start a new session from the continuation
-  handoff below`. Its copy/paste block for the new session begins with `Continue
+- A continuation response says `Stopping here. Work remains on "<root title>"`
+  and `What you need to do: start a new session and paste the block below`. Its
+  copy/paste block for the new session begins with `Continue
   from handoff`, identifies the exact next action, and lists only essential blockers,
   decisions, and validation gates. Its stored context is limited to 120 words
   and the complete generated tail to 300 words. The response must not reproduce
   the handoff document. The absolute clickable link remains the final line.
+- A tracked session may also end a turn on the canonical progress line instead
+  of authoring a record. `lifecycle inspect` publishes that line as
+  `progress_response`, and a session that ends on one is reported at
+  `SessionEnd`.
 
 See [the contract](docs/agent-handoff/contract.md) for what an author must write, and [the mechanics reference](docs/agent-handoff/mechanics.md) for the exact formats and enforcement the toolkit applies.
 
@@ -82,6 +86,7 @@ handoff-toolkit render <record.json> --successor-of <predecessor.md> --output <r
 handoff-toolkit render-tail <continuation.md>
 handoff-toolkit context-health --percent <0-100> --session-id <id>
 handoff-toolkit hook --platform claude|codex --event post-tool-use
+handoff-toolkit hook --platform claude|codex --event session-end
 handoff-toolkit acceptance --platform claude|codex --scratch <empty-scratch-directory>
 ```
 
