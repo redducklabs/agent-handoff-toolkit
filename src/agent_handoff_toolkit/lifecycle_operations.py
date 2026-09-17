@@ -545,11 +545,19 @@ class LifecycleService:
         ):
             raise ValueError("resume requires one v2 continuation")
         chain = self.storage.load_chain(parsed["authorization_id"])
-        reference = RecordReference(parsed["record_id"], path, record_digest)
+        current = chain.current_record_reference if chain else None
+        # The stored path is a locator. A chain is continued from another
+        # worktree or from WSL, where that absolute path names nothing; the
+        # record id and the source digest are what identify the record.
+        same_record = current is not None and (
+            current.record_id,
+            PurePosixPath(current.path).name,
+            current.sha256,
+        ) == (parsed["record_id"], PurePosixPath(path).name, record_digest)
         if (
             chain is None
             or chain.status != "active"
-            or chain.current_record_reference != reference
+            or not same_record
             or chain.locked_root_id != parsed["authorized_root_scope_id"]
             or chain.scope_digests
             != tuple(

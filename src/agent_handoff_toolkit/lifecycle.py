@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 import hashlib
 import hmac
+from pathlib import PurePosixPath
 import re
 from types import MappingProxyType
 from typing import Any
@@ -1388,9 +1389,14 @@ def evaluate_stop(
             )
         )
     predecessor_record_id = predecessor_data.get("record_id")
+    # The recorded path is a locator, not the identity. The same chain is
+    # continued from another worktree or from WSL, where the stored absolute
+    # path names a file that does not exist; the record id and the source
+    # digest are what make this the chain's current record.
     if (
         predecessor_record_id != chain.current_record_reference.record_id
-        or candidate.predecessor_path != chain.current_record_reference.path
+        or _record_name(candidate.predecessor_path)
+        != _record_name(chain.current_record_reference.path)
         or candidate.predecessor_source_digest != chain.current_record_reference.sha256
     ):
         extra_issues.append(
