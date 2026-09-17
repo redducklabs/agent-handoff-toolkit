@@ -166,12 +166,23 @@ def _is_handoff_path(path: str) -> bool:
 
 
 def _claude_changes(payload: dict[str, Any]) -> tuple[_RecordChange, ...]:
-    if payload.get("tool_name") not in {"Write", "Edit", "MultiEdit"}:
+    if payload.get("tool_name") not in {
+        "Write",
+        "Edit",
+        "MultiEdit",
+        "NotebookEdit",
+    }:
         return ()
     tool_input = payload.get("tool_input")
     if not isinstance(tool_input, dict):
         return ()
-    candidate = tool_input.get("file_path") or tool_input.get("path")
+    # NotebookEdit names its target `notebook_path`; the others use
+    # `file_path`. `_is_handoff_path` still decides what counts as a record.
+    candidate = (
+        tool_input.get("file_path")
+        or tool_input.get("notebook_path")
+        or tool_input.get("path")
+    )
     if not isinstance(candidate, str) or not _is_handoff_path(candidate):
         return ()
     return (_RecordChange("Edited", candidate),)

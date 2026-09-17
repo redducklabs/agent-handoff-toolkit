@@ -808,8 +808,8 @@ class DistributionTests(unittest.TestCase):
                 claude,
                 {
                     "SessionStart": "startup|resume|clear|compact",
-                    "PreToolUse": "Bash|PowerShell|Write|Edit|MultiEdit",
-                    "PostToolUse": "Write|Edit|MultiEdit",
+                    "PreToolUse": ("Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit"),
+                    "PostToolUse": "Write|Edit|MultiEdit|NotebookEdit",
                 },
             ),
             (
