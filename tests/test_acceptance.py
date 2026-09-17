@@ -30,6 +30,7 @@ from agent_handoff_toolkit.acceptance import (  # noqa: E402
     _observer_script,
     _operator_credential,
     _run_process,
+    _scenario_input,
     _seed_host_home,
     format_result,
     run_acceptance,
@@ -48,12 +49,14 @@ class FakeRunner:
         issue_code: str = "AHK-STOP-WORK",
         retain_input: bool = False,
         forge_trace: bool = False,
+        advisory_echoed: bool = True,
     ) -> None:
         self.observer_events = observer_events
         self.host_returncode = host_returncode
         self.issue_code = issue_code
         self.retain_input = retain_input
         self.forge_trace = forge_trace
+        self.advisory_echoed = advisory_echoed
         self.calls: list[tuple[tuple[str, ...], Path]] = []
         self.environments: list[dict[str, str]] = []
         self.observer_invocations: list[str] = []
@@ -107,12 +110,15 @@ if event.replace("-", "") == "stop":
                 / "acceptance-runtime"
                 / "observe_hook.py"
             )
-            for event in self.observer_events:
+            for index, event in enumerate(self.observer_events):
                 self.observer_invocations.append(event)
+                echoed = self.advisory_echoed and index == len(self.observer_events) - 1
                 subprocess.run(
                     [sys.executable, str(observer), command[0], event],
                     cwd=cwd,
-                    input=b"{}",
+                    input=b'{"last_assistant_message":"AHK-DECLARE"}'
+                    if echoed
+                    else b"{}",
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     env=env,
@@ -158,6 +164,30 @@ if event.replace("-", "") == "stop":
 GREEN_EVENTS = ("userpromptsubmit", "stop", "stop")
 
 
+class AdvisoryAcceptanceTests(unittest.TestCase):
+    """The advisory is only useful if the model actually receives it."""
+
+    def test_a_run_where_the_model_never_echoed_the_advisory_cannot_pass(
+        self,
+    ) -> None:
+        runner = FakeRunner(observer_events=GREEN_EVENTS, advisory_echoed=False)
+        result = run_acceptance(
+            "codex",
+            source_root=ROOT,
+            runner=runner,
+            evidence_verifier=trusted_observer_verifier(runner),
+        )
+
+        self.assertFalse(result.advisory_seen)
+        self.assertEqual(result.status, "fail")
+        self.assertIn("advisory_seen=fail", format_result(result))
+
+    def test_the_scenario_asks_the_session_to_echo_the_advisory(self) -> None:
+        instructions = _scenario_input("synthetic-identifier")
+
+        self.assertIn("AHK-DECLARE", instructions)
+
+
 def trusted_observer_verifier(runner: FakeRunner):
     return lambda trace, run_id: runner.observer_invocations == list(GREEN_EVENTS)
 
@@ -172,6 +202,7 @@ class AcceptanceResultTests(unittest.TestCase):
             corrected=True,
             retained_content=True,
             block_cap_compatible=True,
+            advisory_seen=True,
         )
 
         self.assertEqual(result.status, "pass")
@@ -187,6 +218,7 @@ class AcceptanceResultTests(unittest.TestCase):
             corrected=True,
             retained_content=True,
             block_cap_compatible=True,
+            advisory_seen=True,
             issue_codes=("AHK-STOP-WORK",),
         )
 
@@ -449,6 +481,7 @@ class AcceptanceCliTests(unittest.TestCase):
             corrected=True,
             retained_content=True,
             block_cap_compatible=True,
+            advisory_seen=True,
             issue_codes=("AHK-STOP-WORK",),
         )
         with tempfile.TemporaryDirectory() as directory:

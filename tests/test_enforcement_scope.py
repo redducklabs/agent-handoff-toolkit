@@ -157,50 +157,56 @@ class UngatedSessionTests(unittest.TestCase):
         first = self.write()
         self.assertEqual(first.exit_code, 0)
         payload_out = json.loads(first.stdout)
-        self.assertEqual(set(payload_out), {"systemMessage"})
-        self.assertNotIn("hookSpecificOutput", payload_out)
-        message = payload_out["systemMessage"]
+        self.assertEqual(set(payload_out), {"hookSpecificOutput"})
+        output = payload_out["hookSpecificOutput"]
+        self.assertEqual(set(output), {"hookEventName", "additionalContext"})
+        self.assertEqual(output["hookEventName"], "PreToolUse")
+        message = output["additionalContext"]
         self.assertIn("lifecycle one-off", message)
         self.assertIn("lifecycle register-root", message)
         # It fires once, then never again.
         self.assertEqual(self.write("b.py"), HookExecution())
 
-    def test_the_advisory_survives_a_runner_path_longer_than_the_feedback_bound(
-        self,
-    ):
-        """A long repository root must not silence the notice.
+    def test_the_first_write_advisory_carries_no_hex_path_or_decision(self):
+        """It was 1,183 bytes, most of it two 64-hex values printed twice.
 
-        The message runs roughly 885 bytes plus twice the runner path, so
-        MAX_REASON_BYTES - the bound on blocking *feedback* - used to drop it
-        entirely past a repository root of about 145 characters, and rebuild
-        it on every write call thereafter because the once-per-session flag
-        was committed only after the length check.
+        The control interception binds any plain `lifecycle` attempt, so the
+        notice does not need to carry bound commands at all.
         """
 
-        from agent_handoff_toolkit import hook_adapters
+        import re
+
+        self.invoke("UserPromptSubmit")
+        message = json.loads(self.write().stdout)["hookSpecificOutput"][
+            "additionalContext"
+        ]
+        self.assertLessEqual(len(message.encode()), 400, message)
+        self.assertIsNone(re.search(r"[0-9a-f]{64}", message))
+        self.assertNotIn(self.root.as_posix(), message)
+        self.assertNotIn("--session-key", message)
+        self.assertNotIn("--challenge", message)
+
+    def test_the_advisory_does_not_vary_with_the_repository_root(self):
+        """A long repository root used to silence the notice entirely.
+
+        The message carried the absolute runner path twice, so past a root of
+        roughly 145 characters it exceeded the feedback bound and was dropped,
+        and rebuilt on every write call thereafter. It now names no path at
+        all, so its length is fixed and the cliff cannot return.
+        """
 
         deep = self.root
         for _ in range(6):
             deep = deep / ("d" * 30)
         deep.mkdir(parents=True)
-        long_runner = deep / "runner.py"
-        long_runner.write_text("# owned runner\n")
-        self.assertGreater(len(long_runner.as_posix()), 184)
-
-        original = hook_adapters._control_command
-
-        def with_long_runner(runner, *args, **kwargs):
-            return original(long_runner, *args, **kwargs)
+        self.assertGreater(len(deep.as_posix()), 184)
 
         self.invoke("UserPromptSubmit")
-        with unittest.mock.patch.object(
-            hook_adapters, "_control_command", with_long_runner
-        ):
-            first = self.write()
-        message = json.loads(first.stdout)["systemMessage"]
-        self.assertGreater(len(message.encode()), hook_adapters.MAX_REASON_BYTES)
+        message = json.loads(self.write().stdout)["hookSpecificOutput"][
+            "additionalContext"
+        ]
+        self.assertNotIn("d" * 30, message)
         self.assertIn("lifecycle one-off", message)
-        # The flag was still committed, so it never rebuilds.
         self.assertTrue(
             self.storage.load_snapshot("session-1").session.write_advisory_emitted
         )

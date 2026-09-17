@@ -238,22 +238,28 @@ Two advisories make undeclared drift visible without gating anything:
   `NotebookEdit` on Claude Code; `apply_patch` on Codex. Not `Bash`, not an
   MCP tool, not any other tool name: classifying shell commands as read-only
   or not is fragile, and treating `git status` as a trigger would defeat the
-  purpose. The hook emits a bare top-level `systemMessage` and no
-  `hookSpecificOutput`, so it returns no permission decision at all and the
-  host's own permission flow runs exactly as it would with no hook installed.
-  It deliberately does not send `permissionDecision: "allow"`: on a real host
-  that value does not merely decline to block, it also satisfies the
-  permission gate, which would have let the first repository write of every
-  untracked session proceed without the approval the user would otherwise be
-  asked for. An advisory must not grant an approval nobody gave it. The
-  message states that the session is changing the repository with no
-  registered root, and carries both bound commands ready to run —
-  `lifecycle one-off` and `lifecycle register-root`. It never fires again for
-  that session, and never fires for a session that has already declared
-  one-off. The message is exempt from the `MAX_REASON_BYTES` bound, which
-  applies to blocking feedback fed back to the model; a notice on an
-  undecided path is never fed back and never loops, and bounding it only
-  silenced the advisory in repositories with long paths.
+  purpose. The hook emits `hookSpecificOutput.additionalContext` and no
+  `permissionDecision` of any kind, so the host's own permission flow runs
+  exactly as it would with no hook installed. It deliberately does not send
+  `permissionDecision: "allow"`: on a real host that value does not merely
+  decline to block, it also satisfies the permission gate, which would have
+  let the first repository write of every untracked session proceed without
+  the approval the user would otherwise be asked for. An advisory must not
+  grant an approval nobody gave it. It is delivered as model context rather
+  than as a `systemMessage` because it is addressed to the model — it hands
+  the session two commands to choose between, and a message the model never
+  sees cannot be acted on. Whether a given host delivers that field to the
+  model is a property of the host, so the acceptance run reports it as
+  `advisory_seen`: the scripted session is asked to repeat the notice's code,
+  and the observer records only whether it appeared. The message states that
+  this is the first repository edit with no registered root and names both
+  commands in their plain form — `lifecycle register-root` and
+  `lifecycle one-off` — which the control interception binds. It names no
+  session key, challenge or absolute path, so its length is fixed: an earlier
+  form carried two 64-hex values and the runner path twice, which pushed it
+  past the feedback bound in repositories with long paths and silenced it
+  entirely. It never fires again for that session, and never fires for a
+  session that has already declared one-off.
 - **`AHK-NO-HANDOFF`** fires at most once per session, at `Stop` for a session
   still in `OPEN` or `ONE_OFF`, when both hold: `git status --porcelain` is
   non-empty, and its digest differs from the digest recorded at the session's
