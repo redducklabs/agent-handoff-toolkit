@@ -1106,22 +1106,30 @@ def run_lifecycle_hook(platform, name, raw, repo_root, storage=None):
         and snapshot is not None
         and snapshot.session.mode in _UNGATED
     ):
-        note = _no_handoff_note(snapshot, Path(repo_root).resolve())
+        note = _no_handoff_note(snapshot, Path(repo_root).resolve(), storage, raw_id)
         if note is not None:
             return note
     return output
 
 
-def _no_handoff_note(snapshot, root):
-    """Report unfinished work at the end of an untracked session.
+def _no_handoff_note(snapshot, root, storage, raw_id):
+    """Report unfinished work once, at the end of an untracked session.
 
     Both conditions must hold: the tree is dirty now, and it differs from the
     baseline taken at the session's first user turn. The first alone fires on
     work the user left in place beforehand; the second alone fires on a session
     that cleaned the tree by committing pre-existing changes.
+
+    It says this once. `Stop` runs at every turn end, not at the end of a
+    session, so an unchanged repeat cost the user the same notice every time
+    the agent stopped talking and told them nothing they had not read. The
+    flag is committed with the notice, which is also what lets a later `Stop`
+    skip the `git status` subprocess entirely.
     """
 
     try:
+        if snapshot.session.no_handoff_note_emitted:
+            return None
         baseline = snapshot.session.worktree_baseline
         if baseline is None:
             return None
@@ -1133,14 +1141,31 @@ def _no_handoff_note(snapshot, root):
         current, dirty = state
         if current == baseline or not dirty:
             return None
+        # The flag is committed before the notice is returned, so a failure to
+        # record it leaves the notice unsent rather than repeating forever.
+        _commit(
+            storage,
+            raw_id,
+            snapshot,
+            LifecycleMutation(
+                replace(
+                    snapshot.session,
+                    no_handoff_note_emitted=True,
+                    targeted_revision=snapshot.session.targeted_revision + 1,
+                )
+            ),
+        )
+        # Plain English, addressed to the person reading it. The mechanism
+        # sees a changed tree, not who changed it, so the notice still does
+        # not claim the session made the change.
         return HookExecution(
             stdout=json.dumps(
                 {
                     "systemMessage": (
                         "AHK-NO-HANDOFF: The repository changed during this "
-                        "session and is ending with work uncommitted, with no "
-                        "handoff record. If someone continues this, register a "
-                        "root and render a continuation."
+                        "session and is ending with uncommitted work and no "
+                        "handoff record. If this work continues later, ask me "
+                        "to create a handoff before you close the session."
                     )
                 },
                 separators=(",", ":"),
