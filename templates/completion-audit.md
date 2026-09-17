@@ -7,7 +7,7 @@
       "highest_authorized": true,
       "parent_scope_id": null,
       "remaining_code": false,
-      "remaining_code_detail": "<explain why no code remains in this scope>",
+      "remaining_code_detail": "<one sentence stating why no code remains; at most 240 characters>",
       "remaining_work": false,
       "scope_definition": {
         "outcome": "Complete the authorized root outcome.",
@@ -37,8 +37,8 @@
   "transition": null,
   "verification": [
     {
-      "check": "<command or check>",
-      "reason": "<why this check has not run>",
+      "check": "<command or check; at most 120 characters, and at most 8 entries in all>",
+      "reason": "<why this check has not run; at most 160 characters>",
       "result": "not-run"
     }
   ]
@@ -49,28 +49,28 @@
 
 ## Completed objective
 
-<State the completed highest authorized outcome.>
+<State the completed highest authorized outcome. At most 200 words.>
 
 ## Authoritative references
 
-<List repository instructions, governing designs, plans, ADRs, issues, and rollout references.>
+<List repository instructions, governing designs, plans, ADRs, issues, and rollout references. At most 200 words.>
 
 ## User decisions
 
-<Record settled decisions that defined completion.>
+<Record settled decisions that defined completion. At most 200 words.>
 
 ## Final repository state
 
-<Record the final branch, HEAD, index, untracked files, remote, tracker, and rollout state.>
+<Record the final branch, HEAD, index, untracked files, remote, tracker, and rollout state. At most 200 words.>
 
 ## Completed work
 
-<Describe the delivered work and explicitly closed scopes.>
+<Describe the delivered work and explicitly closed scopes. At most 200 words.>
 
 ## Known risks or separately tracked follow-ups
 
-<List residual risks or independently authorized work; state none when there are none.>
+<List residual risks or independently authorized work; state none when there are none. At most 200 words.>
 
 ## External effects
 
-<Record remote, tracker, deployment, or other external mutations; state none when there were none.>
+<Record remote, tracker, deployment, or other external mutations; state none when there were none. At most 200 words.>

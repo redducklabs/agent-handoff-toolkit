@@ -1585,5 +1585,111 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(result.stderr, "")
 
 
+class RecordSizeTests(unittest.TestCase):
+    """The next session reads all of it, so the contract's limits are enforced.
+
+    The contract already states one entry per gate, 120 characters of check
+    and 160 of evidence. Nothing checked any of it, and the median real record
+    across the three consumers runs 2,396 words.
+    """
+
+    def record(self, **changes):
+        data = make_v2_continuation()
+        data.update(changes)
+        return data
+
+    def codes(self, data):
+        return {issue.code for issue in validate_markdown(render_record(data))}
+
+    def render_codes(self, data):
+        try:
+            render_record(data)
+        except ValueError as error:
+            return {item.split(":", 1)[0].strip() for item in str(error).split(";")}
+        return set()
+
+    def test_eight_verification_entries_pass_and_nine_do_not(self):
+        entry = {"check": "pytest -q", "result": "pass", "evidence": "0 failed"}
+        self.assertNotIn(
+            "verification-count", self.codes(self.record(verification=[entry] * 8))
+        )
+        self.assertIn(
+            "verification-count",
+            self.render_codes(self.record(verification=[entry] * 9)),
+        )
+
+    def test_the_contract_field_limits_are_enforced(self):
+        for label, entry in (
+            ("check", {"check": "c" * 121, "result": "pass", "evidence": "ok"}),
+            (
+                "evidence",
+                {"check": "pytest -q", "result": "pass", "evidence": "e" * 161},
+            ),
+            (
+                "reason",
+                {"check": "pytest -q", "result": "not-run", "reason": "r" * 161},
+            ),
+        ):
+            with self.subTest(field=label):
+                self.assertIn(
+                    "verification-size",
+                    self.render_codes(self.record(verification=[entry])),
+                )
+        boundary = [
+            {"check": "c" * 120, "result": "pass", "evidence": "e" * 160},
+            {"check": "c" * 120, "result": "not-run", "reason": "r" * 160},
+        ]
+        self.assertNotIn(
+            "verification-size", self.codes(self.record(verification=boundary))
+        )
+
+    def test_a_scope_detail_is_a_sentence_not_a_narrative(self):
+        data = self.record()
+        scope = dict(data["active_scopes"][0])
+        scope["remaining_code_detail"] = "d " * 119 + "d"
+        self.assertNotIn(
+            "scope-detail-size", self.codes(self.record(active_scopes=[scope]))
+        )
+        scope = dict(scope)
+        scope["remaining_code_detail"] = "d" * 241
+        self.assertIn(
+            "scope-detail-size", self.render_codes(self.record(active_scopes=[scope]))
+        )
+
+    def test_a_narrative_section_is_capped_at_two_hundred_words(self):
+        data = self.record()
+        name = "Objective"
+        sections = dict(data["sections"])
+        sections[name] = " ".join(["word"] * 200)
+        self.assertNotIn("section-size", self.codes(self.record(sections=sections)))
+        sections = dict(sections)
+        sections[name] = " ".join(["word"] * 201)
+        self.assertIn("section-size", self.render_codes(self.record(sections=sections)))
+
+    def test_the_whole_record_is_capped(self):
+        data = self.record()
+        sections = {name: " ".join(["word"] * 190) for name in data["sections"]}
+        self.assertIn("record-size", self.render_codes(self.record(sections=sections)))
+
+    def test_a_schema_v1_record_is_untouched_by_the_limits(self):
+        data = load_fixture("continuation.json")
+        data["verification"] = [
+            {"check": "c" * 200, "result": "pass", "evidence": "e" * 200}
+        ] * 12
+        sections = dict(data["sections"])
+        sections["Verification evidence"] = json.dumps(
+            data["verification"], ensure_ascii=False, indent=2, sort_keys=True
+        )
+        data["sections"] = sections
+        codes = {issue.code for issue in validate_markdown(render_record(data))}
+        for code in (
+            "verification-count",
+            "verification-size",
+            "scope-detail-size",
+            "section-size",
+            "record-size",
+        ):
+            self.assertNotIn(code, codes)
+
 if __name__ == "__main__":
     unittest.main()

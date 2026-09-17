@@ -1041,6 +1041,112 @@ def _validate_type_fields(
     return issues
 
 
+# Budgets the contract already states, enforced so a record stays readable to
+# the session that has to read all of it. Schema v2 only: a schema-v1 record is
+# historical and is never rewritten to fit a limit introduced after it.
+MAX_VERIFICATION_ENTRIES = 8
+MAX_VERIFICATION_CHECK_CHARACTERS = 120
+MAX_VERIFICATION_EVIDENCE_CHARACTERS = 160
+MAX_SCOPE_DETAIL_CHARACTERS = 240
+MAX_SECTION_WORDS = 200
+MAX_RECORD_WORDS = 1200
+
+
+def _size_issues(data: Mapping[str, object]) -> list[ValidationIssue]:
+    """Enforce the record budgets, all of them schema-v2 only."""
+
+    issues: list[ValidationIssue] = []
+    entries = data.get("verification")
+    if isinstance(entries, list):
+        if len(entries) > MAX_VERIFICATION_ENTRIES:
+            issues.append(
+                _issue(
+                    "verification-count",
+                    "verification must hold at most "
+                    f"{MAX_VERIFICATION_ENTRIES} entries: record one per gate "
+                    "the next session would rerun, not one per invocation",
+                )
+            )
+        for index, entry in enumerate(entries):
+            if not isinstance(entry, Mapping):
+                continue
+            check = entry.get("check")
+            if (
+                isinstance(check, str)
+                and len(check) > MAX_VERIFICATION_CHECK_CHARACTERS
+            ):
+                issues.append(
+                    _issue(
+                        "verification-size",
+                        f"verification[{index}].check must be at most "
+                        f"{MAX_VERIFICATION_CHECK_CHARACTERS} characters",
+                    )
+                )
+            for field_name in ("evidence", "reason"):
+                value = entry.get(field_name)
+                if (
+                    isinstance(value, str)
+                    and len(value) > MAX_VERIFICATION_EVIDENCE_CHARACTERS
+                ):
+                    issues.append(
+                        _issue(
+                            "verification-size",
+                            f"verification[{index}].{field_name} must be at most "
+                            f"{MAX_VERIFICATION_EVIDENCE_CHARACTERS} characters",
+                        )
+                    )
+    scopes = data.get("active_scopes")
+    if isinstance(scopes, list):
+        for index, scope in enumerate(scopes):
+            if not isinstance(scope, Mapping):
+                continue
+            detail = scope.get("remaining_code_detail")
+            if isinstance(detail, str) and len(detail) > MAX_SCOPE_DETAIL_CHARACTERS:
+                issues.append(
+                    _issue(
+                        "scope-detail-size",
+                        f"active_scopes[{index}].remaining_code_detail must be at "
+                        f"most {MAX_SCOPE_DETAIL_CHARACTERS} characters: one "
+                        "sentence naming what remains and where",
+                    )
+                )
+    sections = data.get("sections")
+    if isinstance(sections, Mapping):
+        for name, body in sections.items():
+            if isinstance(body, str) and _word_count(body) > MAX_SECTION_WORDS:
+                issues.append(
+                    _issue(
+                        "section-size",
+                        f"section {name} must be at most {MAX_SECTION_WORDS} words",
+                    )
+                )
+        if _record_word_count(data) > MAX_RECORD_WORDS:
+            issues.append(
+                _issue(
+                    "record-size",
+                    f"the whole record must be at most {MAX_RECORD_WORDS} words",
+                )
+            )
+    return issues
+
+
+def _record_word_count(data: Mapping[str, object]) -> int:
+    """Count the record as it is written: its metadata block and its sections."""
+
+    sections = data.get("sections")
+    metadata = {key: value for key, value in data.items() if key != "sections"}
+    try:
+        rendered = json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True)
+    except (TypeError, ValueError):
+        return 0
+    total = _word_count(rendered)
+    if isinstance(sections, Mapping):
+        total += sum(
+            _word_count(body) for body in sections.values() if isinstance(body, str)
+        )
+    return total
+
+
 def _validate_data(
     data: object,
     record_path: str | os.PathLike[str] | None = None,
@@ -1074,6 +1180,7 @@ def _validate_data(
     if schema_version == LATEST_SCHEMA_VERSION:
         issues.extend(_validate_v2_lineage_fields(data))
         issues.extend(_validate_v2_scopes(data))
+        issues.extend(_size_issues(data))
     issues.extend(_validate_verification(data))
     issues.extend(_validate_type_fields(data, record_path=record_path))
 
