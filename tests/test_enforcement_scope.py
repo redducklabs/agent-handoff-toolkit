@@ -232,6 +232,7 @@ class UngatedSessionTests(unittest.TestCase):
         # The mechanism sees a changed tree, not who changed it.
         self.assertIn("The repository changed during this session", message)
         self.assertNotIn("This session changed the repository", message)
+        self.assertNotIn("you changed", message)
         self.assertNotIn("decision", body)
         self.assertNotIn("continue", body)
 
@@ -332,6 +333,84 @@ class UngatedSessionTests(unittest.TestCase):
         self.assertIn("AHK-NO-HANDOFF", json.loads(output.stdout)["systemMessage"])
         self.assertEqual(len(calls), 1, calls)
         self.assertEqual(calls[0], ["git", "status", "--porcelain"])
+
+    def test_the_unfinished_work_note_fires_once_for_the_whole_session(self):
+        """It used to fire at every turn end while the tree stayed dirty.
+
+        The design spec placed this note at the end of a session. Firing it
+        per turn cost roughly fifty tokens of user-facing noise every time
+        the agent stopped talking, and said nothing new the second time.
+        """
+
+        import shutil
+        import subprocess
+
+        shutil.rmtree(self.root / ".git")
+        subprocess.run(["git", "init", "--quiet"], cwd=self.root, check=True)
+        self.invoke("UserPromptSubmit")
+        (self.root / "changed.py").write_text("x = 1")
+        first = self.invoke("Stop")
+        self.assertIn("AHK-NO-HANDOFF", json.loads(first.stdout)["systemMessage"])
+        self.assertEqual(self.invoke("Stop"), HookExecution())
+        self.assertEqual(self.invoke("Stop"), HookExecution())
+        self.assertTrue(
+            self.storage.load_snapshot("session-1").session.no_handoff_note_emitted
+        )
+
+    def test_a_later_user_turn_does_not_rearm_the_unfinished_work_note(self):
+        import shutil
+        import subprocess
+
+        shutil.rmtree(self.root / ".git")
+        subprocess.run(["git", "init", "--quiet"], cwd=self.root, check=True)
+        self.invoke("UserPromptSubmit")
+        (self.root / "changed.py").write_text("x = 1")
+        self.assertIn(
+            "AHK-NO-HANDOFF", json.loads(self.invoke("Stop").stdout)["systemMessage"]
+        )
+        self.invoke("UserPromptSubmit", turn_id="turn-2")
+        (self.root / "changed-again.py").write_text("x = 2")
+        self.assertEqual(self.invoke("Stop"), HookExecution())
+
+    def test_a_stop_after_the_note_costs_no_git_subprocess(self):
+        """Once the note has fired there is nothing left for git status to decide."""
+
+        import shutil
+        import subprocess
+        from unittest.mock import patch
+
+        from agent_handoff_toolkit import repository_state
+
+        shutil.rmtree(self.root / ".git")
+        subprocess.run(["git", "init", "--quiet"], cwd=self.root, check=True)
+        self.invoke("UserPromptSubmit")
+        (self.root / "changed.py").write_text("x = 1")
+        self.invoke("Stop")
+        real = repository_state.subprocess.run
+        calls = []
+
+        def counted(*args, **kwargs):
+            calls.append(args[0])
+            return real(*args, **kwargs)
+
+        with patch.object(repository_state.subprocess, "run", counted):
+            self.assertEqual(self.invoke("Stop"), HookExecution())
+        self.assertEqual(calls, [])
+
+    def test_the_unfinished_work_note_reads_as_plain_english(self):
+        """It is user-facing text, so it asks the user for something concrete."""
+
+        import shutil
+        import subprocess
+
+        shutil.rmtree(self.root / ".git")
+        subprocess.run(["git", "init", "--quiet"], cwd=self.root, check=True)
+        self.invoke("UserPromptSubmit")
+        (self.root / "changed.py").write_text("x = 1")
+        message = json.loads(self.invoke("Stop").stdout)["systemMessage"]
+        self.assertIn("ask me to create a handoff", message)
+        self.assertNotIn("register a root", message)
+        self.assertNotIn("render a continuation", message)
 
     def test_stop_is_silent_when_the_tree_was_already_dirty(self):
         import shutil

@@ -60,7 +60,7 @@ from .lineage import (
     validate_identifier,
     validate_scope_definition,
 )
-from .records import parse_markdown, render_resume_prompt, render_terminal_response
+from .records import parse_markdown, render_terminal_response
 from .repository_state import worktree_digest, worktree_state
 
 # One bound, on the whole hook input. A tool call carries the work's payload -
@@ -204,7 +204,11 @@ def _turn_content(value):
         return None
     if not isinstance(value, str):
         raise ValueError("invalid hook text")
-    normalized = value.replace("\r\n", "\n").replace("\r", "\n")
+    # Trailing newlines are normalized away with the line endings: the CLI
+    # prints the rendered response followed by one, so a host reporting what
+    # it printed differs from the renderer by that byte alone. Nothing else is
+    # trimmed, so the body stays byte-exact.
+    normalized = value.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
     return normalized if normalized.strip() else None
 
 
@@ -488,9 +492,13 @@ def _candidate(event, snapshot, root):
         if "Continue from handoff:" in message or "](" in message:
             raise ValueError("invalid candidate pointer")
         return None
+    # Trailing whitespace does not make a pointer ambiguous. Raising here
+    # reports a malfunction, and a response that differs from the renderer by
+    # whitespace is a formatting mismatch the model can correct - which is
+    # what AHK-STOP-RESPONSE tells it, once the candidate is discovered.
     if (
         len(matches) != 1
-        or matches[0].end() != len(message)
+        or matches[0].end() != len(message.rstrip())
         or len(re.findall(r"\]\(", message)) != 1
     ):
         raise ValueError("ambiguous candidate pointer")
@@ -981,37 +989,123 @@ def _user_prompt(event, snapshot, storage, raw_id, root):
     if request is not None and _decision_resolved(event.current_user_message, request):
         decision = evaluate_user_prompt(event, updated, decision_resolved=True)
         updated = _commit(storage, raw_id, updated, decision.mutation)
-    match = re.match(r"Continue from handoff: ([^\n]+)\n", event.current_user_message)
+    # The pointer line is the whole resume decision. The prompt body was never
+    # the evidence - the record's digest and the live chain are - and requiring
+    # the paste to match the renderer byte for byte meant one stray space left
+    # the session untracked with nothing said to anyone.
+    first_line = (event.current_user_message or "").split("\n", 1)[0]
+    match = re.fullmatch(r"Continue from handoff: (.+)", first_line)
     if match and updated.session.mode in _UNGATED:
-        path = match.group(1)
-        text, data, digest = _read_record(path, root)
-        if event.current_user_message != render_resume_prompt(path, text):
-            return HookExecution()
-        updated = service.resume(
-            challenge=updated.session.bootstrap_challenge,
-            record_path=path,
-            record_text=text,
-            record_metadata=data,
-            record_digest=digest,
-            expected_session_revision=updated.session.targeted_revision,
+        resumed, failure = _resume_chain(
+            service, storage, updated, match.group(1), root
+        )
+        if failure is not None:
+            return _context(
+                "UserPromptSubmit",
+                f"AHK-RESUME-FAILED failed={failure}: the pasted handoff did not "
+                "resume a tracked chain; this session is untracked. Tell the user.",
+            )
+        updated = resumed
+        return _context(
+            "UserPromptSubmit",
+            f"AHK-RESUMED: tracked root {updated.chain.locked_root_id} from "
+            f"{match.group(1)}. This session must end with a continuation or a "
+            "completion audit. Any text after the first line of the prompt is "
+            "the user's instruction for this session.",
         )
     remaining_proposal = updated.session.pending_transition_reference
     if updated.session.pending_decision_reference or (
         remaining_proposal and remaining_proposal.status == "pending"
     ):
-        context = "AHK-USER-CLARIFY: Clarify the pending decision or reissue the exact scope proposal for an adjacent response. No new authorization was granted."
-        return HookExecution(
-            stdout=json.dumps(
-                {
-                    "hookSpecificOutput": {
-                        "hookEventName": "UserPromptSubmit",
-                        "additionalContext": context,
-                    }
-                },
-                separators=(",", ":"),
-            )
+        return _context(
+            "UserPromptSubmit",
+            "AHK-USER-CLARIFY: Clarify the pending decision or reissue the exact scope proposal for an adjacent response. No new authorization was granted.",
         )
     return HookExecution()
+
+
+def _context(event_name, message):
+    """Return model-visible context and no decision of any kind."""
+
+    return HookExecution(
+        stdout=json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": event_name,
+                    "additionalContext": message,
+                }
+            },
+            separators=(",", ":"),
+        )
+    )
+
+
+def _resume_chain(service, storage, snapshot, pointer, root):
+    """Resume the chain the pointed-at record heads, or name why it did not.
+
+    The failure codes are the same closed vocabulary every other denial uses.
+    None of them carries an exception message, a path the caller did not
+    already supply, or any part of the prompt.
+    """
+
+    try:
+        canonical = canonical_record_path(pointer)
+        contained = Path(canonical).is_relative_to(root / "handoffs")
+    except Exception:
+        return snapshot, "candidate-outside-handoffs"
+    if not contained:
+        return snapshot, "candidate-outside-handoffs"
+    try:
+        text, data, digest = _read_record(pointer, root)
+    except Exception:
+        return snapshot, "record-invalid"
+    failure = _resume_precheck(storage, data, canonical, digest)
+    if failure is not None:
+        return snapshot, failure
+    try:
+        return (
+            service.resume(
+                challenge=snapshot.session.bootstrap_challenge,
+                record_path=pointer,
+                record_text=text,
+                record_metadata=data,
+                record_digest=digest,
+                expected_session_revision=snapshot.session.targeted_revision,
+            ),
+            None,
+        )
+    except StaleLifecycleState:
+        return snapshot, "chain-stale"
+    except Exception:
+        return snapshot, "record-invalid"
+
+
+def _resume_precheck(storage, data, path, digest):
+    """Classify a resume that cannot succeed, before anything is committed."""
+
+    if (
+        not isinstance(data, Mapping)
+        or data.get("schema_version") != 2
+        or data.get("record_type") != "continuation"
+        or not isinstance(data.get("authorization_id"), str)
+    ):
+        return "record-invalid"
+    try:
+        chain = storage.load_chain(data["authorization_id"])
+    except Exception:
+        return "chain-inactive"
+    if chain is None or chain.status != "active":
+        return "chain-inactive"
+    current = chain.current_record_reference
+    if current is None or (current.record_id, current.path, current.sha256) != (
+        data.get("record_id"),
+        path,
+        digest,
+    ):
+        return "record-digest"
+    if chain.locked_root_id != data.get("authorized_root_scope_id"):
+        return "record-invalid"
+    return None
 
 
 def _decision_resolved(message, request):
@@ -1047,6 +1141,23 @@ def run_lifecycle_hook(platform, name, raw, repo_root, storage=None):
     stage = "decode-input"
     try:
         payload = decode_payload(raw)
+        # Nothing is gated at PreToolUse but the toolkit's own control
+        # commands and the first-write advisory, and the advisory fires only
+        # for a known writing tool. Every other call - every shell command,
+        # every MCP call - used to open state, take its lock and run a git
+        # subprocess before returning the empty decision it always returns.
+        # Two fields are read defensively here; anything unexpected falls
+        # through to the unchanged path below.
+        if event_kind is EventName.PRE_TOOL_USE and platform in _WRITE_TOOLS:
+            tool = payload.get("tool_name")
+            inputs = payload.get("tool_input")
+            command = inputs.get("command") if isinstance(inputs, Mapping) else None
+            control = (
+                isinstance(command, str)
+                and re.match(r"^python \S+ lifecycle(?: |$)", command) is not None
+            )
+            if not control and tool not in _WRITE_TOOLS[platform]:
+                return HookExecution()
         root = Path(repo_root).resolve()
         raw_id = _string(payload.get("session_id"), 4096)
         if storage is None:
@@ -1106,22 +1217,30 @@ def run_lifecycle_hook(platform, name, raw, repo_root, storage=None):
         and snapshot is not None
         and snapshot.session.mode in _UNGATED
     ):
-        note = _no_handoff_note(snapshot, Path(repo_root).resolve())
+        note = _no_handoff_note(snapshot, Path(repo_root).resolve(), storage, raw_id)
         if note is not None:
             return note
     return output
 
 
-def _no_handoff_note(snapshot, root):
-    """Report unfinished work at the end of an untracked session.
+def _no_handoff_note(snapshot, root, storage, raw_id):
+    """Report unfinished work once, at the end of an untracked session.
 
     Both conditions must hold: the tree is dirty now, and it differs from the
     baseline taken at the session's first user turn. The first alone fires on
     work the user left in place beforehand; the second alone fires on a session
     that cleaned the tree by committing pre-existing changes.
+
+    It says this once. `Stop` runs at every turn end, not at the end of a
+    session, so an unchanged repeat cost the user the same notice every time
+    the agent stopped talking and told them nothing they had not read. The
+    flag is committed with the notice, which is also what lets a later `Stop`
+    skip the `git status` subprocess entirely.
     """
 
     try:
+        if snapshot.session.no_handoff_note_emitted:
+            return None
         baseline = snapshot.session.worktree_baseline
         if baseline is None:
             return None
@@ -1133,14 +1252,31 @@ def _no_handoff_note(snapshot, root):
         current, dirty = state
         if current == baseline or not dirty:
             return None
+        # The flag is committed before the notice is returned, so a failure to
+        # record it leaves the notice unsent rather than repeating forever.
+        _commit(
+            storage,
+            raw_id,
+            snapshot,
+            LifecycleMutation(
+                replace(
+                    snapshot.session,
+                    no_handoff_note_emitted=True,
+                    targeted_revision=snapshot.session.targeted_revision + 1,
+                )
+            ),
+        )
+        # Plain English, addressed to the person reading it. The mechanism
+        # sees a changed tree, not who changed it, so the notice still does
+        # not claim the session made the change.
         return HookExecution(
             stdout=json.dumps(
                 {
                     "systemMessage": (
                         "AHK-NO-HANDOFF: The repository changed during this "
-                        "session and is ending with work uncommitted, with no "
-                        "handoff record. If someone continues this, register a "
-                        "root and render a continuation."
+                        "session and is ending with uncommitted work and no "
+                        "handoff record. If this work continues later, ask me "
+                        "to create a handoff before you close the session."
                     )
                 },
                 separators=(",", ":"),

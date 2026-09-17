@@ -239,6 +239,65 @@ class LifecycleStorageTests(unittest.TestCase):
         self.assertFalse(session.write_advisory_emitted)
         self.assertIsNone(session.worktree_baseline)
 
+    def test_state_written_by_a_newer_release_still_loads(self):
+        """Every worktree of a repository shares one registry.
+
+        A release that adds a state field would otherwise make every older
+        worktree in that repository unable to load state at all: a notice in
+        an untracked session, a block in a tracked one. A field this release
+        does not know is dropped; a field it knows but the writer omitted
+        takes its own default.
+        """
+
+        from agent_handoff_toolkit.lifecycle_storage import _model
+
+        session = {
+            "session_key": "a" * 64,
+            "targeted_revision": 3,
+            "mode": "open",
+            "authorization_id": None,
+            "chain_revision": None,
+            "pending_decision_reference": None,
+            "pending_transition_reference": None,
+            "correction_cycle_count": 0,
+            "last_issue_signature": None,
+            "current_external_user_turn_reference": None,
+            "bootstrap_challenge": None,
+            "pending_correction_hmac": None,
+            "write_advisory_emitted": True,
+            "worktree_baseline": None,
+            "no_handoff_note_emitted": True,
+            "a_field_from_a_later_release": {"nested": [1, 2, 3]},
+        }
+        loaded = _model(session, SessionState)
+        self.assertTrue(loaded.no_handoff_note_emitted)
+        self.assertFalse(hasattr(loaded, "a_field_from_a_later_release"))
+
+        chain = {
+            "authorization_id": "auth-1",
+            "locked_root_id": "issue-1",
+            "scope_digests": ["c" * 64],
+            "targeted_revision": 1,
+            "status": "active",
+            "current_record_reference": None,
+            "a_field_from_a_later_release": "ignored",
+        }
+        loaded_chain = _model(chain, ChainState)
+        self.assertEqual(loaded_chain.locked_root_id, "issue-1")
+        self.assertIsNone(loaded_chain.successor_authorization_id)
+        self.assertIsNone(loaded_chain.publication_evidence)
+
+    def test_state_missing_an_identity_field_still_fails(self):
+        from agent_handoff_toolkit.lifecycle_storage import _model
+
+        for model, value in (
+            (SessionState, {"targeted_revision": 1, "mode": "open"}),
+            (ChainState, {"locked_root_id": "issue-1", "status": "active"}),
+        ):
+            with self.subTest(model=model.__name__):
+                with self.assertRaises(LifecycleStorageError):
+                    _model(value, model)
+
     def test_new_modes_round_trip_through_storage(self):
         """Persist each new mode and both new fields, then reload from disk.
 
@@ -333,7 +392,6 @@ class LifecycleStorageTests(unittest.TestCase):
         original = json.loads(self.storage.registry_path.read_bytes())
         key = next(iter(original["sessions"]))
         alterations = [
-            ("chains", "auth-a", "unknown", "sentinel-" + secrets.token_hex(8)),
             ("chains", "auth-a", "status", "invalid"),
             ("chains", "auth-a", "targeted_revision", True),
             ("chains", "auth-a", "scope_digests", ["bad"]),
@@ -352,6 +410,24 @@ class LifecycleStorageTests(unittest.TestCase):
         del original["chains"]["auth-a"]["scope_digests"]
         with self.assertRaises(LifecycleStorageError):
             RegistryEnvelope.from_bytes(json.dumps(original).encode())
+
+    def test_an_unrecognized_state_field_is_dropped_rather_than_carried(self):
+        """Forward compatibility, without letting the field reach the model.
+
+        A field a later release added must not lock this release out of the
+        registry every worktree of the repository shares. It is dropped on
+        load, so nothing unknown ever reaches a lifecycle state object and
+        nothing unknown is written back.
+        """
+
+        register(self.storage, "s")
+        original = json.loads(self.storage.registry_path.read_bytes())
+        sentinel = "sentinel-" + secrets.token_hex(8)
+        original["chains"]["auth-a"]["a_later_field"] = sentinel
+        envelope = RegistryEnvelope.from_bytes(json.dumps(original).encode())
+        chain = envelope.chains["auth-a"]
+        self.assertFalse(hasattr(chain, "a_later_field"))
+        self.assertNotIn(sentinel, envelope.to_bytes().decode())
 
     def test_atomic_publication_privacy_sorted_keys_and_no_residue(self):
         register(self.storage, "private-session-z", "auth-z", "root-z")

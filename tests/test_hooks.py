@@ -240,6 +240,37 @@ class HostHookTests(unittest.TestCase):
         self.assertIn("handoffs/current.md", context.replace("\\", "/"))
         self.assertIn("validate", context.lower())
 
+    def test_claude_post_tool_use_recognizes_notebook_edits(self) -> None:
+        """NotebookEdit writes repository files and names its own field.
+
+        It was already a known writing tool for the first-write advisory but
+        matched neither hook, so the advisory never fired for it and a record
+        edited through it was never noticed.
+        """
+
+        raw = json.dumps(
+            {
+                "tool_name": "NotebookEdit",
+                "tool_input": {"notebook_path": "handoffs/current.md"},
+            }
+        )
+        context = hook_context(run_hook("claude", "post-tool-use", raw, ROOT))
+        self.assertIn("handoffs/current.md", context.replace("\\", "/"))
+        self.assertEqual(
+            run_hook(
+                "claude",
+                "post-tool-use",
+                json.dumps(
+                    {
+                        "tool_name": "NotebookEdit",
+                        "tool_input": {"notebook_path": "notebooks/analysis.ipynb"},
+                    }
+                ),
+                ROOT,
+            ),
+            "",
+        )
+
     def test_claude_post_tool_use_ignores_non_handoff_files(self) -> None:
         raw = json.dumps(
             {

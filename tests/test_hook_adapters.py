@@ -653,18 +653,36 @@ class EnforcementTests(unittest.TestCase):
         self.assertIn("errno:13", data["systemMessage"])
 
     def test_runtime_fault_on_a_tool_call_returns_no_permission_decision(self):
-        """A denied `Bash` or `Write` is what removes a session's way out."""
+        """A denied write or control command removes a session's way out.
 
-        with patch.object(
-            LocalLifecycleStorage,
-            "load_snapshot",
-            side_effect=OSError(errno.EACCES, "Permission denied"),
+        An ordinary call no longer reaches this path at all: nothing is
+        decided for it, so no state is opened for it. The two calls that do
+        reach it still report a fault with no decision attached.
+        """
+
+        runner = (self.root / ".agent-handoff-toolkit" / "runner.py").as_posix()
+        for label, host, tool, tool_input in (
+            ("write", "claude", "Write", {"file_path": str(self.root / "a.py")}),
+            (
+                "control",
+                "claude",
+                "Bash",
+                {"command": f"python {runner} lifecycle inspect"},
+            ),
         ):
-            output = self.invoke("PreToolUse")
-        data = json.loads(output.stdout)
-        self.assertEqual(output.exit_code, 0)
-        self.assertNotIn("hookSpecificOutput", data)
-        self.assertIn("AHK-HOOK-RUNTIME", data["systemMessage"])
+            with self.subTest(label=label):
+                with patch.object(
+                    LocalLifecycleStorage,
+                    "load_snapshot",
+                    side_effect=OSError(errno.EACCES, "Permission denied"),
+                ):
+                    output = self.invoke(
+                        "PreToolUse", host=host, tool_name=tool, tool_input=tool_input
+                    )
+                data = json.loads(output.stdout)
+                self.assertEqual(output.exit_code, 0)
+                self.assertNotIn("hookSpecificOutput", data)
+                self.assertIn("AHK-HOOK-RUNTIME", data["systemMessage"])
 
     def test_absent_null_or_blank_transcript_reference_is_not_a_fault(self):
         """The host reports where the transcript is; having none is not an error.
@@ -950,7 +968,7 @@ class EnforcementTests(unittest.TestCase):
             self.storage.load_snapshot("session-1").chain.current_record_reference
         )
 
-    def test_exact_continuation_reference_resumes_but_paraphrase_cannot(self):
+    def test_a_continuation_reference_resumes_but_a_paraphrase_cannot(self):
         self.register()
         path, _, message = self.record()
         self.assertEqual(self.invoke(last_assistant_message=message), HookExecution())
@@ -966,19 +984,246 @@ class EnforcementTests(unittest.TestCase):
             self.storage.load_snapshot("new-session").session.mode,
             EnforcementMode.OPEN,
         )
-        self.assertEqual(
-            self.invoke(
-                "UserPromptSubmit",
-                session_id="new-session",
-                turn_id="user-2",
-                prompt=render_resume_prompt(path, path.read_text(encoding="utf-8")),
-            ),
-            HookExecution(),
+        output = self.invoke(
+            "UserPromptSubmit",
+            session_id="new-session",
+            turn_id="user-2",
+            prompt=render_resume_prompt(path, path.read_text(encoding="utf-8")),
+        )
+        self.assertIn(
+            "AHK-RESUMED",
+            json.loads(output.stdout)["hookSpecificOutput"]["additionalContext"],
         )
         self.assertEqual(
             self.storage.load_snapshot("new-session").session.authorization_id,
             self.storage.load_snapshot("session-1").session.authorization_id,
         )
+
+    def test_a_trailing_newline_on_the_stop_candidate_is_accepted(self):
+        """`render-tail` prints the response followed by a newline.
+
+        A host that reported the final message with that newline used to be
+        told the toolkit had malfunctioned - `AHK-HOOK-RUNTIME` - for a
+        response that was byte-for-byte the one the renderer produced.
+        """
+
+        self.register()
+        _, _, message = self.record()
+        self.assertEqual(
+            self.invoke(last_assistant_message=message + "\n"), HookExecution()
+        )
+        self.assertEqual(
+            self.storage.load_snapshot(
+                "session-1"
+            ).chain.current_record_reference.record_id,
+            "first",
+        )
+
+    def test_repeated_trailing_newlines_on_the_stop_candidate_are_accepted(self):
+        self.register()
+        _, _, message = self.record()
+        self.assertEqual(
+            self.invoke(last_assistant_message=message + "\n\n"), HookExecution()
+        )
+        self.assertIsNotNone(
+            self.storage.load_snapshot("session-1").chain.current_record_reference
+        )
+
+    def test_text_after_the_candidate_link_is_still_ambiguous(self):
+        """Only trailing newlines are tolerated; the body stays byte-exact."""
+
+        self.register()
+        _, _, message = self.record()
+        result = self.invoke(last_assistant_message=message + "\nStill working.")
+        self.assert_block(result, "AHK-HOOK-RUNTIME")
+        self.assertIsNone(
+            self.storage.load_snapshot("session-1").chain.current_record_reference
+        )
+
+    def test_trailing_spaces_on_the_stop_candidate_are_not_tolerated(self):
+        self.register()
+        _, _, message = self.record()
+        self.assert_block(
+            self.invoke(last_assistant_message=message + " "), "AHK-STOP-RESPONSE"
+        )
+
+    def test_the_pointer_line_alone_resumes_and_later_prompt_text_is_the_work(self):
+        """Lineage is the record digest and the live chain, never the prose.
+
+        One extra space in a pasted prompt used to leave the new session
+        untracked with no message at all, which is the quietest way the
+        toolkit had of losing an epic.
+        """
+
+        self.register()
+        path, text, message = self.record()
+        self.assertEqual(self.invoke(last_assistant_message=message), HookExecution())
+        prompt = (
+            render_resume_prompt(path, text)
+            + "\n\nAlso rerun the migration before anything else."
+        )
+        output = self.invoke("UserPromptSubmit", session_id="resumed", prompt=prompt)
+        context = json.loads(output.stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("AHK-RESUMED", context)
+        self.assertIn("issue-1", context)
+        self.assertEqual(
+            self.storage.load_snapshot("resumed").session.authorization_id,
+            self.storage.load_snapshot("session-1").session.authorization_id,
+        )
+
+    def test_the_bare_pointer_line_is_enough_to_resume(self):
+        self.register()
+        path, _, message = self.record()
+        self.assertEqual(self.invoke(last_assistant_message=message), HookExecution())
+        output = self.invoke(
+            "UserPromptSubmit",
+            session_id="bare",
+            prompt="Continue from handoff: " + path.as_posix(),
+        )
+        self.assertIn(
+            "AHK-RESUMED",
+            json.loads(output.stdout)["hookSpecificOutput"]["additionalContext"],
+        )
+        self.assertIs(
+            self.storage.load_snapshot("bare").session.mode, EnforcementMode.TRACKED
+        )
+
+    def test_an_altered_prompt_body_still_resumes_because_the_digest_decides(self):
+        self.register()
+        path, text, message = self.record()
+        self.assertEqual(self.invoke(last_assistant_message=message), HookExecution())
+        altered = render_resume_prompt(path, text).replace(
+            "Exact next action:", "Next:"
+        )
+        self.invoke("UserPromptSubmit", session_id="altered", prompt=altered)
+        self.assertIs(
+            self.storage.load_snapshot("altered").session.mode, EnforcementMode.TRACKED
+        )
+
+    def test_a_pointer_the_chain_does_not_hold_reports_the_failure(self):
+        """Silence was the defect: the user was never told tracking was lost."""
+
+        self.register()
+        path, text, message = self.record()
+        self.assertEqual(self.invoke(last_assistant_message=message), HookExecution())
+        other, _, _ = self.record(
+            name="second",
+            predecessor={
+                "record_id": "first",
+                "path": path.as_posix(),
+                "sha256": record_digest(text),
+            },
+        )
+        output = self.invoke(
+            "UserPromptSubmit",
+            session_id="wrong-record",
+            prompt="Continue from handoff: " + other.as_posix(),
+        )
+        context = json.loads(output.stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("AHK-RESUME-FAILED failed=record-digest", context)
+        self.assertIn("untracked", context)
+        self.assertIs(
+            self.storage.load_snapshot("wrong-record").session.mode,
+            EnforcementMode.OPEN,
+        )
+
+    def test_a_pointer_outside_handoffs_reports_its_own_code(self):
+        self.register()
+        path, text, message = self.record()
+        self.assertEqual(self.invoke(last_assistant_message=message), HookExecution())
+        outside = self.root / "outside.md"
+        outside.write_bytes(text.encode())
+        output = self.invoke(
+            "UserPromptSubmit",
+            session_id="outside",
+            prompt="Continue from handoff: " + outside.as_posix(),
+        )
+        context = json.loads(output.stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("AHK-RESUME-FAILED failed=candidate-outside-handoffs", context)
+        self.assertIs(
+            self.storage.load_snapshot("outside").session.mode, EnforcementMode.OPEN
+        )
+
+    def test_a_prompt_that_does_not_open_with_the_pointer_never_resumes(self):
+        self.register()
+        path, text, message = self.record()
+        self.assertEqual(self.invoke(last_assistant_message=message), HookExecution())
+        for index, prompt in (
+            (0, "Please continue from the newest handoff."),
+            (1, "Please " + render_resume_prompt(path, text)),
+            (2, "Context first.\nContinue from handoff: " + path.as_posix()),
+        ):
+            with self.subTest(prompt=index):
+                session = "no-pointer-" + str(index)
+                self.assertEqual(
+                    self.invoke("UserPromptSubmit", session_id=session, prompt=prompt),
+                    HookExecution(),
+                )
+                self.assertIs(
+                    self.storage.load_snapshot(session).session.mode,
+                    EnforcementMode.OPEN,
+                )
+
+    def test_an_ordinary_tool_call_never_opens_lifecycle_state(self):
+        """Nothing is decided for it in any mode, so nothing is loaded for it.
+
+        Every Bash call used to open the registry, take its lock and run a git
+        subprocess before discovering it had nothing to say.
+        """
+
+        class Unopenable:
+            def __getattr__(self, name):
+                raise AssertionError("lifecycle state opened for an ordinary call")
+
+        for host in ("claude", "codex"):
+            with self.subTest(host=host):
+                self.assertEqual(
+                    run_hook(
+                        host,
+                        "PreToolUse",
+                        json.dumps(
+                            payload(
+                                self.root,
+                                "PreToolUse",
+                                tool_name="Bash",
+                                tool_input={"command": "git status"},
+                            )
+                        ),
+                        self.root,
+                        Unopenable(),
+                    ),
+                    HookExecution(),
+                )
+
+    def test_control_commands_and_write_tools_still_load_state(self):
+        """The fast path must not swallow the two calls that decide something."""
+
+        class Unopenable:
+            def __getattr__(self, name):
+                raise RuntimeError("state unavailable")
+
+        runner = (self.root / ".agent-handoff-toolkit" / "runner.py").as_posix()
+        for host, tool, tool_input in (
+            ("claude", "Bash", {"command": f"python {runner} lifecycle inspect"}),
+            ("claude", "Write", {"file_path": str(self.root / "a.py")}),
+            ("codex", "apply_patch", {"command": "*** Add File: a.py"}),
+        ):
+            with self.subTest(host=host, tool=tool):
+                output = run_hook(
+                    host,
+                    "PreToolUse",
+                    json.dumps(
+                        payload(
+                            self.root,
+                            "PreToolUse",
+                            tool_name=tool,
+                            tool_input=tool_input,
+                        )
+                    ),
+                    self.root,
+                    Unopenable(),
+                )
+                self.assertIn("AHK-HOOK-RUNTIME", output.stdout)
 
     def propose(self, turn="assistant-1"):
         snapshot = self.storage.load_snapshot("session-1")
@@ -1537,33 +1782,40 @@ class EnforcementTests(unittest.TestCase):
                 index,
             )
 
-    def test_renderer_copied_multiline_prompt_only_resumes_exact_record(self):
+    def test_the_copied_prompt_resumes_however_the_user_edits_it(self):
+        """The record the pointer names is the evidence; the prose is not.
+
+        Every one of these carries the pointer as its first line, so every
+        one resumes the same chain. Only a prompt that does not open with the
+        pointer leaves the session untracked, and that is the user asking for
+        something else.
+        """
+
         self.register()
         path, _, message = self.record()
         self.invoke(last_assistant_message=message)
         copied = message.split("```text\n", 1)[1].split("\n```", 1)[0]
-        for index, text in enumerate(
+        authorization = self.storage.load_snapshot("session-1").session.authorization_id
+        for index, prompt in enumerate(
             (
+                copied,
                 "Continue from handoff: " + path.as_posix(),
                 copied + "\nMore",
-                "Please " + copied,
                 copied.replace("Exact next action:", "Next:"),
             )
         ):
-            self.invoke(
-                "UserPromptSubmit", session_id="other-" + str(index), prompt=text
-            )
-            self.assertEqual(
-                self.storage.load_snapshot("other-" + str(index)).session.mode,
-                EnforcementMode.OPEN,
-            )
-        self.assertEqual(
-            self.invoke("UserPromptSubmit", session_id="copy", prompt=copied),
-            HookExecution(),
+            with self.subTest(prompt=index):
+                session = "other-" + str(index)
+                self.invoke("UserPromptSubmit", session_id=session, prompt=prompt)
+                self.assertEqual(
+                    self.storage.load_snapshot(session).session.authorization_id,
+                    authorization,
+                )
+        self.invoke(
+            "UserPromptSubmit", session_id="prefixed", prompt="Please " + copied
         )
         self.assertEqual(
-            self.storage.load_snapshot("copy").session.authorization_id,
-            self.storage.load_snapshot("session-1").session.authorization_id,
+            self.storage.load_snapshot("prefixed").session.mode, EnforcementMode.OPEN
         )
 
     def test_completed_session_reentry_demands_new_authority(self):
