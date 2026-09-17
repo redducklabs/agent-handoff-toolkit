@@ -1315,16 +1315,17 @@ class RecordRenderingTests(unittest.TestCase):
         prompt = self.continuation["next_session_prompt"]
         self.assertEqual(
             tail,
-            "This session is stopped because authorized work remains.\n\n"
-            "What you need to do: Start a new session from the continuation "
-            "handoff below.\n\n"
+            'Stopping here. Work remains on "epic-toolkit".\n'
+            "Progress: 0 of 2 scopes complete.\n"
+            "What you need to do: start a new session and paste the block "
+            "below.\n\n"
             "```text\n"
             "Continue from handoff: C:/work spaces/handoffs/继续工作.md\n"
-            "Exact next action: Implement the host payload normalizer.\n"
-            "Target: src/handoff_toolkit/hooks.py\n"
+            "Next action: Implement the host payload normalizer.\n"
+            "Where: src/handoff_toolkit/hooks.py\n"
             "Constraints: Keep the adapter independent of record policy.\n"
-            "Completion gate: Claude and Codex payload fixtures pass.\n"
-            "Essential blockers, decisions, and validation gates:\n"
+            "Done when: Claude and Codex payload fixtures pass.\n"
+            "Also:\n"
             f"{prompt}\n"
             "```\n\n"
             "[Continuation handoff](<C:/work%20spaces/handoffs/"
@@ -1344,16 +1345,16 @@ class RecordRenderingTests(unittest.TestCase):
 
         self.assertEqual(
             response,
-            "This session is stopped because authorized work remains.\n\n"
-            "What you need to do: Start a new session from the continuation "
-            "handoff below.\n\n"
+            'Stopping here. Work remains on "Scope issue-1323".\n'
+            "What you need to do: start a new session and paste the block "
+            "below.\n\n"
             "```text\n"
             "Continue from handoff: C:/work spaces/handoffs/继续工作.md\n"
-            "Exact next action: Implement the host payload normalizer.\n"
-            "Target: src/handoff_toolkit/hooks.py\n"
+            "Next action: Implement the host payload normalizer.\n"
+            "Where: src/handoff_toolkit/hooks.py\n"
             "Constraints: Keep the adapter independent of record policy.\n"
-            "Completion gate: Claude and Codex payload fixtures pass.\n"
-            "Essential blockers, decisions, and validation gates:\n"
+            "Done when: Claude and Codex payload fixtures pass.\n"
+            "Also:\n"
             "- Decision: preserve newer live state and report material conflicts "
             "before editing.\n"
             "```\n\n"
@@ -1371,6 +1372,10 @@ class RecordRenderingTests(unittest.TestCase):
 
         self.assertEqual(
             response,
+            'Complete: "Scope issue-1323". Complete the authorized outcome for '
+            "issue-1323.\n"
+            "Verification: 1 passed, 0 failed, 0 not run.\n"
+            "Nothing further is required of you.\n\n"
             "[Audit record (not a handoff)](</tmp/work%20spaces/audit.md>)",
         )
 
@@ -1411,6 +1416,9 @@ class RecordRenderingTests(unittest.TestCase):
         )
         self.assertEqual(
             audit_tail,
+            'Complete: "standalone-contract". standalone-contract\n'
+            "Verification: 1 passed, 0 failed, 0 not run.\n"
+            "Nothing further is required of you.\n\n"
             "[Audit record (not a handoff)](</tmp/work%20spaces/audit.md>)",
         )
         self.assertNotIn("```", audit_tail)
@@ -1835,6 +1843,53 @@ class SuccessorScaffoldTests(unittest.TestCase):
             )
         self.assertEqual(status, 0)
         self.assertEqual(validate_markdown(output.read_text(encoding="utf-8")), [])
+
+
+class PlainResponseTests(unittest.TestCase):
+    """Goal 4: the response names the goal, the progress and the ask."""
+
+    def test_the_progress_line_is_omitted_for_a_single_scope(self):
+        response = render_terminal_response(
+            "/tmp/handoffs/one.md", render_record(make_v2_continuation())
+        )
+        self.assertNotIn("Progress:", response)
+
+    def test_the_progress_line_counts_completed_scopes(self):
+        data = make_v2_continuation(children=("child-a", "child-b", "child-c"))
+        scopes = data["active_scopes"]
+        scopes[1]["status"] = "complete"
+        scopes[1]["remaining_work"] = False
+        scopes[1]["remaining_code"] = False
+        scopes[1]["remaining_code_detail"] = "No code remains within this scope."
+        scopes[1]["scope_definition_digest"] = scope_definition_digest(scopes[1])
+        response = render_terminal_response(
+            "/tmp/handoffs/many.md", render_record(data)
+        )
+        self.assertIn("Progress: 1 of 4 scopes complete.", response)
+
+    def test_a_failing_check_is_still_counted_in_the_audit(self):
+        data = make_v2_audit()
+        data["verification"] = [
+            {"check": "pytest -q", "result": "pass", "evidence": "0 failed"},
+            {"check": "mypy", "result": "fail", "evidence": "2 errors remain"},
+            {"check": "e2e", "result": "not-run", "reason": "No environment."},
+        ]
+        response = render_terminal_response(
+            "/tmp/handoffs/audit.md", render_record(data)
+        )
+        self.assertIn("Verification: 1 passed, 1 failed, 1 not run.", response)
+        self.assertIn("Nothing further is required of you.", response)
+
+    def test_the_audit_names_the_completed_outcome(self):
+        response = render_terminal_response(
+            "/tmp/handoffs/audit.md", render_record(make_v2_audit())
+        )
+        self.assertTrue(response.startswith('Complete: "Scope issue-1323".'))
+        self.assertTrue(
+            response.rstrip().endswith(
+                "[Audit record (not a handoff)](</tmp/handoffs/audit.md>)"
+            )
+        )
 
 
 if __name__ == "__main__":

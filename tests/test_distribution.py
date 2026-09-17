@@ -683,8 +683,8 @@ class DistributionTests(unittest.TestCase):
 
     def test_continuation_output_contract_is_a_concise_handoff_pointer(self) -> None:
         required_phrases = (
-            "this session is stopped because authorized work remains",
-            "what you need to do: start a new session from the continuation handoff below",
+            "stopping here. work remains on",
+            "what you need to do: start a new session and paste the block below",
             "continue from handoff",
             "exact next action",
             "essential blockers, decisions, and validation gates",
@@ -712,7 +712,7 @@ class DistributionTests(unittest.TestCase):
             with self.subTest(path=relative_path):
                 self.assertIn("renderer", text)
                 for phrase in (
-                    "this session is stopped because authorized work remains",
+                    "stopping here. work remains on",
                     "what you need to do: start a new session",
                 ):
                     self.assertNotIn(phrase, text)
@@ -930,9 +930,9 @@ class DistributionTests(unittest.TestCase):
                         self.assertIn("```text", tail.stdout)
                         self.assertIn(expected_path, tail.stdout)
                         self.assertIn("Continue from handoff:", tail.stdout)
-                        self.assertIn("Exact next action:", tail.stdout)
+                        self.assertIn("Next action:", tail.stdout)
                         self.assertIn(
-                            "Essential blockers, decisions, and validation gates:",
+                            "Also:",
                             tail.stdout,
                         )
                         self.assertNotIn("<!-- agent-handoff-metadata", tail.stdout)

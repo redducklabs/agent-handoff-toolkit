@@ -770,9 +770,9 @@ _SELECTION_APPROVAL_RE = re.compile(
     r"(?:(?:yes|yeah|yep)[, ]+)?go with [A-Za-z0-9][A-Za-z0-9._:-]{0,31}"
 )
 _DECISION_RESPONSE_RE = re.compile(
-    r"Authorized work is paused for one required user decision\.\n\n"
+    r"Paused: I need one decision from you\.\n\n"
     r"Decision needed: (?P<question>[^\n]+)\n"
-    r"Blocked action field: (?P<field>[^\n]+)\n"
+    r"This blocks: (?P<field>[^\n]+)\n"
     r"Reason: (?P<reason>[^\n]+)"
 )
 _OPERATIONAL_PREFIX = (
@@ -879,9 +879,9 @@ def render_decision_response(
     if not hmac.compare_digest(request.reason_hmac, expected_reason_hmac):
         raise ValueError("reason does not match its persisted HMAC")
     return (
-        "Authorized work is paused for one required user decision.\n\n"
+        "Paused: I need one decision from you.\n\n"
         f"Decision needed: {question}\n"
-        f"Blocked action field: {request.blocked_action_field}\n"
+        f"This blocks: {request.blocked_action_field}\n"
         f"Reason: {reason}"
     )
 

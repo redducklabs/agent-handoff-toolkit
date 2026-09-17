@@ -523,9 +523,9 @@ class DecisionResponseTests(unittest.TestCase):
 
         self.assertEqual(
             response,
-            "Authorized work is paused for one required user decision.\n\n"
+            "Paused: I need one decision from you.\n\n"
             "Decision needed: Which deployment target should I use?\n"
-            "Blocked action field: target\n"
+            "This blocks: target\n"
             "Reason: The authorized action names two mutually exclusive targets.",
         )
         self.assertTrue(verify_decision_response(response, request, SECRET))
@@ -533,7 +533,7 @@ class DecisionResponseTests(unittest.TestCase):
             "Preamble\n" + response,
             response + "\nSuffix",
             response.replace("deployment target", "environment"),
-            response.replace("Blocked action field: target", "Target: production"),
+            response.replace("This blocks: target", "Target: production"),
         ):
             with self.subTest(altered=altered):
                 self.assertFalse(verify_decision_response(altered, request, SECRET))
