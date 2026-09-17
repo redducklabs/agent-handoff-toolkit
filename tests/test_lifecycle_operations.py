@@ -732,6 +732,24 @@ class OperationsTests(unittest.TestCase):
             status = main(["lifecycle", *arguments])
         return status, output.getvalue(), errors.getvalue()
 
+    def test_cli_output_prints_each_credential_once(self):
+        """`session_id` was the same value as `session_key`, printed twice.
+
+        A tracked session reads this output on every control command, so a
+        duplicated 64-hex value is paid for every time.
+        """
+
+        args = command("register-root").split(" lifecycle ")[1].split()
+        args[-1] = "1"
+        self.call_cli(args)
+        status, output, errors = self.call_cli(["inspect"])
+        self.assertEqual((status, errors), (0, ""))
+        result = json.loads(output)
+        self.assertNotIn("session_id", result)
+        self.assertIn("session_key", result)
+        self.assertEqual(output.count(result["session_key"]), 1)
+        self.assertEqual(output.count(result["challenge"]), 1)
+
     def test_cli_registration_inspect_and_stdin_decision(self):
         args = command("register-root").split(" lifecycle ")[1].split()
         args[-1] = "1"

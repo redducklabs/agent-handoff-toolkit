@@ -88,6 +88,19 @@ authorized root with an audit. Executable work remaining is not a decision
 request. A decision request must name one bounded question, blocked action, and
 recognized authority category; it cannot change the root or scope definition.
 
+A user turn whose **first line** is `Track: <goal>` registers that goal as the
+tracked root of the session, when the session is still `OPEN` or `ONE_OFF`. The
+root's `scope_id` is the goal slugged, with a short digest of the goal appended
+so that the same goal always names the same root: a later session declaring it
+joins that chain rather than forking a parallel one. Its kind is `epic` and its
+immutable definition is the user's own words as both title and outcome. The rest
+of the prompt is the work. The hook reports `AHK-TRACKED` on success and
+`AHK-TRACK-FAILED failed=<check>` otherwise, and the session stays untracked
+when it fails. The toolkit supplies the encoding and never the meaning: here the
+user supplied the meaning in their own turn, which is also the strongest
+authorization evidence the design has — the root is bound to the turn that asked
+for it.
+
 A session resumes a tracked chain when the **first line** of its prompt is
 `Continue from handoff: <absolute path>`. Everything after that line is the
 user's instruction for the session and is not read for the resume decision.
@@ -98,7 +111,10 @@ evidence, and requiring it to match the renderer byte for byte meant one extra
 space left the session untracked with nothing reported to anyone.
 
 A resume that succeeds returns `AHK-RESUMED` as model context, naming the
-tracked root and the record. A resume that fails returns `AHK-RESUME-FAILED`
+tracked root and the record. `AHK-RESUMED` and `AHK-TRACKED` both carry the
+bound `inspect` command after `Command:`, so a newly tracked session has its
+session key, challenge and expected revision without spending a tool call on a
+denial to learn them. The denial path is unchanged and still issues them. A resume that fails returns `AHK-RESUME-FAILED`
 with the failing check after `failed=` — `candidate-outside-handoffs`,
 `record-invalid`, `chain-inactive`, `record-digest` or `chain-stale` — and the
 session stays untracked. Silence is not a permitted outcome for a prompt that
@@ -411,6 +427,22 @@ Compute each scope's `scope_definition_digest` with
 scope's `scope_id`, `scope_kind`, `parent_scope_id`, and `scope_definition` under
 the canonical JSON rules above. The digest is authored, never recomputed by the
 renderer: recomputing it for an altered definition would defeat root immutability.
+
+## Scaffolding a successor
+
+`render <record.json> --successor-of <predecessor.md>` copies the lineage a
+successor never chooses: `schema_version`, `authorization_id`,
+`authorized_root_scope_id`, `authorization_evidence`, `transition`, the
+`predecessor` reference (its record id, normalized path and SHA-256), and each
+scope's `scope_definition` and `scope_definition_digest`. The author supplies
+`record_id`, `timestamp`, the per-scope progress fields, `verification`,
+`exact_action`, `next_session_prompt` and the sections.
+
+Root immutability is unchanged, because the definitions are copied from the
+predecessor and never recomputed from author input. Supplying one of those
+fields with a different value is rejected (`successor-inherited`), as is naming
+a scope the predecessor does not hold (`successor-scope`); either needs an
+approved transition. `validate_successor` still runs at `Stop`.
 
 ## Lifecycle commands and untracked authoring
 

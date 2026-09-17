@@ -15,6 +15,7 @@ from urllib.parse import quote
 
 from .lineage import (
     LineageError,
+    record_digest,
     scope_definition_digest,
     validate_hex_digest,
     validate_identifier,
@@ -1041,6 +1042,112 @@ def _validate_type_fields(
     return issues
 
 
+# Budgets the contract already states, enforced so a record stays readable to
+# the session that has to read all of it. Schema v2 only: a schema-v1 record is
+# historical and is never rewritten to fit a limit introduced after it.
+MAX_VERIFICATION_ENTRIES = 8
+MAX_VERIFICATION_CHECK_CHARACTERS = 120
+MAX_VERIFICATION_EVIDENCE_CHARACTERS = 160
+MAX_SCOPE_DETAIL_CHARACTERS = 240
+MAX_SECTION_WORDS = 200
+MAX_RECORD_WORDS = 1200
+
+
+def _size_issues(data: Mapping[str, object]) -> list[ValidationIssue]:
+    """Enforce the record budgets, all of them schema-v2 only."""
+
+    issues: list[ValidationIssue] = []
+    entries = data.get("verification")
+    if isinstance(entries, list):
+        if len(entries) > MAX_VERIFICATION_ENTRIES:
+            issues.append(
+                _issue(
+                    "verification-count",
+                    "verification must hold at most "
+                    f"{MAX_VERIFICATION_ENTRIES} entries: record one per gate "
+                    "the next session would rerun, not one per invocation",
+                )
+            )
+        for index, entry in enumerate(entries):
+            if not isinstance(entry, Mapping):
+                continue
+            check = entry.get("check")
+            if (
+                isinstance(check, str)
+                and len(check) > MAX_VERIFICATION_CHECK_CHARACTERS
+            ):
+                issues.append(
+                    _issue(
+                        "verification-size",
+                        f"verification[{index}].check must be at most "
+                        f"{MAX_VERIFICATION_CHECK_CHARACTERS} characters",
+                    )
+                )
+            for field_name in ("evidence", "reason"):
+                value = entry.get(field_name)
+                if (
+                    isinstance(value, str)
+                    and len(value) > MAX_VERIFICATION_EVIDENCE_CHARACTERS
+                ):
+                    issues.append(
+                        _issue(
+                            "verification-size",
+                            f"verification[{index}].{field_name} must be at most "
+                            f"{MAX_VERIFICATION_EVIDENCE_CHARACTERS} characters",
+                        )
+                    )
+    scopes = data.get("active_scopes")
+    if isinstance(scopes, list):
+        for index, scope in enumerate(scopes):
+            if not isinstance(scope, Mapping):
+                continue
+            detail = scope.get("remaining_code_detail")
+            if isinstance(detail, str) and len(detail) > MAX_SCOPE_DETAIL_CHARACTERS:
+                issues.append(
+                    _issue(
+                        "scope-detail-size",
+                        f"active_scopes[{index}].remaining_code_detail must be at "
+                        f"most {MAX_SCOPE_DETAIL_CHARACTERS} characters: one "
+                        "sentence naming what remains and where",
+                    )
+                )
+    sections = data.get("sections")
+    if isinstance(sections, Mapping):
+        for name, body in sections.items():
+            if isinstance(body, str) and _word_count(body) > MAX_SECTION_WORDS:
+                issues.append(
+                    _issue(
+                        "section-size",
+                        f"section {name} must be at most {MAX_SECTION_WORDS} words",
+                    )
+                )
+        if _record_word_count(data) > MAX_RECORD_WORDS:
+            issues.append(
+                _issue(
+                    "record-size",
+                    f"the whole record must be at most {MAX_RECORD_WORDS} words",
+                )
+            )
+    return issues
+
+
+def _record_word_count(data: Mapping[str, object]) -> int:
+    """Count the record as it is written: its metadata block and its sections."""
+
+    sections = data.get("sections")
+    metadata = {key: value for key, value in data.items() if key != "sections"}
+    try:
+        rendered = json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True)
+    except (TypeError, ValueError):
+        return 0
+    total = _word_count(rendered)
+    if isinstance(sections, Mapping):
+        total += sum(
+            _word_count(body) for body in sections.values() if isinstance(body, str)
+        )
+    return total
+
+
 def _validate_data(
     data: object,
     record_path: str | os.PathLike[str] | None = None,
@@ -1074,6 +1181,7 @@ def _validate_data(
     if schema_version == LATEST_SCHEMA_VERSION:
         issues.extend(_validate_v2_lineage_fields(data))
         issues.extend(_validate_v2_scopes(data))
+        issues.extend(_size_issues(data))
     issues.extend(_validate_verification(data))
     issues.extend(_validate_type_fields(data, record_path=record_path))
 
@@ -1531,6 +1639,92 @@ def render_record(data: Mapping[str, object]) -> str:
         for name in expected_sections
     )
     return f"{preamble}\n\n{title}\n\n{rendered_sections}\n"
+
+
+# Lineage an author never chooses. Root immutability means each of these is
+# exactly the predecessor's value, so copying them is transcription, not
+# judgement - and transcription is where a chain gets quietly broken.
+_INHERITED_RECORD_FIELDS = (
+    "schema_version",
+    "authorization_id",
+    "authorized_root_scope_id",
+    "authorization_evidence",
+    "transition",
+)
+_INHERITED_SCOPE_FIELDS = ("scope_definition", "scope_definition_digest")
+
+
+def render_successor(
+    data: Mapping[str, object],
+    predecessor_text: str,
+    predecessor_path: str | os.PathLike[str],
+) -> str:
+    """Render a successor, copying its lineage from the predecessor record.
+
+    The author supplies the record id, the timestamp, the per-scope progress
+    fields, verification, the exact action, the next-session prompt and the
+    sections. Everything that identifies the chain is read from the
+    predecessor, which is also what keeps root immutability intact: the
+    definitions are copied, never recomputed from author input, so an altered
+    definition is a rejection rather than a new digest.
+    """
+
+    if not isinstance(data, Mapping):
+        raise ValueError("metadata-type: metadata must be a JSON object")
+    predecessor = parse_markdown(predecessor_text)
+    if predecessor.get("record_type") != "continuation":
+        raise ValueError("successor-predecessor: a successor continues a continuation")
+    if predecessor.get("schema_version") != LATEST_SCHEMA_VERSION:
+        raise ValueError(
+            "successor-predecessor: scaffolding requires a schema-v2 predecessor"
+        )
+
+    scaffolded = {key: value for key, value in data.items()}
+    for field_name in _INHERITED_RECORD_FIELDS:
+        supplied = scaffolded.get(field_name, predecessor.get(field_name))
+        if field_name in scaffolded and supplied != predecessor.get(field_name):
+            raise ValueError(
+                f"successor-inherited: {field_name} is inherited from the "
+                "predecessor and cannot be changed without an approved transition"
+            )
+        scaffolded[field_name] = predecessor.get(field_name)
+    scaffolded["predecessor"] = {
+        "record_id": predecessor.get("record_id"),
+        "path": _absolute_markdown_path(predecessor_path),
+        "sha256": record_digest(predecessor_text),
+    }
+
+    inherited_scopes = {
+        scope["scope_id"]: scope
+        for scope in predecessor.get("active_scopes", [])
+        if isinstance(scope, Mapping) and isinstance(scope.get("scope_id"), str)
+    }
+    scopes = scaffolded.get("active_scopes")
+    if not isinstance(scopes, list) or not scopes:
+        raise ValueError("scope-list: active_scopes must be a non-empty list")
+    resolved = []
+    for scope in scopes:
+        if not isinstance(scope, Mapping):
+            raise ValueError("scope-field: every active scope must be an object")
+        scope_id = scope.get("scope_id")
+        source = inherited_scopes.get(scope_id) if isinstance(scope_id, str) else None
+        if source is None:
+            raise ValueError(
+                f"successor-scope: the predecessor holds no scope {scope_id!r}; "
+                "a new scope needs an approved transition"
+            )
+        merged = dict(scope)
+        for field_name in _INHERITED_SCOPE_FIELDS:
+            if field_name in merged and merged[field_name] != source.get(field_name):
+                raise ValueError(
+                    f"successor-inherited: {field_name} is inherited from the "
+                    "predecessor and cannot be changed without an approved "
+                    "transition"
+                )
+            merged[field_name] = source.get(field_name)
+        resolved.append(merged)
+    scaffolded["active_scopes"] = resolved
+    return render_record(scaffolded)
 
 
 def _absolute_markdown_path(record_path: str | os.PathLike[str]) -> str:

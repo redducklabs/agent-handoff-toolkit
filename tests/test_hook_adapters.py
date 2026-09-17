@@ -42,6 +42,7 @@ from agent_handoff_toolkit.lifecycle_storage import (  # noqa: E402
 from agent_handoff_toolkit.lineage import (  # noqa: E402
     canonical_json_bytes,
     record_digest,
+    scope_definition_digest,
 )
 from agent_handoff_toolkit.records import (  # noqa: E402
     render_record,
@@ -1224,6 +1225,116 @@ class EnforcementTests(unittest.TestCase):
                     Unopenable(),
                 )
                 self.assertIn("AHK-HOOK-RUNTIME", output.stdout)
+
+    def track(self, title, session="tracked-by-user", turn="turn-track"):
+        return self.invoke(
+            "UserPromptSubmit",
+            session_id=session,
+            turn_id=turn,
+            prompt=f"Track: {title}\n\nStart with the migration.",
+        )
+
+    def test_a_user_can_declare_the_tracked_goal_in_their_own_turn(self):
+        """The user knows when a request is an epic; the agent was guessing.
+
+        Binding the root to the user's own turn is also the strongest
+        authorization evidence the design ever wanted.
+        """
+
+        output = self.track("Ship billing v2")
+        context = json.loads(output.stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("AHK-TRACKED", context)
+        self.assertIn("Ship billing v2", context)
+
+        snapshot = self.storage.load_snapshot("tracked-by-user")
+        self.assertIs(snapshot.session.mode, EnforcementMode.TRACKED)
+        self.assertTrue(snapshot.chain.locked_root_id.startswith("ship-billing-v2-"))
+        self.assertEqual(snapshot.chain.authorization_user_turn_reference, "turn-track")
+
+    def test_the_declared_title_is_the_scope_definition(self):
+        self.track("Ship billing v2")
+        chain = self.storage.load_snapshot("tracked-by-user").chain
+        definition = {"title": "Ship billing v2", "outcome": "Ship billing v2"}
+        self.assertEqual(
+            chain.scope_digests,
+            (
+                scope_definition_digest(
+                    {
+                        "scope_id": chain.locked_root_id,
+                        "scope_kind": "epic",
+                        "parent_scope_id": None,
+                        "scope_definition": definition,
+                    }
+                ),
+            ),
+        )
+
+    def test_a_second_session_with_the_same_goal_joins_the_existing_chain(self):
+        self.track("Ship billing v2")
+        first = self.storage.load_snapshot("tracked-by-user")
+        self.track("Ship billing v2", session="second", turn="turn-second")
+        second = self.storage.load_snapshot("second")
+        self.assertIs(second.session.mode, EnforcementMode.TRACKED)
+        self.assertEqual(
+            second.session.authorization_id, first.session.authorization_id
+        )
+
+    def test_the_prefix_is_recognized_only_as_the_first_line(self):
+        for index, prompt in enumerate(
+            (
+                "Please do this.\nTrack: Ship billing v2",
+                "  Track: Ship billing v2",
+                "Track:",
+                "Track: ab",
+            )
+        ):
+            with self.subTest(prompt=index):
+                session = "untracked-" + str(index)
+                self.assertEqual(
+                    self.invoke("UserPromptSubmit", session_id=session, prompt=prompt),
+                    HookExecution(),
+                )
+                self.assertIs(
+                    self.storage.load_snapshot(session).session.mode,
+                    EnforcementMode.OPEN,
+                )
+
+    def test_tracking_hands_the_session_its_bound_inspect_command(self):
+        """Two tool calls and a denial used to be the only way to learn these."""
+
+        context = json.loads(self.track("Ship billing v2").stdout)[
+            "hookSpecificOutput"
+        ]["additionalContext"]
+        command = context.split("Command: ", 1)[1].strip()
+        self.assertIn("lifecycle inspect", command)
+        self.assertEqual(
+            self.invoke(
+                "PreToolUse",
+                session_id="tracked-by-user",
+                tool_input={"command": command},
+            ),
+            HookExecution(),
+        )
+
+    def test_a_resume_hands_the_session_its_bound_inspect_command(self):
+        self.register()
+        path, _, message = self.record()
+        self.assertEqual(self.invoke(last_assistant_message=message), HookExecution())
+        context = json.loads(
+            self.invoke(
+                "UserPromptSubmit",
+                session_id="resumed",
+                prompt="Continue from handoff: " + path.as_posix(),
+            ).stdout
+        )["hookSpecificOutput"]["additionalContext"]
+        command = context.split("Command: ", 1)[1].strip()
+        self.assertIn("lifecycle inspect", command)
+        self.assertEqual(
+            self.invoke(
+                "PreToolUse", session_id="resumed", tool_input={"command": command}
+            ),
+            HookExecution(),
+        )
 
     def propose(self, turn="assistant-1"):
         snapshot = self.storage.load_snapshot("session-1")

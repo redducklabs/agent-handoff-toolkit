@@ -996,7 +996,28 @@ def _user_prompt(event, snapshot, storage, raw_id, root):
             f"AHK-RESUMED: tracked root {updated.chain.locked_root_id} from "
             f"{match.group(1)}. This session must end with a continuation or a "
             "completion audit. Any text after the first line of the prompt is "
-            "the user's instruction for this session.",
+            "the user's instruction for this session."
+            + _credentials(root, storage, updated),
+        )
+    # The user knows when a request is an epic. Naming it in their own turn is
+    # both the plainest way to say so and the strongest authorization evidence
+    # the design ever wanted: the root is bound to the turn that asked for it.
+    declaration = re.fullmatch(r"Track: (.{3,200})", first_line)
+    if declaration and updated.session.mode in _UNGATED:
+        tracked, failure = _track_root(service, storage, updated, declaration.group(1))
+        if failure is not None:
+            return _context(
+                "UserPromptSubmit",
+                f"AHK-TRACK-FAILED failed={failure}: the declared goal did not "
+                "register a root; this session is untracked. Tell the user.",
+            )
+        updated = tracked
+        return _context(
+            "UserPromptSubmit",
+            f'AHK-TRACKED: root "{declaration.group(1)}" registered for this and '
+            "later sessions. This session must end with a continuation or a "
+            "completion audit; the rest of the prompt is the work."
+            + _credentials(root, storage, updated),
         )
     remaining_proposal = updated.session.pending_transition_reference
     if updated.session.pending_decision_reference or (
@@ -1007,6 +1028,105 @@ def _user_prompt(event, snapshot, storage, raw_id, root):
             "AHK-USER-CLARIFY: Clarify the pending decision or reissue the exact scope proposal for an adjacent response. No new authorization was granted.",
         )
     return HookExecution()
+
+
+def _root_scope_id(title):
+    """Slug the user's own words, with a short digest tail for distinctness.
+
+    The tail is derived from the title rather than drawn at random so that the
+    same declared goal always names the same root: that is what lets a second
+    session declaring it join the chain the first one started instead of
+    silently forking a parallel epic.
+    """
+
+    slug = "-".join(re.findall(r"[a-z0-9]+", title.lower()))[:64].strip("-")
+    tail = hashlib.sha256(title.encode()).hexdigest()[:4]
+    return (slug + "-" + tail) if slug else "goal-" + tail
+
+
+def _track_root(service, storage, snapshot, title):
+    """Register the user's declared goal, or join the chain that already holds it."""
+
+    try:
+        definition = {"title": title, "outcome": title}
+        encoded = (
+            base64.urlsafe_b64encode(canonical_json_bytes(definition))
+            .decode()
+            .rstrip("=")
+        )
+        scope_id = _root_scope_id(title)
+        digest = scope_definition_digest(
+            {
+                "scope_id": scope_id,
+                "scope_kind": "epic",
+                "parent_scope_id": None,
+                "scope_definition": definition,
+            }
+        )
+    except Exception:
+        return snapshot, "scope-definition"
+    try:
+        return (
+            service.register_root(
+                challenge=snapshot.session.bootstrap_challenge,
+                scope_id=scope_id,
+                scope_kind="epic",
+                scope_definition_b64=encoded,
+                expected_session_revision=snapshot.session.targeted_revision,
+            ),
+            None,
+        )
+    except StaleLifecycleState:
+        return snapshot, "chain-stale"
+    except Exception:
+        pass
+    # The same goal, declared again. `register_root` refuses to fork a second
+    # chain over an identical active root, so this session joins that one.
+    try:
+        existing = next(
+            (
+                chain
+                for chain in storage.load_registry().chains.values()
+                if chain.status == "active"
+                and chain.locked_root_id == scope_id
+                and chain.scope_digests[0] == digest
+            ),
+            None,
+        )
+        if existing is None:
+            return snapshot, "root-registration"
+        return (
+            service.join(
+                challenge=snapshot.session.bootstrap_challenge,
+                authorization_id=existing.authorization_id,
+                expected_chain_revision=existing.targeted_revision,
+                expected_session_revision=snapshot.session.targeted_revision,
+            ),
+            None,
+        )
+    except StaleLifecycleState:
+        return snapshot, "chain-stale"
+    except Exception:
+        return snapshot, "root-registration"
+
+
+def _credentials(root, storage, snapshot):
+    """Hand a newly tracked session the bound command it would otherwise buy.
+
+    Without this the only way to learn the session key, challenge and expected
+    revision is to attempt a control command and read the denial: one wasted
+    tool call and two messages before any work starts.
+    """
+
+    try:
+        runner = root / ".agent-handoff-toolkit" / "runner.py"
+        capability = storage.control_capability(snapshot.session)
+        command = _control_command(runner, snapshot.session, capability, "inspect")
+        return "\nCommand: " + command
+    except Exception:
+        # The context is worth sending without the command; the denial path
+        # still issues credentials exactly as it did before.
+        return ""
 
 
 def _context(event_name, message):

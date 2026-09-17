@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -16,11 +17,13 @@ sys.path.insert(0, str(ROOT / "src"))
 from agent_handoff_toolkit import (  # noqa: E402
     parse_markdown,
     render_record,
+    render_successor,
     render_tail,
     render_terminal_response,
     validate_successor,
     validate_markdown,
 )
+from agent_handoff_toolkit.cli import main  # noqa: E402
 from agent_handoff_toolkit.lineage import (  # noqa: E402
     record_digest,
     scope_definition_digest,
@@ -1583,6 +1586,255 @@ class CommandLineTests(unittest.TestCase):
             result.stdout.replace("\\", "/"),
         )
         self.assertEqual(result.stderr, "")
+
+
+class RecordSizeTests(unittest.TestCase):
+    """The next session reads all of it, so the contract's limits are enforced.
+
+    The contract already states one entry per gate, 120 characters of check
+    and 160 of evidence. Nothing checked any of it, and the median real record
+    across the three consumers runs 2,396 words.
+    """
+
+    def record(self, **changes):
+        data = make_v2_continuation()
+        data.update(changes)
+        return data
+
+    def codes(self, data):
+        return {issue.code for issue in validate_markdown(render_record(data))}
+
+    def render_codes(self, data):
+        try:
+            render_record(data)
+        except ValueError as error:
+            return {item.split(":", 1)[0].strip() for item in str(error).split(";")}
+        return set()
+
+    def test_eight_verification_entries_pass_and_nine_do_not(self):
+        entry = {"check": "pytest -q", "result": "pass", "evidence": "0 failed"}
+        self.assertNotIn(
+            "verification-count", self.codes(self.record(verification=[entry] * 8))
+        )
+        self.assertIn(
+            "verification-count",
+            self.render_codes(self.record(verification=[entry] * 9)),
+        )
+
+    def test_the_contract_field_limits_are_enforced(self):
+        for label, entry in (
+            ("check", {"check": "c" * 121, "result": "pass", "evidence": "ok"}),
+            (
+                "evidence",
+                {"check": "pytest -q", "result": "pass", "evidence": "e" * 161},
+            ),
+            (
+                "reason",
+                {"check": "pytest -q", "result": "not-run", "reason": "r" * 161},
+            ),
+        ):
+            with self.subTest(field=label):
+                self.assertIn(
+                    "verification-size",
+                    self.render_codes(self.record(verification=[entry])),
+                )
+        boundary = [
+            {"check": "c" * 120, "result": "pass", "evidence": "e" * 160},
+            {"check": "c" * 120, "result": "not-run", "reason": "r" * 160},
+        ]
+        self.assertNotIn(
+            "verification-size", self.codes(self.record(verification=boundary))
+        )
+
+    def test_a_scope_detail_is_a_sentence_not_a_narrative(self):
+        data = self.record()
+        scope = dict(data["active_scopes"][0])
+        scope["remaining_code_detail"] = "d " * 119 + "d"
+        self.assertNotIn(
+            "scope-detail-size", self.codes(self.record(active_scopes=[scope]))
+        )
+        scope = dict(scope)
+        scope["remaining_code_detail"] = "d" * 241
+        self.assertIn(
+            "scope-detail-size", self.render_codes(self.record(active_scopes=[scope]))
+        )
+
+    def test_a_narrative_section_is_capped_at_two_hundred_words(self):
+        data = self.record()
+        name = "Objective"
+        sections = dict(data["sections"])
+        sections[name] = " ".join(["word"] * 200)
+        self.assertNotIn("section-size", self.codes(self.record(sections=sections)))
+        sections = dict(sections)
+        sections[name] = " ".join(["word"] * 201)
+        self.assertIn("section-size", self.render_codes(self.record(sections=sections)))
+
+    def test_the_whole_record_is_capped(self):
+        data = self.record()
+        sections = {name: " ".join(["word"] * 190) for name in data["sections"]}
+        self.assertIn("record-size", self.render_codes(self.record(sections=sections)))
+
+    def test_a_schema_v1_record_is_untouched_by_the_limits(self):
+        data = load_fixture("continuation.json")
+        data["verification"] = [
+            {"check": "c" * 200, "result": "pass", "evidence": "e" * 200}
+        ] * 12
+        sections = dict(data["sections"])
+        sections["Verification evidence"] = json.dumps(
+            data["verification"], ensure_ascii=False, indent=2, sort_keys=True
+        )
+        data["sections"] = sections
+        codes = {issue.code for issue in validate_markdown(render_record(data))}
+        for code in (
+            "verification-count",
+            "verification-size",
+            "scope-detail-size",
+            "section-size",
+            "record-size",
+        ):
+            self.assertNotIn(code, codes)
+
+
+class SuccessorScaffoldTests(unittest.TestCase):
+    """Eleven lineage fields were copied by hand for every successor.
+
+    None of them is the author's to choose: root immutability means they are
+    exactly the predecessor's. Copying them mechanically removes the transcription
+    and leaves the author only the fields that carry judgement.
+    """
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.predecessor_path = self.root / "record-002.md"
+        self.predecessor_source = make_v2_continuation()
+        self.predecessor_text = render_record(self.predecessor_source)
+        self.predecessor_path.write_text(
+            self.predecessor_text, encoding="utf-8", newline="\n"
+        )
+
+    def author(self):
+        """Only the fields a successor's author actually decides."""
+
+        scope = copy.deepcopy(self.predecessor_source["active_scopes"][0])
+        for key in ("scope_definition", "scope_definition_digest"):
+            scope.pop(key)
+        return {
+            "record_type": "continuation",
+            "timestamp": "2026-09-17T12:00:00Z",
+            "record_id": "record-003",
+            "active_scopes": [scope],
+            "next_session_gates": [],
+            "verification": self.predecessor_source["verification"],
+            "exact_action": self.predecessor_source["exact_action"],
+            "next_session_prompt": self.predecessor_source["next_session_prompt"],
+            "sections": self.predecessor_source["sections"],
+        }
+
+    def test_the_lineage_fields_are_copied_from_the_predecessor(self):
+        rendered = render_successor(
+            self.author(), self.predecessor_text, self.predecessor_path
+        )
+        data = parse_markdown(rendered)
+
+        self.assertEqual(data["schema_version"], 2)
+        self.assertEqual(data["record_id"], "record-003")
+        for field in (
+            "authorization_id",
+            "authorized_root_scope_id",
+            "authorization_evidence",
+            "transition",
+        ):
+            self.assertEqual(data[field], self.predecessor_source[field])
+        self.assertEqual(
+            data["predecessor"],
+            {
+                "record_id": self.predecessor_source["record_id"],
+                "path": self.predecessor_path.as_posix(),
+                "sha256": record_digest(self.predecessor_text),
+            },
+        )
+        scope = data["active_scopes"][0]
+        predecessor_scope = self.predecessor_source["active_scopes"][0]
+        self.assertEqual(
+            scope["scope_definition"], predecessor_scope["scope_definition"]
+        )
+        self.assertEqual(
+            scope["scope_definition_digest"],
+            predecessor_scope["scope_definition_digest"],
+        )
+        self.assertEqual(validate_markdown(rendered), [])
+
+    def test_progress_fields_stay_the_authors(self):
+        author = self.author()
+        author["active_scopes"][0]["status"] = "blocked"
+        author["active_scopes"][0]["remaining_code_detail"] = "Blocked on review."
+        data = parse_markdown(
+            render_successor(author, self.predecessor_text, self.predecessor_path)
+        )
+        self.assertEqual(data["active_scopes"][0]["status"], "blocked")
+        self.assertEqual(
+            data["active_scopes"][0]["remaining_code_detail"], "Blocked on review."
+        )
+
+    def test_an_altered_definition_cannot_be_smuggled_through_the_copy(self):
+        author = self.author()
+        author["active_scopes"][0]["scope_definition"] = {
+            "title": "A different root",
+            "outcome": "A different outcome.",
+        }
+        with self.assertRaises(ValueError) as raised:
+            render_successor(author, self.predecessor_text, self.predecessor_path)
+        self.assertIn("scope_definition", str(raised.exception))
+
+    def test_a_scope_the_predecessor_never_held_is_rejected(self):
+        author = self.author()
+        author["active_scopes"][0]["scope_id"] = "invented-scope"
+        with self.assertRaises(ValueError) as raised:
+            render_successor(author, self.predecessor_text, self.predecessor_path)
+        self.assertIn("invented-scope", str(raised.exception))
+
+    def test_a_completion_audit_scaffolds_from_the_same_predecessor(self):
+        author = self.author()
+        author["record_type"] = "completion-audit"
+        scope = author["active_scopes"][0]
+        scope.update(remaining_work=False, remaining_code=False, status="complete")
+        scope["remaining_code_detail"] = "No code remains within this scope."
+        author.pop("exact_action")
+        author.pop("next_session_prompt")
+        author.pop("next_session_gates")
+        author["completed_scope_id"] = scope["scope_id"]
+        author["authorization_basis"] = "The authorized root outcome is complete."
+        audit = load_fixture("completion-audit.json")
+        author["sections"] = drop_v2_sections(audit)["sections"]
+        data = parse_markdown(
+            render_successor(author, self.predecessor_text, self.predecessor_path)
+        )
+        self.assertEqual(data["record_type"], "completion-audit")
+        self.assertEqual(
+            data["authorization_id"], self.predecessor_source["authorization_id"]
+        )
+
+    def test_the_cli_writes_the_scaffolded_successor(self):
+        author_path = self.root / "successor.json"
+        author_path.write_text(
+            json.dumps(self.author()), encoding="utf-8", newline="\n"
+        )
+        output = self.root / "record-003.md"
+        with unittest.mock.patch("sys.stdout"):
+            status = main(
+                [
+                    "render",
+                    str(author_path),
+                    "--successor-of",
+                    str(self.predecessor_path),
+                    "--output",
+                    str(output),
+                ]
+            )
+        self.assertEqual(status, 0)
+        self.assertEqual(validate_markdown(output.read_text(encoding="utf-8")), [])
 
 
 if __name__ == "__main__":

@@ -104,6 +104,14 @@ the individual suites inside it. Keep `check` at or under 120 characters and
 `evidence` or `reason` at or under 160 characters. The entry states the gate and
 its outcome, not a log of the session that ran it.
 
+The validator enforces these, and the other record budgets with them: at most
+eight verification entries (`verification-count`), those field lengths
+(`verification-size`), 240 characters of `remaining_code_detail`
+(`scope-detail-size`), 200 words in any one narrative section
+(`section-size`), and 1,200 words in the whole record (`record-size`). They
+apply to schema v2 only, and `render` fails on them too, so a record that will
+not fit is rejected while it is being written rather than at `Stop`.
+
 ## Exact next action
 
 Each `exact_action` field is either non-empty text or a non-empty list of text
