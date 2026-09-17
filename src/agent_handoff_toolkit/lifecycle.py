@@ -573,12 +573,14 @@ class SessionState:
     pending_correction_hmac: str | None = None
     write_advisory_emitted: bool = False
     worktree_baseline: str | None = None
+    no_handoff_note_emitted: bool = False
 
     def __post_init__(self) -> None:
         if self.pending_correction_hmac is not None:
             _digest(self.pending_correction_hmac, "pending_correction_hmac")
-        if not isinstance(self.write_advisory_emitted, bool):
-            raise ValueError("write_advisory_emitted must be boolean")
+        for flag in ("write_advisory_emitted", "no_handoff_note_emitted"):
+            if not isinstance(getattr(self, flag), bool):
+                raise ValueError(f"{flag} must be boolean")
         if self.worktree_baseline is not None:
             _digest(self.worktree_baseline, "worktree_baseline")
         object.__setattr__(

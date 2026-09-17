@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass, field, fields, replace
+from dataclasses import MISSING, dataclass, field, fields, replace
 import errno
 import hashlib
 import hmac
@@ -82,23 +82,55 @@ def _plain(value):
     return value
 
 
+# Host payload fields. Lifecycle state is the toolkit's own record of its own
+# decisions and never carries a prompt, a reply or a transcript, so state that
+# names one of these is refused rather than quietly trimmed: a content channel
+# through the registry is a defect to report, not drift to tolerate. The list is
+# a closed vocabulary fixed in source, like every other identifier the toolkit
+# emits.
+_CONTENT_FIELDS = frozenset(
+    {
+        "content",
+        "current_user_message",
+        "latest_assistant_message",
+        "last_assistant_message",
+        "message",
+        "prompt",
+        "text",
+        "tool_input",
+        "transcript",
+        "transcript_path",
+    }
+)
+
+
 def _model(value, model):
     if not isinstance(value, dict):
         raise LifecycleStorageError("state contains unknown or missing fields")
-    names = {item.name for item in fields(model)}
-    if model is SessionState:
-        # State written before v0.4.0 has neither the advisory flag nor the
-        # worktree baseline, and spells the default mode "untracked". Filling
-        # the defaults here keeps an existing session loadable; anything else
-        # unknown is still rejected. Only a dict that is exactly the legacy
-        # shape (nothing missing beyond these two fields, nothing extra) is
-        # backfilled, so a genuinely unknown or injected field still fails
-        # the field-set check below instead of being silently dropped.
-        legacy_names = names - {"write_advisory_emitted", "worktree_baseline"}
-        if set(value) == legacy_names:
-            value = dict(value)
-            value.setdefault("write_advisory_emitted", False)
-            value.setdefault("worktree_baseline", None)
+    specification = {item.name: item for item in fields(model)}
+    names = set(specification)
+    if model is SessionState or model is ChainState:
+        # Every worktree of a repository shares one registry, so state written
+        # by one installed release is read by every other. A field the writer
+        # did not know is dropped; a field this release knows and the writer
+        # omitted takes its own declared default. That covers both directions
+        # of drift - a release that added a field and one that has not got it
+        # yet - and it is why an older release could otherwise be locked out
+        # of its own state by a single write from a newer one.
+        #
+        # Only fields carrying a default are filled. Identity, revision and
+        # digest fields have none, so they stay required and the dataclass
+        # still validates every value it is handed.
+        if not _CONTENT_FIELDS.isdisjoint(value):
+            raise LifecycleStorageError("state contains a host content field")
+        value = {key: item for key, item in value.items() if key in names}
+        for name, item in specification.items():
+            if name in value:
+                continue
+            if item.default is not MISSING:
+                value[name] = item.default
+            elif item.default_factory is not MISSING:
+                value[name] = item.default_factory()
     if set(value) != names:
         raise LifecycleStorageError("state contains unknown or missing fields")
     value = dict(value)
