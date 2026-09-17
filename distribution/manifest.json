@@ -56,7 +56,7 @@
     },
     {
       "source": "docs/consumer-integration.md",
-      "sha256": "cbf72f144420d147479aa245ac86acb50cbeec52e387e6145de36e0569f7d5cc",
+      "sha256": "b70d4f6aef12f259a489d21bdb1b39d27e8f5ef61b503c251c358979b0751f78",
       "install": {
         "mode": "copy",
         "transform": "none",
@@ -190,7 +190,7 @@
     },
     {
       "source": "src/agent_handoff_toolkit/cli.py",
-      "sha256": "e00618688ced063d0bac7cbad14b26a8e67de6bade6465636f98bd8c174aedbf",
+      "sha256": "77c4d34134efa5dddb88804e0db42ebd571a1da973911d1cc90203962f100427",
       "install": {
         "mode": "copy",
         "transform": "none",

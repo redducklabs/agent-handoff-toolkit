@@ -186,7 +186,8 @@ longer match the output written by that run.
 
 `install --dry-run` and a current `sync --check` exit `0`; `sync --check`
 exits `1` when safe updates are available; and `2` reports invalid input,
-source corruption, ownership conflicts, or write failures. See
+source corruption, ownership conflicts, an unusable `python` launcher, or write
+failures. See
 [consumer integration](docs/consumer-integration.md) for conflict ownership,
 rollback limitations, and pilot migration notes.
 
@@ -194,7 +195,7 @@ After installing, complete the post-install acceptance checklist in the
 consumer's `.agent-handoff-toolkit/consumer-integration.md` before enabling the
 workflow there.
 
-Before enabling the distributed hooks, run `python --version` in the consumer repository and verify that `python` resolves to Python 3.11 or newer. The manifest declares this exact launcher and minimum version; the hook fragments use the same command.
+The hooks and lifecycle commands run `python`, which must resolve to Python 3.11 or newer on every machine that uses the consumer repository. `install` and `sync` check this with the `PATH` of the shell that runs them and report `launcher-unavailable` instead of installing hooks that cannot start. Hosts launched another way, such as from a desktop shortcut, can see a different `PATH`. macOS, Debian and Ubuntu install only `python3` by default; make `python` resolve to it, for example by adding the `libexec/bin` directory of the installed Homebrew Python, such as `/opt/homebrew/opt/python@3.13/libexec/bin`, to `PATH`. On Windows, `python` must be a real interpreter rather than the Microsoft Store alias.
 
 ## Development
 
