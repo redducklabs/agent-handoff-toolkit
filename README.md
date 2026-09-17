@@ -6,6 +6,40 @@ This repository provides a shared contract, deterministic validation and renderi
 
 ## Status
 
+Version 0.6.0 acts on the 2026-09-17 goal-alignment and token review. The
+toolkit had become a net token cost: a 737-word block was loaded into every
+session of every consumer, and a tracked session had to author a full
+continuation at every turn end, because `Stop` runs when the agent stops
+talking and not when the session ends. The managed block is now 239 words, the
+SessionStart reminder is one sentence, the first-write advisory is under 400
+bytes and is delivered where the model can see it, and a tracked turn that is
+merely unfinished may end on one canonical progress line instead of a record.
+A session that ends on that line is reported at `SessionEnd`.
+
+Three ways a session silently lost its goal are closed. A pasted handoff now
+resumes on its first line with the record's digest as the evidence, and a
+failed resume is reported instead of leaving the session quietly untracked. A
+user can declare the goal themselves: a prompt whose first line is
+`Track: <goal>` registers it as the tracked root, bound to the turn that asked
+for it. Records chain by digest rather than by absolute path, so a chain
+survives a worktree or a WSL path form.
+
+The responses now read as English addressed to a person: a continuation names
+the goal and the progress, an audit says what was completed and tallies its
+checks, and neither is a bare link or a line of jargon. The validator enforces
+the record budgets the contract already stated, `render --successor-of` copies
+the lineage an author never chooses, and a newly tracked session is handed its
+bound `inspect` command instead of buying it with a denied tool call.
+
+Ordinary tool calls no longer open lifecycle state, `NotebookEdit` is matched,
+and state written by one installed release now loads in another — the last of
+which matters immediately. Every worktree of a repository shares one lifecycle
+registry, and the previous release rejects any field it does not know, so
+**a worktree still pinned to it cannot read state a v0.6.0 runner has
+written**: a notice in an untracked session, a block in a tracked one. Re-sync
+every live worktree of a consumer to v0.6.0 promptly. From v0.6.0 onward the
+hazard cannot recur.
+
 Version 0.5.0 stops the toolkit presenting its own malfunctions as policy
 decisions. Managed hook commands now locate the runner by walking up from the
 working directory, so a session working in a subdirectory is no longer denied
@@ -108,16 +142,16 @@ disposable consumer can be installed from a verified local release source.
 
 ## Consumer installation
 
-Check out the public v0.5.0 release, inspect the proposed changes, then apply
+Check out the public v0.6.0 release, inspect the proposed changes, then apply
 them from that checkout:
 
 ```powershell
-git clone --branch v0.5.0 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
+git clone --branch v0.6.0 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
 Set-Location agent-handoff-toolkit
-python distribution/runner.py install --target <consumer-repository> --release v0.5.0 --dry-run
-python distribution/runner.py install --target <consumer-repository> --release v0.5.0 --apply
-python distribution/runner.py sync --target <consumer-repository> --release v0.5.0 --check
-python distribution/runner.py sync --target <consumer-repository> --release v0.5.0 --apply
+python distribution/runner.py install --target <consumer-repository> --release v0.6.0 --dry-run
+python distribution/runner.py install --target <consumer-repository> --release v0.6.0 --apply
+python distribution/runner.py sync --target <consumer-repository> --release v0.6.0 --check
+python distribution/runner.py sync --target <consumer-repository> --release v0.6.0 --apply
 ```
 
 Run install and sync only in an isolated, clean Git worktree with no concurrent
