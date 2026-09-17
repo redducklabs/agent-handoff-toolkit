@@ -26,10 +26,12 @@ from agent_handoff_toolkit.hook_adapters import (  # noqa: E402
 from agent_handoff_toolkit.hooks import run_hook  # noqa: E402
 from agent_handoff_toolkit.lifecycle import (  # noqa: E402
     DecisionKind,
+    progress_response,
     EnforcementMode,
     EventName,
     LifecycleDecision,
     LifecycleIssue,
+    LifecycleMutation,
 )
 from agent_handoff_toolkit.lifecycle_operations import (  # noqa: E402
     LifecycleService,
@@ -1332,6 +1334,247 @@ class EnforcementTests(unittest.TestCase):
         self.assertEqual(
             self.invoke(
                 "PreToolUse", session_id="resumed", tool_input={"command": command}
+            ),
+            HookExecution(),
+        )
+
+    def relocate_chain(self, name="first", other="D:/other-checkout"):
+        """Point the live chain at the same record in another checkout."""
+
+        snapshot = self.storage.load_snapshot("session-1")
+        chain = snapshot.chain
+        reference = chain.current_record_reference
+        moved = replace(reference, path=f"{other}/handoffs/{name}.md")
+        self.storage.compare_and_swap(
+            "session-1",
+            chain.targeted_revision,
+            snapshot.session.targeted_revision,
+            LifecycleMutation(
+                replace(
+                    snapshot.session,
+                    targeted_revision=snapshot.session.targeted_revision + 1,
+                    chain_revision=chain.targeted_revision + 1,
+                ),
+                replace(
+                    chain,
+                    targeted_revision=chain.targeted_revision + 1,
+                    current_record_reference=moved,
+                ),
+            ),
+        )
+        return moved
+
+    def test_a_chain_recorded_in_another_checkout_still_resumes_here(self):
+        """Records chain through absolute paths; worktrees and WSL break them.
+
+        The record's digest is the evidence and the path is only a locator, so
+        the same record under this checkout's `handoffs/` resumes the chain.
+        """
+
+        self.register()
+        path, _, message = self.record()
+        self.assertEqual(self.invoke(last_assistant_message=message), HookExecution())
+        self.relocate_chain()
+
+        output = self.invoke(
+            "UserPromptSubmit",
+            session_id="other-checkout",
+            prompt="Continue from handoff: " + path.as_posix(),
+        )
+        self.assertIn(
+            "AHK-RESUMED",
+            json.loads(output.stdout)["hookSpecificOutput"]["additionalContext"],
+        )
+        self.assertIs(
+            self.storage.load_snapshot("other-checkout").session.mode,
+            EnforcementMode.TRACKED,
+        )
+
+    def test_a_relocated_pointer_with_a_different_digest_still_fails(self):
+        self.register()
+        path, text, message = self.record()
+        self.assertEqual(self.invoke(last_assistant_message=message), HookExecution())
+        snapshot = self.storage.load_snapshot("session-1")
+        chain = snapshot.chain
+        self.storage.compare_and_swap(
+            "session-1",
+            chain.targeted_revision,
+            snapshot.session.targeted_revision,
+            LifecycleMutation(
+                replace(
+                    snapshot.session,
+                    targeted_revision=snapshot.session.targeted_revision + 1,
+                    chain_revision=chain.targeted_revision + 1,
+                ),
+                replace(
+                    chain,
+                    targeted_revision=chain.targeted_revision + 1,
+                    current_record_reference=replace(
+                        chain.current_record_reference,
+                        path="D:/other-checkout/handoffs/first.md",
+                        sha256="b" * 64,
+                    ),
+                ),
+            ),
+        )
+        output = self.invoke(
+            "UserPromptSubmit",
+            session_id="wrong-digest",
+            prompt="Continue from handoff: " + path.as_posix(),
+        )
+        self.assertIn(
+            "AHK-RESUME-FAILED failed=record-digest",
+            json.loads(output.stdout)["hookSpecificOutput"]["additionalContext"],
+        )
+
+    def test_a_successor_naming_the_other_checkout_is_accepted_by_digest(self):
+        """The predecessor pointer copied from the record names the old path."""
+
+        self.register()
+        path, text, message = self.record()
+        self.assertEqual(self.invoke(last_assistant_message=message), HookExecution())
+        moved = self.relocate_chain()
+        _, _, successor = self.record(
+            name="second",
+            predecessor={
+                "record_id": "first",
+                "path": moved.path,
+                "sha256": record_digest(text),
+            },
+        )
+        self.assertEqual(self.invoke(last_assistant_message=successor), HookExecution())
+        self.assertEqual(
+            self.storage.load_snapshot(
+                "session-1"
+            ).chain.current_record_reference.record_id,
+            "second",
+        )
+
+    def test_a_relocated_successor_with_the_wrong_digest_is_blocked(self):
+        self.register()
+        path, text, message = self.record()
+        self.assertEqual(self.invoke(last_assistant_message=message), HookExecution())
+        moved = self.relocate_chain()
+        _, _, successor = self.record(
+            name="second",
+            predecessor={
+                "record_id": "first",
+                "path": moved.path,
+                "sha256": "c" * 64,
+            },
+        )
+        self.assert_block(
+            self.invoke(last_assistant_message=successor), "AHK-STOP-PREDECESSOR"
+        )
+
+    def progress_line(self, session="session-1"):
+        chain = self.storage.load_snapshot(session).chain
+        return progress_response(chain)
+
+    def test_a_tracked_turn_may_end_on_the_canonical_progress_line(self):
+        """Every turn end used to cost a full record.
+
+        therapy-link authored nine continuations of 2,400 words for one task
+        in one day, two of them 31 seconds apart, because `Stop` runs at every
+        turn end rather than at the end of a session.
+        """
+
+        self.register()
+        self.assertEqual(
+            self.invoke(last_assistant_message=self.progress_line()), HookExecution()
+        )
+        session = self.storage.load_snapshot("session-1").session
+        self.assertIs(session.mode, EnforcementMode.TRACKED)
+        self.assertTrue(session.last_stop_was_progress)
+
+    def test_any_other_record_less_message_is_still_blocked(self):
+        self.register()
+        for message in (
+            "Still working on it.",
+            self.progress_line() + " Nearly done.",
+            self.progress_line().replace("In progress", "In-progress"),
+        ):
+            with self.subTest(message=message[:40]):
+                self.assert_block(
+                    self.invoke(last_assistant_message=message), "AHK-STOP-WORK"
+                )
+                self.invoke("UserPromptSubmit", turn_id="reset-" + str(len(message)))
+
+    def test_the_progress_line_names_the_last_handoff(self):
+        self.register()
+        self.assertIn("none yet", self.progress_line())
+        path, _, message = self.record()
+        self.assertEqual(self.invoke(last_assistant_message=message), HookExecution())
+        self.assertIn(path.as_posix(), self.progress_line())
+        self.assertFalse(
+            self.storage.load_snapshot("session-1").session.last_stop_was_progress
+        )
+
+    def test_a_record_stop_after_a_progress_stop_clears_the_flag(self):
+        self.register()
+        self.invoke(last_assistant_message=self.progress_line())
+        self.assertTrue(
+            self.storage.load_snapshot("session-1").session.last_stop_was_progress
+        )
+        _, _, message = self.record()
+        self.assertEqual(self.invoke(last_assistant_message=message), HookExecution())
+        self.assertFalse(
+            self.storage.load_snapshot("session-1").session.last_stop_was_progress
+        )
+
+    def test_the_progress_line_is_published_by_inspect_not_by_feedback(self):
+        """Blocking feedback carries codes and bounded identifiers, never text.
+
+        The line contains the declared goal in the user's own words, so it is
+        published through `inspect`, which the session already runs.
+        """
+
+        self.register()
+        blocked = self.invoke(last_assistant_message="Still working.")
+        reason = json.loads(blocked.stdout)["reason"]
+        self.assertIn("AHK-STOP-WORK", reason)
+        self.assertNotIn("In progress:", reason)
+        self.assertEqual(
+            self.service.inspect()["progress_response"], self.progress_line()
+        )
+
+    def test_session_end_reports_a_session_that_closed_on_a_progress_line(self):
+        self.register()
+        self.invoke(last_assistant_message=self.progress_line())
+        output = run_hook(
+            "claude",
+            "session-end",
+            json.dumps({"session_id": "session-1"}),
+            self.root,
+            self.storage,
+        )
+        message = json.loads(output.stdout)["systemMessage"]
+        self.assertIn("ended without a final handoff", message)
+        self.assertIn("Track: ", message)
+
+    def test_session_end_is_silent_after_a_record_stop(self):
+        self.register()
+        _, _, message = self.record()
+        self.assertEqual(self.invoke(last_assistant_message=message), HookExecution())
+        self.assertEqual(
+            run_hook(
+                "claude",
+                "session-end",
+                json.dumps({"session_id": "session-1"}),
+                self.root,
+                self.storage,
+            ),
+            HookExecution(),
+        )
+
+    def test_session_end_is_silent_for_an_untracked_session(self):
+        self.assertEqual(
+            run_hook(
+                "claude",
+                "session-end",
+                json.dumps({"session_id": "never-tracked"}),
+                self.root,
+                self.storage,
             ),
             HookExecution(),
         )
