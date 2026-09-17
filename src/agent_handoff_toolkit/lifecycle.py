@@ -174,13 +174,20 @@ def _turn_text(value: object, *, label: str) -> str | None:
     so there is nothing here to police. Only line endings are normalized, so
     that a later exact comparison is made on one representation. Text that
     carries no content at all reads as absent.
+
+    Trailing newlines go with them. `render-tail` prints the response and a
+    newline, so a host that reports the final message as it was printed
+    differs from the renderer by exactly that byte, and the session was told
+    the toolkit had malfunctioned over it. Nothing else is trimmed: leading
+    text and interior whitespace still belong to the message, and the
+    byte-exact rule for the body is unchanged.
     """
 
     if value is None:
         return None
     if not isinstance(value, str):
         raise ValueError(f"{label} must be text")
-    normalized = value.replace("\r\n", "\n").replace("\r", "\n")
+    normalized = value.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
     return normalized if normalized.strip() else None
 
 

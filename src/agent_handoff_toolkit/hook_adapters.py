@@ -204,7 +204,11 @@ def _turn_content(value):
         return None
     if not isinstance(value, str):
         raise ValueError("invalid hook text")
-    normalized = value.replace("\r\n", "\n").replace("\r", "\n")
+    # Trailing newlines are normalized away with the line endings: the CLI
+    # prints the rendered response followed by one, so a host reporting what
+    # it printed differs from the renderer by that byte alone. Nothing else is
+    # trimmed, so the body stays byte-exact.
+    normalized = value.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
     return normalized if normalized.strip() else None
 
 
@@ -488,9 +492,13 @@ def _candidate(event, snapshot, root):
         if "Continue from handoff:" in message or "](" in message:
             raise ValueError("invalid candidate pointer")
         return None
+    # Trailing whitespace does not make a pointer ambiguous. Raising here
+    # reports a malfunction, and a response that differs from the renderer by
+    # whitespace is a formatting mismatch the model can correct - which is
+    # what AHK-STOP-RESPONSE tells it, once the candidate is discovered.
     if (
         len(matches) != 1
-        or matches[0].end() != len(message)
+        or matches[0].end() != len(message.rstrip())
         or len(re.findall(r"\]\(", message)) != 1
     ):
         raise ValueError("ambiguous candidate pointer")
