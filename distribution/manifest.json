@@ -10,7 +10,7 @@
   "artifacts": [
     {
       "source": "distribution/consumer-instructions.md",
-      "sha256": "afbd484bc3d75b73443d15ce44ae8b61c281978f7dfa0c26529dd69f419699d5",
+      "sha256": "4317c6dbe2680bea4e912a109945dda0dc07f970099bd0bd0ec8d67b32043d07",
       "block_id": "agent-handoff-toolkit",
       "install": {
         "mode": "managed-block",
@@ -45,7 +45,7 @@
     },
     {
       "source": "docs/agent-handoff/mechanics.md",
-      "sha256": "dad062b588602618cd478280fabbd9a4f2f4781851dac41d6006385c32b61582",
+      "sha256": "66234b69aebc1a2cfa241e381935adf098941d0a2aa4cca95ce31815f85c7fa1",
       "install": {
         "mode": "copy",
         "transform": "none",
@@ -101,7 +101,7 @@
     },
     {
       "source": "adapters/claude/settings.fragment.json",
-      "sha256": "f9edc1391621690edf932a9eaffa0dd3d66c6b08f6c74dce09cd2a7d9f392604",
+      "sha256": "a45550ebcd9dbbbaf12c895feff08d9cacec6db73f420201a74107b3ff1cdbeb",
       "array_identities": [
         {
           "pointer": "/hooks/SessionStart",
@@ -212,7 +212,7 @@
     },
     {
       "source": "src/agent_handoff_toolkit/hooks.py",
-      "sha256": "d4d0923c4a3f29d4ec981b10241a421e48a6870d1f4afe95a9da699dda750a44",
+      "sha256": "2a9c5298f8cb863b8072594ed9429e3fa7867864b303eead34e2d85720109280",
       "install": {
         "mode": "copy",
         "transform": "none",
@@ -245,7 +245,7 @@
     },
     {
       "source": "src/agent_handoff_toolkit/lifecycle.py",
-      "sha256": "ccd5a98517f7eafd0a3996d0210ec04d3fc7a8c0afb01a73d0f02753e426ab5a",
+      "sha256": "53bc56d8d885ac6f75a43d5c70d3945dfda935555b63cfeffc380fa29f2d0ba2",
       "install": {
         "mode": "copy",
         "transform": "none",
@@ -256,7 +256,7 @@
     },
     {
       "source": "src/agent_handoff_toolkit/lifecycle_storage.py",
-      "sha256": "947b97253759a8bdcdc5b989b05bd7634ba7c268031c045b758bf0b5fd801c75",
+      "sha256": "92fc473d25b1f9e04fc440e98ab7c99940da52836067b97132951a96c14ed238",
       "install": {
         "mode": "copy",
         "transform": "none",
@@ -289,7 +289,7 @@
     },
     {
       "source": "src/agent_handoff_toolkit/hook_adapters.py",
-      "sha256": "cd14e68d3bd28445493bbff61dda98d9ba6ed894b81e0324b9eefe9b166b9c46",
+      "sha256": "c16b16bdf604e5d15c023bb25181f64af0399476cdc875a418abf9f8397f999f",
       "install": {
         "mode": "copy",
         "transform": "none",
