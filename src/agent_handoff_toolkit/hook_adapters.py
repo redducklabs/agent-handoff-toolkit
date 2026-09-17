@@ -60,7 +60,7 @@ from .lineage import (
     validate_identifier,
     validate_scope_definition,
 )
-from .records import parse_markdown, render_resume_prompt, render_terminal_response
+from .records import parse_markdown, render_terminal_response
 from .repository_state import worktree_digest, worktree_state
 
 # One bound, on the whole hook input. A tool call carries the work's payload -
@@ -989,37 +989,123 @@ def _user_prompt(event, snapshot, storage, raw_id, root):
     if request is not None and _decision_resolved(event.current_user_message, request):
         decision = evaluate_user_prompt(event, updated, decision_resolved=True)
         updated = _commit(storage, raw_id, updated, decision.mutation)
-    match = re.match(r"Continue from handoff: ([^\n]+)\n", event.current_user_message)
+    # The pointer line is the whole resume decision. The prompt body was never
+    # the evidence - the record's digest and the live chain are - and requiring
+    # the paste to match the renderer byte for byte meant one stray space left
+    # the session untracked with nothing said to anyone.
+    first_line = (event.current_user_message or "").split("\n", 1)[0]
+    match = re.fullmatch(r"Continue from handoff: (.+)", first_line)
     if match and updated.session.mode in _UNGATED:
-        path = match.group(1)
-        text, data, digest = _read_record(path, root)
-        if event.current_user_message != render_resume_prompt(path, text):
-            return HookExecution()
-        updated = service.resume(
-            challenge=updated.session.bootstrap_challenge,
-            record_path=path,
-            record_text=text,
-            record_metadata=data,
-            record_digest=digest,
-            expected_session_revision=updated.session.targeted_revision,
+        resumed, failure = _resume_chain(
+            service, storage, updated, match.group(1), root
+        )
+        if failure is not None:
+            return _context(
+                "UserPromptSubmit",
+                f"AHK-RESUME-FAILED failed={failure}: the pasted handoff did not "
+                "resume a tracked chain; this session is untracked. Tell the user.",
+            )
+        updated = resumed
+        return _context(
+            "UserPromptSubmit",
+            f"AHK-RESUMED: tracked root {updated.chain.locked_root_id} from "
+            f"{match.group(1)}. This session must end with a continuation or a "
+            "completion audit. Any text after the first line of the prompt is "
+            "the user's instruction for this session.",
         )
     remaining_proposal = updated.session.pending_transition_reference
     if updated.session.pending_decision_reference or (
         remaining_proposal and remaining_proposal.status == "pending"
     ):
-        context = "AHK-USER-CLARIFY: Clarify the pending decision or reissue the exact scope proposal for an adjacent response. No new authorization was granted."
-        return HookExecution(
-            stdout=json.dumps(
-                {
-                    "hookSpecificOutput": {
-                        "hookEventName": "UserPromptSubmit",
-                        "additionalContext": context,
-                    }
-                },
-                separators=(",", ":"),
-            )
+        return _context(
+            "UserPromptSubmit",
+            "AHK-USER-CLARIFY: Clarify the pending decision or reissue the exact scope proposal for an adjacent response. No new authorization was granted.",
         )
     return HookExecution()
+
+
+def _context(event_name, message):
+    """Return model-visible context and no decision of any kind."""
+
+    return HookExecution(
+        stdout=json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": event_name,
+                    "additionalContext": message,
+                }
+            },
+            separators=(",", ":"),
+        )
+    )
+
+
+def _resume_chain(service, storage, snapshot, pointer, root):
+    """Resume the chain the pointed-at record heads, or name why it did not.
+
+    The failure codes are the same closed vocabulary every other denial uses.
+    None of them carries an exception message, a path the caller did not
+    already supply, or any part of the prompt.
+    """
+
+    try:
+        canonical = canonical_record_path(pointer)
+        contained = Path(canonical).is_relative_to(root / "handoffs")
+    except Exception:
+        return snapshot, "candidate-outside-handoffs"
+    if not contained:
+        return snapshot, "candidate-outside-handoffs"
+    try:
+        text, data, digest = _read_record(pointer, root)
+    except Exception:
+        return snapshot, "record-invalid"
+    failure = _resume_precheck(storage, data, canonical, digest)
+    if failure is not None:
+        return snapshot, failure
+    try:
+        return (
+            service.resume(
+                challenge=snapshot.session.bootstrap_challenge,
+                record_path=pointer,
+                record_text=text,
+                record_metadata=data,
+                record_digest=digest,
+                expected_session_revision=snapshot.session.targeted_revision,
+            ),
+            None,
+        )
+    except StaleLifecycleState:
+        return snapshot, "chain-stale"
+    except Exception:
+        return snapshot, "record-invalid"
+
+
+def _resume_precheck(storage, data, path, digest):
+    """Classify a resume that cannot succeed, before anything is committed."""
+
+    if (
+        not isinstance(data, Mapping)
+        or data.get("schema_version") != 2
+        or data.get("record_type") != "continuation"
+        or not isinstance(data.get("authorization_id"), str)
+    ):
+        return "record-invalid"
+    try:
+        chain = storage.load_chain(data["authorization_id"])
+    except Exception:
+        return "chain-inactive"
+    if chain is None or chain.status != "active":
+        return "chain-inactive"
+    current = chain.current_record_reference
+    if current is None or (current.record_id, current.path, current.sha256) != (
+        data.get("record_id"),
+        path,
+        digest,
+    ):
+        return "record-digest"
+    if chain.locked_root_id != data.get("authorized_root_scope_id"):
+        return "record-invalid"
+    return None
 
 
 def _decision_resolved(message, request):
