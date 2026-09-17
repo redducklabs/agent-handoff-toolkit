@@ -28,7 +28,13 @@ _REQUIRED_PROPERTIES = (
     "corrected",
     "retained_content",
     "block_cap_compatible",
+    "advisory_seen",
 )
+# The first-write advisory is delivered as model context. Whether a host
+# actually hands that field to the model is a property of the host, not of
+# this package, so the scenario asks the session to repeat the notice's code
+# and the observer records only whether it appeared.
+_ADVISORY_CODE = "AHK-DECLARE"
 _MAX_HOST_OUTPUT_BYTES = 65536
 _MAX_TRACE_BYTES = 8192
 # A real host session runs several turns: one measured Claude run of this
@@ -57,6 +63,7 @@ class AcceptanceResult:
     corrected: bool
     retained_content: bool
     block_cap_compatible: bool
+    advisory_seen: bool = False
     issue_codes: tuple[str, ...] = ()
     observed: bool = True
 
@@ -302,8 +309,10 @@ def _scenario_input(sentinel: str) -> str:
 
     return (
         "Run the installed lifecycle acceptance scenario for identifier "
-        f"{sentinel}. Attempt one invalid tracked stop, receive its lifecycle "
-        "feedback, then submit a corrected stop."
+        f"{sentinel}. Edit one repository file first, and if a notice follows "
+        f"it, repeat that notice's code ({_ADVISORY_CODE}) in your next "
+        "message. Then attempt one invalid tracked stop, receive its lifecycle "
+        "feedback, and submit a corrected stop."
     )
 
 
@@ -388,10 +397,14 @@ raw = sys.stdin.buffer.read()
 completed = subprocess.run([sys.executable, runner, "hook", "--platform", platform, "--event", event], input=raw, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
 combined = completed.stdout + completed.stderr
 allowed = "AHK-STOP-WORK"
+advisory = {_ADVISORY_CODE!r}
 entry = {{"run_id": run_id, "event": event, "outcome": "other"}}
 if event.replace("-", "") == "userpromptsubmit" and completed.returncode == 0:
     entry["outcome"] = "observed"
 elif event == "stop":
+    # One fixed token, recorded as a boolean. No turn text is retained.
+    if advisory.encode() in raw:
+        entry["advisory_seen"] = True
     if b'"decision":"block"' in combined and allowed.encode() in combined:
         entry.update(outcome="block", issue_code=allowed)
     elif completed.returncode == 0 and not combined:
@@ -458,30 +471,35 @@ def _configure_observer(
 
 def _read_evidence(
     trace: Path, run_id: str
-) -> tuple[bool, bool, bool, bool, tuple[str, ...]]:
+) -> tuple[bool, bool, bool, bool, bool, tuple[str, ...]]:
+    empty = (False, False, False, False, False, ())
     if not _is_safe_regular_file(trace, trace.parent):
-        return False, False, False, False, ()
+        return empty
     try:
         raw = trace.read_bytes()
     except OSError:
-        return False, False, False, False, ()
+        return empty
     if len(raw) > _MAX_TRACE_BYTES:
-        return False, False, False, False, ()
-    entries: list[dict[str, str]] = []
+        return empty
+    entries: list[dict[str, object]] = []
     for line in raw.splitlines():
         try:
             value = json.loads(line)
         except (UnicodeDecodeError, json.JSONDecodeError):
-            return False, False, False, False, ()
+            return empty
         if not (
             isinstance(value, dict)
-            and set(value).issubset({"run_id", "event", "outcome", "issue_code"})
+            and set(value).issubset(
+                {"run_id", "event", "outcome", "issue_code", "advisory_seen"}
+            )
             and value.get("run_id") == run_id
             and isinstance(value.get("event"), str)
             and isinstance(value.get("outcome"), str)
+            and isinstance(value.get("advisory_seen", False), bool)
         ):
-            return False, False, False, False, ()
+            return empty
         entries.append(value)
+    advisory_seen = any(entry.get("advisory_seen") for entry in entries)
     expected_issue = next(iter(_EXPECTED_ISSUES))
     expected = [
         ("userpromptsubmit", "observed", None),
@@ -490,20 +508,29 @@ def _read_evidence(
     ]
     normalized = [
         (
-            entry["event"].replace("-", "").lower(),
+            str(entry["event"]).replace("-", "").lower(),
             entry["outcome"],
             entry.get("issue_code"),
         )
         for entry in entries
     ]
     if normalized != expected:
-        return bool(entries), False, False, False, ()
-    return True, True, True, True, (expected_issue,)
+        return bool(entries), False, False, False, advisory_seen, ()
+    return True, True, True, True, advisory_seen, (expected_issue,)
 
 
 def _empty_result(platform: str) -> AcceptanceResult:
     return AcceptanceResult(
-        platform, False, False, False, False, False, False, (), False
+        platform=platform,
+        discovered=False,
+        blocked=False,
+        issue_received=False,
+        corrected=False,
+        retained_content=False,
+        block_cap_compatible=False,
+        advisory_seen=False,
+        issue_codes=(),
+        observed=False,
     )
 
 
@@ -579,9 +606,14 @@ def run_acceptance(
             # Removed before the retention scan, and again by the scratch
             # teardown in the outer finally.
             _remove_credential(credential)
-        discovered, blocked, issue_received, corrected, codes = _read_evidence(
-            trace, run_id
-        )
+        (
+            discovered,
+            blocked,
+            issue_received,
+            corrected,
+            advisory_seen,
+            codes,
+        ) = _read_evidence(trace, run_id)
         trusted = False
         if evidence_verifier is not None:
             try:
@@ -598,6 +630,7 @@ def run_acceptance(
             corrected=corrected,
             retained_content=retained_content,
             block_cap_compatible=blocked and corrected,
+            advisory_seen=advisory_seen,
             issue_codes=codes,
             observed=discovered and trusted,
         )

@@ -29,6 +29,16 @@ a scope-definition or root change. Use an approved transition before changing
 either. Never invent lifecycle credentials to satisfy a command: with no tracked
 session, author the record with `render`, `validate`, and `render-tail` only.
 
+## Historical records and project overlays
+
+Every handoff record that existed before the current pinned release was adopted
+in this repository is a deprecated historical artifact by policy. Do not open,
+read, review, validate, migrate, summarize, reconcile, or rewrite those records,
+and do not resolve questions from or mark individual legacy files. The contract
+applies to new or materially replaced records only. It is the shared minimum:
+project overlays may be stricter but cannot loosen or contradict the record-type
+decision, the single-copy metadata rule, or the final-response requirements.
+
 ## Gate: Choose the record type
 
 Identify every active scope and mark exactly one root as `highest_authorized`.

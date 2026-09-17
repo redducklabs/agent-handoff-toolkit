@@ -216,13 +216,17 @@ class HostHookTests(unittest.TestCase):
                 context = hook_context(output)
                 self.assertIn("agent-handoff", context)
                 self.assertIn("skill", context.lower())
-                self.assertIn("continuation", context.lower())
-                self.assertIn("schema-v1", context.lower())
-                self.assertIn("do not search or inspect deprecated", context.lower())
+                self.assertIn(
+                    "do not search or inspect deprecated legacy handoffs",
+                    context.lower(),
+                )
+                # No active schema-v1 chain exists in any consumer, so the
+                # sentence about reconciling one is pure cost.
+                self.assertNotIn("schema-v1", context.lower())
                 # Every session pays for this reminder, so it must not direct a
                 # session that never touches a record to read the contract.
                 self.assertNotIn("docs/agent-handoff/contract.md", context)
-                self.assertLessEqual(len(context), 320)
+                self.assertLessEqual(len(context), 140)
                 self.assertEqual(
                     json.loads(output)["hookSpecificOutput"]["hookEventName"],
                     "SessionStart",

@@ -92,7 +92,9 @@ Run these checks on the installation branch before enabling routine use:
    hook command directly with representative matching and non-matching input.
    Derive each command from the installed JSON rather than duplicating its
    argument list in the test. Assert that SessionStart emits the exact policy
-   sentence `Do not search or inspect deprecated legacy handoffs.` Then use a
+   phrase `do not search or inspect deprecated legacy handoffs`; assert the
+   phrase rather than a whole sentence, because the surrounding wording is the
+   toolkit's to shorten. Then use a
    synthetic bad stop: require the exact lifecycle issue code, correct the stop,
    and confirm the corrected stop is accepted without retained prompt, reply, or
    transcript content. Do not infer runtime viability from valid JSON alone.

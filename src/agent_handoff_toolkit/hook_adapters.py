@@ -660,68 +660,53 @@ def _form_register_root(command, runner, session, capability, reasons=None):
     return formed
 
 
+def _advisory_runner(root):
+    """The runner as the notice names it: relative, so its length is fixed."""
+
+    return Path(".agent-handoff-toolkit/runner.py")
+
+
 def _write_advisory(event, snapshot, root, storage, raw_id):
     """Say, once, that nothing is tracking this session, and decide nothing.
 
     Never blocks and never errors: an advisory that can fail the tool call is
     worse than no advisory. Any failure here leaves the call untouched.
 
-    The payload carries a `systemMessage` and nothing else. An earlier form
-    paired it with `permissionDecision: "allow"`, which does not merely
-    decline to block - on a real host it also satisfies the permission gate,
-    so the first repository write of every untracked session proceeded without
-    the approval the user would otherwise have been asked for. An advisory
-    must not grant an approval nobody gave it, so it now returns no decision
-    at all and the host's own permission flow runs untouched.
+    It carries no `permissionDecision`. An earlier form paired the notice with
+    `permissionDecision: "allow"`, which does not merely decline to block - on
+    a real host it also satisfies the permission gate, so the first repository
+    write of every untracked session proceeded without the approval the user
+    would otherwise have been asked for. An advisory must not grant an
+    approval nobody gave it, so the host's own permission flow runs untouched.
+
+    It is delivered as `additionalContext` because it is addressed to the
+    model: it hands the session two commands to choose between, and a message
+    the model never sees cannot be acted on. `systemMessage` surfaces text to
+    the user, which is what `AHK-NO-HANDOFF` needs and this does not.
+
+    It names neither the session key, the challenge, nor an absolute path. The
+    control interception binds any plain `lifecycle` attempt into its complete
+    form, so repeating two 64-hex values and a repository path here bought
+    nothing and cost about 300 tokens in every untracked session.
     """
 
     try:
-        runner = root / ".agent-handoff-toolkit" / "runner.py"
-        # Recording the advisory is itself a session commit, and every commit
-        # advances targeted_revision. Building the bound commands from the
-        # pre-commit session would hand the author a revision the commit
-        # itself has already invalidated, so the capability and commands are
-        # derived from the post-commit session the mutation below will
-        # produce, and the commit uses that identical, already-built session.
+        runner = _advisory_runner(root).as_posix()
         mutated_session = replace(
             snapshot.session,
             write_advisory_emitted=True,
             targeted_revision=snapshot.session.targeted_revision + 1,
         )
-        capability = storage.control_capability(mutated_session)
         message = (
-            "AHK-DECLARE: This session is changing the repository with no "
-            "registered root, so nothing will carry the work to a next session. "
-            "If the work ends here, run:\n"
-            + _control_command(runner, mutated_session, capability, "one-off")
-            + "\nIf it continues past this session, run register-root with the "
-            "scope title and outcome as plain text:\n"
-            + _control_command(
-                runner,
-                mutated_session,
-                capability,
-                "register-root",
-                (
-                    ("scope-id", "{scope_id}"),
-                    ("scope-kind", "{scope_kind}"),
-                    ("scope-title", '"{title}"'),
-                    ("scope-outcome", '"{outcome}"'),
-                ),
-            )
-            + "\nNeither is required; this notice appears once."
+            "AHK-DECLARE: First repository edit with no registered root. If "
+            "this work will continue in another session, run: python "
+            f"{runner} lifecycle register-root --scope-id <id> --scope-kind "
+            '<kind> --scope-title "<title>" --scope-outcome "<outcome>" '
+            f"(the hook returns the bound form). If it will not, run: python "
+            f"{runner} lifecycle one-off. Shown once."
         )
-        # MAX_REASON_BYTES bounds hook *feedback* - a denial reason fed back
-        # to the model, where an oversize string costs a correction cycle. A
-        # one-shot notice on an undecided path is neither fed back nor looped,
-        # and its length is a deterministic function of the runner path, so
-        # applying that bound here only produced a silent cliff: past a repo
-        # root of roughly 145 characters no advisory ever fired, and because
-        # the flag was committed after the check, the capability and message
-        # were rebuilt on every subsequent write call. The notice is exempt.
         _commit(storage, raw_id, snapshot, LifecycleMutation(mutated_session))
-        return HookExecution(
-            stdout=json.dumps({"systemMessage": message}, separators=(",", ":"))
-        )
+        return _context("PreToolUse", message)
     except Exception:
         # Advisory only. A failure here must not disturb the tool call.
         return HookExecution()
