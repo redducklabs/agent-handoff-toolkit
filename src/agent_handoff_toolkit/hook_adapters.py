@@ -1141,6 +1141,23 @@ def run_lifecycle_hook(platform, name, raw, repo_root, storage=None):
     stage = "decode-input"
     try:
         payload = decode_payload(raw)
+        # Nothing is gated at PreToolUse but the toolkit's own control
+        # commands and the first-write advisory, and the advisory fires only
+        # for a known writing tool. Every other call - every shell command,
+        # every MCP call - used to open state, take its lock and run a git
+        # subprocess before returning the empty decision it always returns.
+        # Two fields are read defensively here; anything unexpected falls
+        # through to the unchanged path below.
+        if event_kind is EventName.PRE_TOOL_USE and platform in _WRITE_TOOLS:
+            tool = payload.get("tool_name")
+            inputs = payload.get("tool_input")
+            command = inputs.get("command") if isinstance(inputs, Mapping) else None
+            control = (
+                isinstance(command, str)
+                and re.match(r"^python \S+ lifecycle(?: |$)", command) is not None
+            )
+            if not control and tool not in _WRITE_TOOLS[platform]:
+                return HookExecution()
         root = Path(repo_root).resolve()
         raw_id = _string(payload.get("session_id"), 4096)
         if storage is None:
