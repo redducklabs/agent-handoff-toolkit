@@ -88,6 +88,22 @@ authorized root with an audit. Executable work remaining is not a decision
 request. A decision request must name one bounded question, blocked action, and
 recognized authority category; it cannot change the root or scope definition.
 
+A session resumes a tracked chain when the **first line** of its prompt is
+`Continue from handoff: <absolute path>`. Everything after that line is the
+user's instruction for the session and is not read for the resume decision.
+The evidence is the record the pointer names: its digest must equal the chain's
+`current_record_reference.sha256`, and its root and scope digests must match the
+chain, exactly as `resume` has always required. The prompt body was never
+evidence, and requiring it to match the renderer byte for byte meant one extra
+space left the session untracked with nothing reported to anyone.
+
+A resume that succeeds returns `AHK-RESUMED` as model context, naming the
+tracked root and the record. A resume that fails returns `AHK-RESUME-FAILED`
+with the failing check after `failed=` — `candidate-outside-handoffs`,
+`record-invalid`, `chain-inactive`, `record-digest` or `chain-stale` — and the
+session stays untracked. Silence is not a permitted outcome for a prompt that
+carried a pointer.
+
 `Stop` verifies the direct candidate, lineage, locked root, open-decision state,
 and the renderer's complete response. An attempted assistant message may already
 be displayed before `Stop` runs. The hook cannot retract that transient
@@ -163,6 +179,21 @@ documents no equivalent variable, and the walk needs none on either host.
 The runner still takes the repository it operates on from its working
 directory, unchanged.
 
+## State across installed releases
+
+Every worktree of a repository shares one lifecycle registry, so state written
+by one installed release is read by every other. Loading tolerates that drift
+in both directions: a field the writing release added and this one does not
+know is dropped, and a field this release knows and the writer omitted takes
+its own declared default. Fields carrying no default — identities, revisions
+and digests — stay required and are validated as before.
+
+Host payload field names are the exception. Lifecycle state is the toolkit's
+record of its own decisions and never carries a prompt, a reply or a
+transcript, so state naming one of those fields is refused rather than quietly
+trimmed: a content channel through the registry is a defect to report, not
+drift to tolerate.
+
 ## Recovering a broken hook runtime
 
 `lifecycle inspect`, `register-root`, `resume` and `join` require a session key,
@@ -185,7 +216,10 @@ A session begins in `OPEN`. Nothing it does is gated: shell commands, file
 edits, MCP calls, web fetches, subagents, and todo lists all run untouched.
 The one interception that remains in `OPEN` is the toolkit's own control
 commands (`python <runner> lifecycle …`), denied and repaired exactly as
-described below under "Registering the first root". That interception is not
+described below under "Registering the first root". A tool call that is
+neither a control command nor a call to a known writing tool is decided
+before any state is read: there is nothing for the hook to decide about it in
+any mode, so it costs no state open, no lock and no subprocess. That interception is not
 a gate on work; it is the control plane, and the only channel by which a
 session learns its session key, challenge, and expected revision, because
 `UserPromptSubmit` returns silently on the normal path.
@@ -220,10 +254,14 @@ Two advisories make undeclared drift visible without gating anything:
   applies to blocking feedback fed back to the model; a notice on an
   undecided path is never fed back and never loops, and bounding it only
   silenced the advisory in repositories with long paths.
-- **`AHK-NO-HANDOFF`** fires at `Stop` for a session still in `OPEN` or
-  `ONE_OFF` when both hold: `git status --porcelain` is non-empty, and its
-  digest differs from the digest recorded at the session's first
-  `UserPromptSubmit`. Both facts come from one `git status` read, so the note
+- **`AHK-NO-HANDOFF`** fires at most once per session, at `Stop` for a session
+  still in `OPEN` or `ONE_OFF`, when both hold: `git status --porcelain` is
+  non-empty, and its digest differs from the digest recorded at the session's
+  first `UserPromptSubmit`. `Stop` runs at every turn end rather than at the
+  end of a session, so repeating the note told the user nothing new and cost
+  them the same sentence every time the agent stopped talking. The flag is
+  committed with the notice, which is also what lets every later `Stop` in
+  that session skip the `git status` subprocess entirely. Both facts come from one `git status` read, so the note
   costs one subprocess per `Stop`. The first condition alone would fire on
   work left uncommitted before the session began; the second alone would fire
   on a session that committed away pre-existing changes. Together they mean
@@ -232,7 +270,8 @@ Two advisories make undeclared drift visible without gating anything:
   change. The mechanism cannot establish that: a person saving a file in
   their editor mid-turn satisfies both conditions too. A declared one-off
   still receives this note — `one-off` suppresses `AHK-DECLARE`, not
-  `AHK-NO-HANDOFF`.
+  `AHK-NO-HANDOFF`. The note is user-facing text and reads as such: it asks
+  the user to request a handoff, and does not hand the model a command.
 
 Neither advisory blocks, and neither can error: a missing `git` binary, a
 directory that is not a repository, a `git` invocation that times out or
@@ -273,8 +312,13 @@ absent or null when a turn ended on a tool call, empty when the turn emitted no
 text, and otherwise whatever the model or the user wrote. None of that is a
 runtime fault; on `UserPromptSubmit` treating it as one rejects the user's own
 message. Line endings are normalized so that a later exact comparison is made
-on one representation, and the text is otherwise kept verbatim so it is never
-trimmed into something that could pass as the rendered response. Content that
+on one representation, and trailing newlines are normalized away with them:
+`render-tail` prints the response followed by one, so a host reporting the
+message as it was printed differs from the renderer by that byte alone, and
+was told the toolkit had malfunctioned over it. The text is otherwise kept
+verbatim so it is never trimmed into something that could pass as the rendered
+response — leading text and interior whitespace still belong to the message,
+and a candidate whose body differs is a policy correction, not a fault. Content that
 says nothing reads as absent, which every later check already handles. Only a
 structurally invalid value — a wrong type — remains a normalization failure.
 

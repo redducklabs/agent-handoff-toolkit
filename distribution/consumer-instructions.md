@@ -28,10 +28,17 @@ before creating or changing a continuation or completion audit.
 - The toolkit may attach an informational `AHK-DECLARE` notice on a
   session's first repository write with no registered root, and an
   `AHK-NO-HANDOFF` notice at `Stop` when the repository changed during an
-  undeclared session and it ends with work uncommitted. Neither advisory
-  blocks, and neither carries a permission decision: the notice is attached
-  alongside the host's normal approval flow, which runs unchanged. Treat
-  either as a prompt to decide, not as an error to fix.
+  undeclared session and it ends with work uncommitted. Each fires at most
+  once per session. Neither advisory blocks, and neither carries a permission
+  decision: the notice is attached alongside the host's normal approval flow,
+  which runs unchanged. Treat either as a prompt to decide, not as an error to
+  fix.
+- A prompt whose first line is `Continue from handoff: <absolute path>`
+  resumes that record's tracked chain; the rest of the prompt is the work for
+  this session. The hook reports `AHK-RESUMED` on success and
+  `AHK-RESUME-FAILED failed=<check>` when the pointer did not resume a chain,
+  which leaves the session untracked — say so to the user rather than
+  continuing as though the epic were still tracked.
 - For schema v2, run `lifecycle inspect` before creating a tracked record. Use
   `lifecycle register-root`, `lifecycle resume`, and `lifecycle join` only for
   their defined lifecycle states; an existing handoff does not authorize a new
