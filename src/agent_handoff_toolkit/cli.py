@@ -18,7 +18,12 @@ from .hooks import (
     observe_context,
     run_hook,
 )
-from .records import render_record, render_terminal_response, validate_markdown
+from .records import (
+    render_record,
+    render_successor,
+    render_terminal_response,
+    validate_markdown,
+)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -34,6 +39,12 @@ def _parser() -> argparse.ArgumentParser:
     render = subparsers.add_parser("render", help="render JSON data as Markdown")
     render.add_argument("record", type=Path)
     render.add_argument("--output", type=Path)
+    render.add_argument(
+        "--successor-of",
+        type=Path,
+        dest="successor_of",
+        help="copy lineage and scope definitions from this predecessor record",
+    )
 
     tail = subparsers.add_parser("render-tail", help="render a final response tail")
     tail.add_argument("record", type=Path)
@@ -529,7 +540,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if args.command == "render":
             data = json.loads(_read_text(args.record))
-            text = render_record(data)
+            if args.successor_of is None:
+                text = render_record(data)
+            else:
+                text = render_successor(
+                    data, _read_text(args.successor_of), args.successor_of
+                )
             if args.output is None:
                 sys.stdout.write(text)
             else:

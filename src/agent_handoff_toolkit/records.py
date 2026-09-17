@@ -15,6 +15,7 @@ from urllib.parse import quote
 
 from .lineage import (
     LineageError,
+    record_digest,
     scope_definition_digest,
     validate_hex_digest,
     validate_identifier,
@@ -1638,6 +1639,92 @@ def render_record(data: Mapping[str, object]) -> str:
         for name in expected_sections
     )
     return f"{preamble}\n\n{title}\n\n{rendered_sections}\n"
+
+
+# Lineage an author never chooses. Root immutability means each of these is
+# exactly the predecessor's value, so copying them is transcription, not
+# judgement - and transcription is where a chain gets quietly broken.
+_INHERITED_RECORD_FIELDS = (
+    "schema_version",
+    "authorization_id",
+    "authorized_root_scope_id",
+    "authorization_evidence",
+    "transition",
+)
+_INHERITED_SCOPE_FIELDS = ("scope_definition", "scope_definition_digest")
+
+
+def render_successor(
+    data: Mapping[str, object],
+    predecessor_text: str,
+    predecessor_path: str | os.PathLike[str],
+) -> str:
+    """Render a successor, copying its lineage from the predecessor record.
+
+    The author supplies the record id, the timestamp, the per-scope progress
+    fields, verification, the exact action, the next-session prompt and the
+    sections. Everything that identifies the chain is read from the
+    predecessor, which is also what keeps root immutability intact: the
+    definitions are copied, never recomputed from author input, so an altered
+    definition is a rejection rather than a new digest.
+    """
+
+    if not isinstance(data, Mapping):
+        raise ValueError("metadata-type: metadata must be a JSON object")
+    predecessor = parse_markdown(predecessor_text)
+    if predecessor.get("record_type") != "continuation":
+        raise ValueError("successor-predecessor: a successor continues a continuation")
+    if predecessor.get("schema_version") != LATEST_SCHEMA_VERSION:
+        raise ValueError(
+            "successor-predecessor: scaffolding requires a schema-v2 predecessor"
+        )
+
+    scaffolded = {key: value for key, value in data.items()}
+    for field_name in _INHERITED_RECORD_FIELDS:
+        supplied = scaffolded.get(field_name, predecessor.get(field_name))
+        if field_name in scaffolded and supplied != predecessor.get(field_name):
+            raise ValueError(
+                f"successor-inherited: {field_name} is inherited from the "
+                "predecessor and cannot be changed without an approved transition"
+            )
+        scaffolded[field_name] = predecessor.get(field_name)
+    scaffolded["predecessor"] = {
+        "record_id": predecessor.get("record_id"),
+        "path": _absolute_markdown_path(predecessor_path),
+        "sha256": record_digest(predecessor_text),
+    }
+
+    inherited_scopes = {
+        scope["scope_id"]: scope
+        for scope in predecessor.get("active_scopes", [])
+        if isinstance(scope, Mapping) and isinstance(scope.get("scope_id"), str)
+    }
+    scopes = scaffolded.get("active_scopes")
+    if not isinstance(scopes, list) or not scopes:
+        raise ValueError("scope-list: active_scopes must be a non-empty list")
+    resolved = []
+    for scope in scopes:
+        if not isinstance(scope, Mapping):
+            raise ValueError("scope-field: every active scope must be an object")
+        scope_id = scope.get("scope_id")
+        source = inherited_scopes.get(scope_id) if isinstance(scope_id, str) else None
+        if source is None:
+            raise ValueError(
+                f"successor-scope: the predecessor holds no scope {scope_id!r}; "
+                "a new scope needs an approved transition"
+            )
+        merged = dict(scope)
+        for field_name in _INHERITED_SCOPE_FIELDS:
+            if field_name in merged and merged[field_name] != source.get(field_name):
+                raise ValueError(
+                    f"successor-inherited: {field_name} is inherited from the "
+                    "predecessor and cannot be changed without an approved "
+                    "transition"
+                )
+            merged[field_name] = source.get(field_name)
+        resolved.append(merged)
+    scaffolded["active_scopes"] = resolved
+    return render_record(scaffolded)
 
 
 def _absolute_markdown_path(record_path: str | os.PathLike[str]) -> str:

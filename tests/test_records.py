@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -16,11 +17,13 @@ sys.path.insert(0, str(ROOT / "src"))
 from agent_handoff_toolkit import (  # noqa: E402
     parse_markdown,
     render_record,
+    render_successor,
     render_tail,
     render_terminal_response,
     validate_successor,
     validate_markdown,
 )
+from agent_handoff_toolkit.cli import main  # noqa: E402
 from agent_handoff_toolkit.lineage import (  # noqa: E402
     record_digest,
     scope_definition_digest,
@@ -1690,6 +1693,149 @@ class RecordSizeTests(unittest.TestCase):
             "record-size",
         ):
             self.assertNotIn(code, codes)
+
+
+class SuccessorScaffoldTests(unittest.TestCase):
+    """Eleven lineage fields were copied by hand for every successor.
+
+    None of them is the author's to choose: root immutability means they are
+    exactly the predecessor's. Copying them mechanically removes the transcription
+    and leaves the author only the fields that carry judgement.
+    """
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.predecessor_path = self.root / "record-002.md"
+        self.predecessor_source = make_v2_continuation()
+        self.predecessor_text = render_record(self.predecessor_source)
+        self.predecessor_path.write_text(
+            self.predecessor_text, encoding="utf-8", newline="\n"
+        )
+
+    def author(self):
+        """Only the fields a successor's author actually decides."""
+
+        scope = copy.deepcopy(self.predecessor_source["active_scopes"][0])
+        for key in ("scope_definition", "scope_definition_digest"):
+            scope.pop(key)
+        return {
+            "record_type": "continuation",
+            "timestamp": "2026-09-17T12:00:00Z",
+            "record_id": "record-003",
+            "active_scopes": [scope],
+            "next_session_gates": [],
+            "verification": self.predecessor_source["verification"],
+            "exact_action": self.predecessor_source["exact_action"],
+            "next_session_prompt": self.predecessor_source["next_session_prompt"],
+            "sections": self.predecessor_source["sections"],
+        }
+
+    def test_the_lineage_fields_are_copied_from_the_predecessor(self):
+        rendered = render_successor(
+            self.author(), self.predecessor_text, self.predecessor_path
+        )
+        data = parse_markdown(rendered)
+
+        self.assertEqual(data["schema_version"], 2)
+        self.assertEqual(data["record_id"], "record-003")
+        for field in (
+            "authorization_id",
+            "authorized_root_scope_id",
+            "authorization_evidence",
+            "transition",
+        ):
+            self.assertEqual(data[field], self.predecessor_source[field])
+        self.assertEqual(
+            data["predecessor"],
+            {
+                "record_id": self.predecessor_source["record_id"],
+                "path": self.predecessor_path.as_posix(),
+                "sha256": record_digest(self.predecessor_text),
+            },
+        )
+        scope = data["active_scopes"][0]
+        predecessor_scope = self.predecessor_source["active_scopes"][0]
+        self.assertEqual(
+            scope["scope_definition"], predecessor_scope["scope_definition"]
+        )
+        self.assertEqual(
+            scope["scope_definition_digest"],
+            predecessor_scope["scope_definition_digest"],
+        )
+        self.assertEqual(validate_markdown(rendered), [])
+
+    def test_progress_fields_stay_the_authors(self):
+        author = self.author()
+        author["active_scopes"][0]["status"] = "blocked"
+        author["active_scopes"][0]["remaining_code_detail"] = "Blocked on review."
+        data = parse_markdown(
+            render_successor(author, self.predecessor_text, self.predecessor_path)
+        )
+        self.assertEqual(data["active_scopes"][0]["status"], "blocked")
+        self.assertEqual(
+            data["active_scopes"][0]["remaining_code_detail"], "Blocked on review."
+        )
+
+    def test_an_altered_definition_cannot_be_smuggled_through_the_copy(self):
+        author = self.author()
+        author["active_scopes"][0]["scope_definition"] = {
+            "title": "A different root",
+            "outcome": "A different outcome.",
+        }
+        with self.assertRaises(ValueError) as raised:
+            render_successor(author, self.predecessor_text, self.predecessor_path)
+        self.assertIn("scope_definition", str(raised.exception))
+
+    def test_a_scope_the_predecessor_never_held_is_rejected(self):
+        author = self.author()
+        author["active_scopes"][0]["scope_id"] = "invented-scope"
+        with self.assertRaises(ValueError) as raised:
+            render_successor(author, self.predecessor_text, self.predecessor_path)
+        self.assertIn("invented-scope", str(raised.exception))
+
+    def test_a_completion_audit_scaffolds_from_the_same_predecessor(self):
+        author = self.author()
+        author["record_type"] = "completion-audit"
+        scope = author["active_scopes"][0]
+        scope.update(remaining_work=False, remaining_code=False, status="complete")
+        scope["remaining_code_detail"] = "No code remains within this scope."
+        author.pop("exact_action")
+        author.pop("next_session_prompt")
+        author.pop("next_session_gates")
+        author["completed_scope_id"] = scope["scope_id"]
+        author["authorization_basis"] = "The authorized root outcome is complete."
+        audit = load_fixture("completion-audit.json")
+        author["sections"] = drop_v2_sections(audit)["sections"]
+        data = parse_markdown(
+            render_successor(author, self.predecessor_text, self.predecessor_path)
+        )
+        self.assertEqual(data["record_type"], "completion-audit")
+        self.assertEqual(
+            data["authorization_id"], self.predecessor_source["authorization_id"]
+        )
+
+    def test_the_cli_writes_the_scaffolded_successor(self):
+        author_path = self.root / "successor.json"
+        author_path.write_text(
+            json.dumps(self.author()), encoding="utf-8", newline="\n"
+        )
+        output = self.root / "record-003.md"
+        with unittest.mock.patch("sys.stdout"):
+            status = main(
+                [
+                    "render",
+                    str(author_path),
+                    "--successor-of",
+                    str(self.predecessor_path),
+                    "--output",
+                    str(output),
+                ]
+            )
+        self.assertEqual(status, 0)
+        self.assertEqual(validate_markdown(output.read_text(encoding="utf-8")), [])
+
 
 if __name__ == "__main__":
     unittest.main()
