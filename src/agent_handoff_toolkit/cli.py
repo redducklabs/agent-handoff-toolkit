@@ -397,6 +397,10 @@ def _lifecycle_main(argv):
                         "evidence_hmac": proof.evidence_hmac,
                     },
                 }
+        # `inspect` reports the derived session key as `session_id`; it is the
+        # same value the caller passed in, so printing both cost a tracked
+        # session a duplicated 64-hex value on every control command.
+        result.pop("session_id", None)
         result["session_key"] = session_key
         result["challenge"] = service._control[1]
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))
