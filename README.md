@@ -125,6 +125,10 @@ source corruption, ownership conflicts, or write failures. See
 [consumer integration](docs/consumer-integration.md) for conflict ownership,
 rollback limitations, and pilot migration notes.
 
+After installing, complete the post-install acceptance checklist in the
+consumer's `.agent-handoff-toolkit/consumer-integration.md` before enabling the
+workflow there.
+
 Before enabling the distributed hooks, run `python --version` in the consumer repository and verify that `python` resolves to Python 3.11 or newer. The manifest declares this exact launcher and minimum version; the hook fragments use the same command.
 
 ## Development

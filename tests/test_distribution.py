@@ -334,6 +334,21 @@ class DistributionTests(unittest.TestCase):
             ],
         )
 
+    def test_the_managed_block_stays_short_enough_to_load_every_session(self) -> None:
+        """It is loaded into every session of every consumer, tracked or not.
+
+        At 737 words it cost roughly 1,300 tokens per context window to carry
+        lifecycle mechanics that only a session authoring a record needs, and
+        that the skill already states.
+        """
+
+        words = (
+            (ROOT / "distribution/consumer-instructions.md")
+            .read_text(encoding="utf-8")
+            .split()
+        )
+        self.assertLess(len(words), 250, len(words))
+
     def test_consumer_guidance_requires_prospective_acceptance_only(self) -> None:
         managed = (
             (ROOT / "distribution/consumer-instructions.md")
@@ -343,10 +358,25 @@ class DistributionTests(unittest.TestCase):
         integration = (
             (ROOT / "docs/consumer-integration.md").read_text(encoding="utf-8").lower()
         )
+        skill = (
+            (ROOT / "skills/agent-handoff/SKILL.md").read_text(encoding="utf-8").lower()
+        )
+        readme = (ROOT / "README.md").read_text(encoding="utf-8").lower()
         combined = re.sub(r"\s+", " ", f"{managed}\n{integration}")
         managed_normalized = re.sub(r"\s+", " ", managed)
         integration_normalized = re.sub(r"\s+", " ", integration)
+        skill_normalized = re.sub(r"\s+", " ", skill)
 
+        # Every session pays for the managed block, so it keeps only the rule
+        # a session that never authors a record still has to obey.
+        for phrase in (
+            "predate the installed release are historical",
+            "do not read, validate or migrate them",
+        ):
+            self.assertIn(phrase, managed_normalized)
+
+        # The full policy moved to the skill, which is read by the session
+        # that could actually break it.
         for phrase in (
             "deprecated historical artifact",
             "existed before the current pinned release was adopted",
@@ -356,9 +386,15 @@ class DistributionTests(unittest.TestCase):
             "highest authorized scope",
             "stores each fact once, in its visible metadata block",
             "do not resolve questions from or mark individual legacy files",
-            ".agent-handoff-toolkit/consumer-integration.md",
         ):
-            self.assertIn(phrase, managed_normalized)
+            self.assertIn(phrase, skill_normalized)
+
+        # The acceptance checklist is an installation step, so it is named
+        # where installation happens.
+        self.assertIn(
+            ".agent-handoff-toolkit/consumer-integration.md",
+            re.sub(r"\s+", " ", readme),
+        )
 
         for phrase in (
             "install-state.json` is the source of truth",
@@ -615,20 +651,23 @@ class DistributionTests(unittest.TestCase):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, normalized["skill"])
 
+        # The managed block is loaded into every session, so it carries only
+        # what a session that never authors a record still has to know. The
+        # lifecycle detail it used to repeat lives in the skill, asserted
+        # above, and in the mechanics reference.
         for phrase in (
-            "lifecycle inspect",
+            "sessions run untracked by default",
             "lifecycle register-root",
-            "lifecycle resume",
-            "lifecycle join",
-            "renderer-only terminal response",
-            "corrective stop feedback",
-            "already be displayed",
-            "a session runs ungated until it registers a root",
+            "render-tail",
+            "renderer",
+            "continue from handoff:",
+            "ahk-resume-failed",
             "ahk-declare",
             "ahk-no-handoff",
-            "neither advisory blocks",
-            "never blocks a session that declared no tracked work",
+            "each fires once",
+            "lifecycle one-off",
             "lifecycle doctor",
+            "blocks nothing in an untracked session",
         ):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, normalized["consumer"])
@@ -1083,7 +1122,10 @@ class DistributionTests(unittest.TestCase):
                 instruction = (consumer / instruction_name).read_text(encoding="utf-8")
                 self.assertIn("<!-- agent-handoff-toolkit:start -->", instruction)
                 self.assertIn("<!-- agent-handoff-toolkit:end -->", instruction)
-                self.assertIn("docs/agent-handoff/contract.md", instruction)
+                # The block is loaded every session, so it points at the skill;
+                # the skill is what points at the contract.
+                self.assertIn("`agent-handoff` skill", instruction)
+                self.assertNotIn("docs/agent-handoff/contract.md", instruction)
 
             template = consumer / "handoffs/templates/continuation.md"
             record = consumer / "handoffs/current.md"
