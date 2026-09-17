@@ -275,7 +275,66 @@ def _raw_input_is_bounded(raw: str) -> bool:
     return len(raw.encode("utf-8")) <= MAX_HOOK_INPUT_BYTES
 
 
-def _run_advisory_hook(platform: str, event: str, raw: str, repo_root: Path) -> str:
+def _session_end_notice(
+    payload: dict[str, Any], repo_root: Path, storage: object = None
+) -> str:
+    """Tell the user when tracked work closed on a progress line, not a handoff.
+
+    A tracked session may end a turn on the canonical progress line instead of
+    authoring a record. That is a pause, not a conclusion, so a session that
+    closes on one leaves the epic with no record of where it stopped. This is
+    the report that says so. It is informational and fails open: a missing or
+    unreadable state file, or any other fault, produces no message at all.
+    """
+
+    try:
+        import os
+
+        from .lifecycle import EnforcementMode
+        from .lifecycle_storage import LocalLifecycleStorage
+
+        session_id = payload.get("session_id")
+        if not isinstance(session_id, str) or not session_id:
+            return ""
+        if storage is None:
+            state_root = os.environ.get("AHK_STATE_ROOT")
+            storage = LocalLifecycleStorage(
+                Path(repo_root), state_root=Path(state_root) if state_root else None
+            )
+        snapshot = storage.load_snapshot(session_id)
+        session, chain = snapshot.session, snapshot.chain
+        if (
+            session.mode is not EnforcementMode.TRACKED
+            or not session.last_stop_was_progress
+            or chain is None
+        ):
+            return ""
+        reference = chain.current_record_reference
+        title = chain.root_title or chain.locked_root_id
+        if reference is None:
+            resume = "by declaring the goal again with: Track: " + title
+        else:
+            resume = (
+                "by starting a new session with: Continue from handoff: "
+                + reference.path
+            )
+        return json.dumps(
+            {
+                "systemMessage": (
+                    f'Tracked work "{title}" ended without a final handoff. '
+                    f"Resume it {resume}"
+                )
+            },
+            ensure_ascii=False,
+        )
+    except Exception:
+        # Informational only; a fault here must never disturb the session end.
+        return ""
+
+
+def _run_advisory_hook(
+    platform: str, event: str, raw: str, repo_root: Path, storage: object = None
+) -> str:
     """Normalize a host event and return hook JSON, failing open on all errors.
 
     ``repo_root`` is retained at the adapter boundary for future local contract
@@ -296,8 +355,13 @@ def _run_advisory_hook(platform: str, event: str, raw: str, repo_root: Path) -> 
         if normalized_event == "posttooluse":
             normalized_event = "post-tool-use"
 
+        if normalized_event == "sessionend":
+            normalized_event = "session-end"
+
         if normalized_event == "session-start":
             return _hook_output("SessionStart", _SESSION_START_REMINDER)
+        if normalized_event == "session-end":
+            return _session_end_notice(payload, repo_root, storage)
         if normalized_event != "post-tool-use":
             return ""
 
@@ -330,7 +394,9 @@ def run_hook(
         else ""
     )
     if name not in {"userpromptsubmit", "pretooluse", "stop"}:
-        return HookExecution(stdout=_run_advisory_hook(platform, event, raw, repo_root))
+        return HookExecution(
+            stdout=_run_advisory_hook(platform, event, raw, repo_root, storage)
+        )
     try:
         from .hook_adapters import run_lifecycle_hook
 

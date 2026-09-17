@@ -608,7 +608,7 @@ class DistributionTests(unittest.TestCase):
             "scope_definition_digest",
             "root immutability",
             "approved transition",
-            "four permitted stop outcomes",
+            "five permitted stop outcomes",
             "byte-exact equality",
             "handwritten preamble",
             "may already be displayed",
@@ -864,6 +864,7 @@ class DistributionTests(unittest.TestCase):
                     "UserPromptSubmit",
                     "PreToolUse",
                     "PostToolUse",
+                    "SessionEnd",
                     "Stop",
                 },
             )
@@ -872,10 +873,11 @@ class DistributionTests(unittest.TestCase):
                 ("UserPromptSubmit", "user-prompt-submit"),
                 ("PreToolUse", "pre-tool-use"),
                 ("PostToolUse", "post-tool-use"),
+                ("SessionEnd", "session-end"),
                 ("Stop", "stop"),
             ):
                 entry = fragment["hooks"][host_event][0]
-                if host_event in {"Stop", "UserPromptSubmit"}:
+                if host_event in {"Stop", "UserPromptSubmit", "SessionEnd"}:
                     self.assertNotIn("matcher", entry)
                 elif host_event in matchers:
                     self.assertEqual(entry["matcher"], matchers[host_event])

@@ -31,9 +31,9 @@ from .lifecycle import (
     EnforcementMode,
     EventName,
     LifecycleMutation,
-    RecordReference,
     _UNGATED,
     classify_affirmation,
+    progress_response,
     render_decision_response,
 )
 from .lifecycle_storage import LocalLifecycleStorage, StaleLifecycleState
@@ -386,6 +386,10 @@ class LifecycleService:
             else (
                 proposal.kind if proposal and proposal.status != "consumed" else None
             ),
+            # The exact message a tracked session may end a turn on without
+            # authoring a record. It is published here rather than in blocking
+            # feedback, which carries issue codes and bounded identifiers only.
+            "progress_response": progress_response(chain) if chain else None,
             "issue_codes": (
                 ["AHK-STATE-STALE"]
                 if chain and session.chain_revision != chain.targeted_revision
@@ -467,6 +471,9 @@ class LifecycleService:
             None,
             authorization_user_turn_reference=turn,
             authorization_evidence_hmac=signature,
+            # The declared goal in the user's own words. Every message that
+            # names the work to the user reads it from here.
+            root_title=scope["scope_definition"]["title"],
         )
         session = replace(
             snapshot.session,
