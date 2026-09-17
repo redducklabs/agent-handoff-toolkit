@@ -13,7 +13,7 @@ import hashlib
 import hmac
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import secrets
 import shlex
@@ -430,13 +430,31 @@ def _correction_hmac(secret, session, reason):
     return hmac.new(secret, binding.encode(), hashlib.sha256).hexdigest()
 
 
-def _read_record(path, root):
-    """Open one contained regular source once; retain its exact original bytes."""
+def _read_record(path, root, *, expected_digest=None):
+    """Open one contained regular source once; retain its exact original bytes.
+
+    A chain crosses checkouts. The same repository is a worktree here, a
+    different worktree there and `/mnt/d/...` under WSL, so a path recorded in
+    one of them names a file that does not exist in another, and the record it
+    names is sitting in this checkout's `handoffs/` under the same name. When
+    the caller already knows the digest it expects, a path outside this
+    checkout is retried against that basename and accepted only when the file
+    there hashes to exactly what was expected. The digest is the evidence; the
+    path is a locator.
+    """
+
     canonical = canonical_record_path(path)
     if canonical != path:
         raise ValueError("record pointer must use forward slashes")
     target = Path(canonical)
     handoffs = root / "handoffs"
+    if expected_digest is not None and not target.is_relative_to(handoffs):
+        # Read the record of that name in this checkout and report its real
+        # digest. Whether it is the right record is decided by the digest
+        # comparisons the caller already makes, which is where the evidence
+        # belongs: a mismatch is a policy failure to correct, not a
+        # malfunction of the toolkit.
+        return _read_record((handoffs / target.name).as_posix(), root)
     if not target.is_relative_to(handoffs) or target.name.lower() == "readme.md":
         raise ValueError("candidate outside handoffs")
     # The same no-reparse directory guard used by private state pins Windows
@@ -522,7 +540,14 @@ def _candidate(event, snapshot, root):
         ):
             raise ValueError("invalid predecessor pointer")
         predecessor_path = reference["path"]
-        _, predecessor, predecessor_digest = _read_record(predecessor_path, root)
+        declared_digest = reference.get("sha256")
+        _, predecessor, predecessor_digest = _read_record(
+            predecessor_path,
+            root,
+            expected_digest=declared_digest
+            if isinstance(declared_digest, str)
+            else None,
+        )
     proof = snapshot.chain.publication_evidence if snapshot.chain else None
     return TerminalCandidate(
         candidate=data,
@@ -1185,6 +1210,12 @@ def _resume_chain(service, storage, snapshot, pointer, root):
         return snapshot, "record-invalid"
 
 
+def _record_name(path):
+    """The record's basename, which is stable across checkouts."""
+
+    return PurePosixPath(str(path)).name
+
+
 def _resume_precheck(storage, data, path, digest):
     """Classify a resume that cannot succeed, before anything is committed."""
 
@@ -1202,11 +1233,13 @@ def _resume_precheck(storage, data, path, digest):
     if chain is None or chain.status != "active":
         return "chain-inactive"
     current = chain.current_record_reference
-    if current is None or (current.record_id, current.path, current.sha256) != (
-        data.get("record_id"),
-        path,
-        digest,
-    ):
+    # The path is a locator: the chain may have recorded it in another
+    # worktree or under WSL. The record id and the digest are the identity.
+    if current is None or (
+        current.record_id,
+        _record_name(current.path),
+        current.sha256,
+    ) != (data.get("record_id"), _record_name(path), digest):
         return "record-digest"
     if chain.locked_root_id != data.get("authorized_root_scope_id"):
         return "record-invalid"

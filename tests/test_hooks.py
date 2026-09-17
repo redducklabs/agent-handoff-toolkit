@@ -322,10 +322,7 @@ class HostHookTests(unittest.TestCase):
                 self.assertIn("must not contain a restart action", context)
                 # The renderer is the only source of the terminal response, so
                 # the reminder must not retype the tail it generates.
-                self.assertNotIn(
-                    "This session is stopped because authorized work remains",
-                    context,
-                )
+                self.assertNotIn("Stopping here. Work remains", context)
                 self.assertNotIn("What you need to do:", context)
                 self.assertNotIn("docs/agent-handoff/contract.md", context)
                 self.assertLessEqual(len(context), 700)

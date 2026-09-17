@@ -31,9 +31,9 @@ from .lifecycle import (
     EnforcementMode,
     EventName,
     LifecycleMutation,
-    RecordReference,
     _UNGATED,
     classify_affirmation,
+    progress_response,
     render_decision_response,
 )
 from .lifecycle_storage import LocalLifecycleStorage, StaleLifecycleState
@@ -386,6 +386,10 @@ class LifecycleService:
             else (
                 proposal.kind if proposal and proposal.status != "consumed" else None
             ),
+            # The exact message a tracked session may end a turn on without
+            # authoring a record. It is published here rather than in blocking
+            # feedback, which carries issue codes and bounded identifiers only.
+            "progress_response": progress_response(chain) if chain else None,
             "issue_codes": (
                 ["AHK-STATE-STALE"]
                 if chain and session.chain_revision != chain.targeted_revision
@@ -467,6 +471,9 @@ class LifecycleService:
             None,
             authorization_user_turn_reference=turn,
             authorization_evidence_hmac=signature,
+            # The declared goal in the user's own words. Every message that
+            # names the work to the user reads it from here.
+            root_title=scope["scope_definition"]["title"],
         )
         session = replace(
             snapshot.session,
@@ -538,11 +545,19 @@ class LifecycleService:
         ):
             raise ValueError("resume requires one v2 continuation")
         chain = self.storage.load_chain(parsed["authorization_id"])
-        reference = RecordReference(parsed["record_id"], path, record_digest)
+        current = chain.current_record_reference if chain else None
+        # The stored path is a locator. A chain is continued from another
+        # worktree or from WSL, where that absolute path names nothing; the
+        # record id and the source digest are what identify the record.
+        same_record = current is not None and (
+            current.record_id,
+            PurePosixPath(current.path).name,
+            current.sha256,
+        ) == (parsed["record_id"], PurePosixPath(path).name, record_digest)
         if (
             chain is None
             or chain.status != "active"
-            or chain.current_record_reference != reference
+            or not same_record
             or chain.locked_root_id != parsed["authorized_root_scope_id"]
             or chain.scope_digests
             != tuple(

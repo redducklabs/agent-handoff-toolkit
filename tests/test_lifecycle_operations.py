@@ -580,8 +580,8 @@ class OperationsTests(unittest.TestCase):
         )
         self.assertEqual(
             response,
-            "Authorized work is paused for one required user decision.\n\n"
-            f"Decision needed: {question}\nBlocked action field: target\nReason: {reason}",
+            "Paused: I need one decision from you.\n\n"
+            f"Decision needed: {question}\nThis blocks: target\nReason: {reason}",
         )
         raw = self.storage.registry_path.read_bytes()
         self.assertNotIn(question.encode(), raw)

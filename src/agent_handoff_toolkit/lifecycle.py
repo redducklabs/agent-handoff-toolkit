@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 import hashlib
 import hmac
+from pathlib import PurePosixPath
 import re
 from types import MappingProxyType
 from typing import Any
@@ -24,6 +25,7 @@ from .lineage import (
 from .records import (
     ValidationIssue,
     parse_markdown,
+    render_progress_response,
     render_terminal_response,
     validate_markdown,
     validate_successor,
@@ -500,6 +502,7 @@ class ChainState:
     authorization_user_turn_reference: str | None = None
     authorization_evidence_hmac: str | None = None
     publication_evidence: AuthorizationProposal | None = None
+    root_title: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -515,6 +518,14 @@ class ChainState:
         digests = tuple(_digest(item, "scope digest") for item in self.scope_digests)
         if not digests:
             raise ValueError("scope_digests must not be empty")
+        if self.root_title:
+            object.__setattr__(
+                self,
+                "root_title",
+                _text(self.root_title, limit=160, label="root_title"),
+            )
+        elif not isinstance(self.root_title, str):
+            raise ValueError("root_title must be text")
         object.__setattr__(self, "scope_digests", digests)
         object.__setattr__(
             self,
@@ -581,11 +592,16 @@ class SessionState:
     write_advisory_emitted: bool = False
     worktree_baseline: str | None = None
     no_handoff_note_emitted: bool = False
+    last_stop_was_progress: bool = False
 
     def __post_init__(self) -> None:
         if self.pending_correction_hmac is not None:
             _digest(self.pending_correction_hmac, "pending_correction_hmac")
-        for flag in ("write_advisory_emitted", "no_handoff_note_emitted"):
+        for flag in (
+            "write_advisory_emitted",
+            "no_handoff_note_emitted",
+            "last_stop_was_progress",
+        ):
             if not isinstance(getattr(self, flag), bool):
                 raise ValueError(f"{flag} must be boolean")
         if self.worktree_baseline is not None:
@@ -770,9 +786,9 @@ _SELECTION_APPROVAL_RE = re.compile(
     r"(?:(?:yes|yeah|yep)[, ]+)?go with [A-Za-z0-9][A-Za-z0-9._:-]{0,31}"
 )
 _DECISION_RESPONSE_RE = re.compile(
-    r"Authorized work is paused for one required user decision\.\n\n"
+    r"Paused: I need one decision from you\.\n\n"
     r"Decision needed: (?P<question>[^\n]+)\n"
-    r"Blocked action field: (?P<field>[^\n]+)\n"
+    r"This blocks: (?P<field>[^\n]+)\n"
     r"Reason: (?P<reason>[^\n]+)"
 )
 _OPERATIONAL_PREFIX = (
@@ -879,9 +895,9 @@ def render_decision_response(
     if not hmac.compare_digest(request.reason_hmac, expected_reason_hmac):
         raise ValueError("reason does not match its persisted HMAC")
     return (
-        "Authorized work is paused for one required user decision.\n\n"
+        "Paused: I need one decision from you.\n\n"
         f"Decision needed: {question}\n"
-        f"Blocked action field: {request.blocked_action_field}\n"
+        f"This blocks: {request.blocked_action_field}\n"
         f"Reason: {reason}"
     )
 
@@ -1169,11 +1185,27 @@ def _mapped_successor_issues(
     )
 
 
+def progress_response(chain: ChainState) -> str:
+    """The one record-less message a tracked stop accepts."""
+
+    reference = chain.current_record_reference
+    return render_progress_response(
+        chain.root_title, reference.path if reference is not None else None
+    )
+
+
+def _record_name(path: object) -> str:
+    """The record's basename, which is stable across checkouts."""
+
+    return PurePosixPath(str(path)).name
+
+
 def _allow_stop(
     snapshot: LifecycleSnapshot,
     *,
     chain: ChainState,
     mode: EnforcementMode,
+    progress: bool = False,
 ) -> LifecycleDecision:
     next_session = replace(
         snapshot.session,
@@ -1183,6 +1215,10 @@ def _allow_stop(
         chain_revision=chain.targeted_revision,
         correction_cycle_count=0,
         last_issue_signature=None,
+        # A record or an audit ends the turn with the work written down; a
+        # progress line does not, and `SessionEnd` reports a session that
+        # closed on one.
+        last_stop_was_progress=progress,
     )
     return LifecycleDecision(
         DecisionKind.ALLOW,
@@ -1237,6 +1273,16 @@ def evaluate_stop(
         )
 
     if candidate is None:
+        # One message may end a turn without a record: the canonical progress
+        # line. The guarantee becomes "every turn end is a record, an audit, a
+        # decision request, or the progress line, and a session that ends on
+        # the progress line is reported at SessionEnd". The stronger rule cost
+        # a full record for every turn end, which is what the evidence shows
+        # being paid: nine records for one task in one day.
+        if event.latest_assistant_message == progress_response(chain):
+            return _allow_stop(
+                snapshot, chain=chain, mode=EnforcementMode.TRACKED, progress=True
+            )
         issue = _stop_issue(
             "AHK-STOP-WORK",
             "Authorized executable work remains without a valid terminal record.",
@@ -1343,9 +1389,14 @@ def evaluate_stop(
             )
         )
     predecessor_record_id = predecessor_data.get("record_id")
+    # The recorded path is a locator, not the identity. The same chain is
+    # continued from another worktree or from WSL, where the stored absolute
+    # path names a file that does not exist; the record id and the source
+    # digest are what make this the chain's current record.
     if (
         predecessor_record_id != chain.current_record_reference.record_id
-        or candidate.predecessor_path != chain.current_record_reference.path
+        or _record_name(candidate.predecessor_path)
+        != _record_name(chain.current_record_reference.path)
         or candidate.predecessor_source_digest != chain.current_record_reference.sha256
     ):
         extra_issues.append(

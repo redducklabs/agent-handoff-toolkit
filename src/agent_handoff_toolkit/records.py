@@ -205,24 +205,97 @@ def _continuation_tail_body(data: Mapping[str, object], handoff_reference: str) 
     return "\n".join(
         (
             f"Continue from handoff: {handoff_reference}",
-            f"Exact next action: {_tail_field_text(action['action'])}",
-            f"Target: {_tail_field_text(action['target'])}",
+            f"Next action: {_tail_field_text(action['action'])}",
+            f"Where: {_tail_field_text(action['target'])}",
             f"Constraints: {_tail_field_text(action['constraints'])}",
-            f"Completion gate: {_tail_field_text(action['completion_condition'])}",
-            "Essential blockers, decisions, and validation gates:",
+            f"Done when: {_tail_field_text(action['completion_condition'])}",
+            "Also:",
             str(data["next_session_prompt"]),
         )
     )
 
 
+def _root_scope(data: Mapping[str, object]) -> Mapping[str, object] | None:
+    scopes = data.get("active_scopes")
+    if not isinstance(scopes, list):
+        return None
+    for scope in scopes:
+        if isinstance(scope, Mapping) and scope.get("highest_authorized") is True:
+            return scope
+    return None
+
+
+def _root_label(data: Mapping[str, object], field: str) -> str:
+    """Name the authorized root in the user's own terms where the record has them.
+
+    A schema-v1 record carries no immutable definition, so it falls back to the
+    scope identifier: the response still names what the work is about, which is
+    the point of saying it at all.
+    """
+
+    scope = _root_scope(data)
+    if scope is None:
+        return "this work"
+    definition = scope.get("scope_definition")
+    if isinstance(definition, Mapping):
+        value = definition.get(field)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    identifier = scope.get("scope_id")
+    return identifier if isinstance(identifier, str) and identifier else "this work"
+
+
+def _progress_line(data: Mapping[str, object]) -> str | None:
+    """Say how much of the declared work is done, when there is more than one scope."""
+
+    scopes = data.get("active_scopes")
+    if not isinstance(scopes, list) or len(scopes) < 2:
+        return None
+    complete = sum(
+        1
+        for scope in scopes
+        if isinstance(scope, Mapping) and scope.get("status") == "complete"
+    )
+    return f"Progress: {complete} of {len(scopes)} scopes complete."
+
+
 def _continuation_tail(data: Mapping[str, object], handoff_reference: str) -> str:
     body = _continuation_tail_body(data, handoff_reference)
     link_path = quote(handoff_reference, safe="/:._-")
+    lines = [f'Stopping here. Work remains on "{_root_label(data, "title")}".']
+    progress = _progress_line(data)
+    if progress is not None:
+        lines.append(progress)
+    lines.append("What you need to do: start a new session and paste the block below.")
     return (
-        "This session is stopped because authorized work remains.\n\n"
-        "What you need to do: Start a new session from the continuation handoff below.\n\n"
-        f"{_fenced_block(body, 'text')}\n\n"
-        f"[Continuation handoff](<{link_path}>)"
+        "\n".join(lines)
+        + "\n\n"
+        + f"{_fenced_block(body, 'text')}\n\n"
+        + f"[Continuation handoff](<{link_path}>)"
+    )
+
+
+def _audit_tail(data: Mapping[str, object], handoff_reference: str) -> str:
+    """Say what was completed, and that nothing more is asked of the reader.
+
+    A bare link said neither. A failing verification entry is still counted
+    here: the contract forbids hiding one, and a count that omitted it would
+    report completion the evidence does not support.
+    """
+
+    link_path = quote(handoff_reference, safe="/:._-")
+    entries = data.get("verification")
+    tally = {"pass": 0, "fail": 0, "not-run": 0}
+    if isinstance(entries, list):
+        for entry in entries:
+            if isinstance(entry, Mapping) and entry.get("result") in tally:
+                tally[str(entry["result"])] += 1
+    return (
+        f'Complete: "{_root_label(data, "title")}". {_root_label(data, "outcome")}\n'
+        f"Verification: {tally['pass']} passed, {tally['fail']} failed, "
+        f"{tally['not-run']} not run.\n"
+        "Nothing further is required of you.\n\n"
+        f"[Audit record (not a handoff)](<{link_path}>)"
     )
 
 
@@ -1763,8 +1836,25 @@ def render_tail(record_path: str | os.PathLike[str], text: str) -> str:
                 "exceed 300 words or 2400 characters"
             )
         return tail
-    link_path = quote(absolute_path, safe="/:._-")
-    return f"[Audit record (not a handoff)](<{link_path}>)"
+    return _audit_tail(data, absolute_path)
+
+
+def render_progress_response(root_title: str, last_record_path: str | None) -> str:
+    """Render the one message a tracked session may end a turn on without a record.
+
+    A `Stop` fires at every turn end, not at the end of a session, so a
+    tracked session had to author a full record every time the agent stopped
+    talking - "I have opened the pull request, watching CI" cost a 2,400-word
+    record. This line is the alternative: it says the work is still open, says
+    where the last handoff is, and tells the user what to do next.
+    """
+
+    title = str(root_title).strip() or "this work"
+    where = str(last_record_path).strip() if last_record_path else ""
+    return (
+        f'In progress: "{title}". Last handoff: {where or "none yet"}. '
+        'Say "continue" to keep going, or ask for a handoff.'
+    )
 
 
 def render_resume_prompt(record_path: str | os.PathLike[str], text: str) -> str:
@@ -1793,5 +1883,4 @@ def render_terminal_response(
                 "not exceed 300 words or 2400 characters"
             )
         return response
-    link_path = quote(absolute_path, safe="/:._-")
-    return f"[Audit record (not a handoff)](<{link_path}>)"
+    return _audit_tail(data, absolute_path)

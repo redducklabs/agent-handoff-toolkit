@@ -43,6 +43,16 @@
         ]
       }
     ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -c \"import pathlib,runpy;w=pathlib.Path.cwd();r=next((p for p in ((d/'.agent-handoff-toolkit'/'runner.py') for d in (w,*w.parents)) if p.is_file()),None);r and runpy.run_path(str(r),run_name='__main__')\" hook --platform claude --event session-end"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [

@@ -5,6 +5,7 @@ __version__ = "0.5.0"
 from .records import (
     ValidationIssue,
     parse_markdown,
+    render_progress_response,
     render_record,
     render_successor,
     render_tail,
@@ -19,6 +20,7 @@ __all__ = [
     "__version__",
     "parse_markdown",
     "record_digest",
+    "render_progress_response",
     "render_record",
     "render_successor",
     "render_tail",
