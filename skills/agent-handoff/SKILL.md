@@ -19,6 +19,10 @@ same rule — register a root if the work turns out to need continuity, or run
 `lifecycle one-off` to record that it does not. Neither notice blocks; treat
 either as a prompt to decide, not as an error to fix.
 
+A user prompt whose first line is `Track: <goal>` registers that goal as the
+tracked root; the rest of that prompt is the work. You do not need to infer
+tracking when the user has declared it.
+
 If the session is tracked — a lifecycle hook has given you a session key,
 challenge, and expected revision — begin by running `lifecycle inspect`. Use
 `lifecycle register-root` only to establish a new authorized root, `lifecycle
@@ -72,6 +76,18 @@ then validate it:
 python .agent-handoff-toolkit/runner.py render <record>.json --output handoffs/<record>.md
 python .agent-handoff-toolkit/runner.py validate handoffs/<record>.md
 ```
+
+When the record continues an existing chain, add
+`--successor-of handoffs/<predecessor>.md`. The renderer then copies the
+lineage and the scope definitions from that predecessor, and your JSON carries
+only `record_id`, `timestamp`, the per-scope progress fields, `verification`,
+`exact_action`, `next_session_prompt` and the sections.
+
+Budgets the validator enforces, for schema v2: at most eight verification
+entries; `check` at most 120 characters and `evidence` or `reason` at most 160;
+`remaining_code_detail` at most 240 characters; any one section at most 200
+words; the whole record at most 1,200 words. `render` fails on them too, so a
+record that will not fit is rejected while you are writing it.
 
 That JSON is the metadata fields at the top level plus a sibling `sections` map
 from heading to body text. `docs/agent-handoff/mechanics.md` gives its exact
