@@ -96,7 +96,7 @@ items.
 - Questions that can change the next session's first action are answered before a continuation is finalized.
 - Recorded repository and tracker state is a timestamped snapshot. A resumed session reconciles live state before acting.
 - Verification results are classified as `pass`, `fail`, or `not-run`; skipped checks are never reported as passing. Record one entry per gate the next session would rerun, not one per invocation.
-- A schema-v2 record stores each fact once, in a visible metadata block at the top of the document. No narrative section restates verification, the exact next action, the scope list, or the next-session prompt. Schema-v1 records keep their metadata comment and their derived sections.
+- A record stores each fact once, in a visible metadata block at the top of the document. No narrative section restates verification, the exact next action, the scope list, or the next-session prompt.
 - A continuation response says `Stopping here. Work remains on "<root title>"`
   and `What you need to do: start a new session and paste the block below`. Its
   copy/paste block for the new session begins with `Continue

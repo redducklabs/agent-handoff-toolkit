@@ -588,6 +588,13 @@ class DistributionTests(unittest.TestCase):
 
         # The contract is what an author reads; it states the rules that govern
         # what they write.
+        # One schema version. A record that predates it is historical by
+        # policy and is never opened, so nothing describes an older form.
+        for source in ("contract", "mechanics", "skill", "consumer"):
+            with self.subTest(document=source):
+                self.assertNotIn("schema-v1", normalized[source])
+                self.assertNotIn("schema v1", normalized[source])
+
         for phrase in (
             "normative for schema version 2",
             "scope_definition_digest",
@@ -601,7 +608,6 @@ class DistributionTests(unittest.TestCase):
         # The mechanics reference carries the exact formats and the enforcement
         # model that tooling implements and a blocked session diagnoses against.
         for phrase in (
-            "schema version 1 compatibility appendix",
             "record_id",
             "authorization_id",
             "authorized_root_scope_id",

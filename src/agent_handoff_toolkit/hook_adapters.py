@@ -843,17 +843,8 @@ def _pre_tool(event, snapshot, root, storage, raw_id):
         if corrected == command:
             return HookExecution()
     else:
-        pending = session.pending_transition_reference
         formed = _form_register_root(command, runner, session, capability, reasons)
-        if pending and pending.kind == "v1-adoption" and pending.status == "approved":
-            corrected = _control_command(
-                runner,
-                session,
-                capability,
-                "adopt-v1",
-                (("record", pending.selected_record.path),),
-            )
-        elif formed is not None:
+        if formed is not None:
             corrected = formed
             note = "Semantic slots accepted and encoded; run this command."
             # The strict parse of the plain-slot attempt failed by design.

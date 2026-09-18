@@ -105,7 +105,7 @@ Your entire terminal message is the renderer's output for the record, copied ver
 python .agent-handoff-toolkit/runner.py render-tail <record-path>
 ```
 
-That command emits `render_terminal_response`, the exact output `Stop` enforces; for schema v1 it emits the established v1 tail.
+That command emits `render_terminal_response`, the exact output `Stop` enforces.
 
 A tracked turn that is simply not finished does not need a record. End it on
 the exact `progress_response` from `lifecycle inspect` and nothing else; any

@@ -467,6 +467,11 @@ class RecordValidationTests(unittest.TestCase):
                 "remaining_code": False,
                 "remaining_code_detail": "Review work remains, but no code changes are known.",
                 "status": "in-progress",
+                "scope_definition": {
+                    "title": "Scope nested-unit",
+                    "outcome": "Complete the authorized outcome for nested-unit.",
+                },
+                "scope_definition_digest": "f8f1f768220c0d5e5febcc9862017f6f7938fe2b92ae50b36603a3a6031d44de",
             }
         )
         with self.assertRaisesRegex(ValueError, "scope-propagation"):
@@ -477,12 +482,19 @@ class RecordValidationTests(unittest.TestCase):
             {
                 "scope_id": "unfinished-child",
                 "scope_kind": "phase",
-                "parent_scope_id": "standalone-contract",
+                "parent_scope_id": "issue-1323",
                 "highest_authorized": False,
                 "remaining_work": True,
                 "remaining_code": True,
                 "remaining_code_detail": "Implementation remains.",
                 "status": "in-progress",
+                "scope_definition": {
+                    "title": "Scope unfinished-child",
+                    "outcome": (
+                        "Complete the authorized outcome for unfinished-child."
+                    ),
+                },
+                "scope_definition_digest": "e34329e70a2dea853f4a3b77e5846db56246be6384620fd657896f39ea086b8d",
             }
         )
         with self.assertRaisesRegex(ValueError, "scope-propagation"):
@@ -1055,64 +1067,7 @@ class RecordRenderingTests(unittest.TestCase):
             self.assertEqual(
                 parsed["sections"][section], self.continuation["sections"][section]
             )
-        self.assertIn("<!-- agent-handoff-metadata", first)
-
-    def test_renderer_derives_prompt_and_structured_sections_from_metadata(
-        self,
-    ) -> None:
-        self.continuation["sections"]["Verification evidence"] = "Everything passed."
-        self.continuation["sections"]["Exact next action"] = "Do something else."
-        self.continuation["sections"]["Remaining code by active scope"] = (
-            "Nothing remains."
-        )
-        self.continuation["sections"]["Next-session prompt"] = "A different prompt."
-
-        text = render_record(self.continuation)
-        parsed = parse_markdown(text)
-        self.assertNotIn("Everything passed.", text)
-        self.assertNotIn("Do something else.", text)
-        self.assertNotIn("Nothing remains.", text)
-        self.assertNotIn("A different prompt.", text)
-        self.assertIn(
-            '"result": "not-run"', parsed["sections"]["Verification evidence"]
-        )
-        self.assertIn(
-            '"completion_condition": "Claude and Codex payload fixtures pass."',
-            parsed["sections"]["Exact next action"],
-        )
-        self.assertIn(
-            '"remaining_code": true',
-            parsed["sections"]["Remaining code by active scope"],
-        )
-        self.assertEqual(
-            parsed["sections"]["Next-session prompt"],
-            f"```text\n{self.continuation['next_session_prompt']}\n```",
-        )
-
-    def test_validator_rejects_contradictory_derived_sections(self) -> None:
-        text = render_record(self.continuation)
-        parsed = parse_markdown(text)
-        replacements = {
-            "Verification evidence": "Everything passed.",
-            "Exact next action": "Do something else.",
-            "Remaining code by active scope": "Nothing remains.",
-            "Next-session prompt": "```text\nA different prompt.\n```",
-        }
-        for section, replacement in replacements.items():
-            with self.subTest(section=section):
-                contradictory = text.replace(
-                    parsed["sections"][section], replacement, 1
-                )
-                self.assertIn("section-consistency", issue_codes(contradictory))
-
-        audit_text = render_record(self.audit)
-        audit_verification = parse_markdown(audit_text)["sections"][
-            "Verification evidence"
-        ]
-        contradictory_audit = audit_text.replace(
-            audit_verification, "No verification was performed.", 1
-        )
-        self.assertIn("section-consistency", issue_codes(contradictory_audit))
+        self.assertIn("```json agent-handoff-metadata", first)
 
     def test_v2_carries_one_visible_metadata_copy_and_no_derived_sections(
         self,
@@ -1196,20 +1151,6 @@ class RecordRenderingTests(unittest.TestCase):
         )
         commented = "<!-- agent-handoff-metadata\n" + payload + "\n-->\n" + remainder
         self.assertIn("metadata-form", issue_codes(commented))
-
-    def test_v1_rejects_the_v2_visible_metadata_form(self) -> None:
-        text = render_record(self.continuation)
-        payload, remainder = text.split("<!-- agent-handoff-metadata\n", 1)[1].split(
-            "\n-->\n", 1
-        )
-        fenced = "```json agent-handoff-metadata\n" + payload + "\n```\n" + remainder
-        self.assertIn("metadata-form", issue_codes(fenced))
-
-    def test_v1_keeps_its_comment_metadata_and_derived_sections(self) -> None:
-        text = render_record(self.continuation)
-        self.assertTrue(text.startswith("<!-- agent-handoff-metadata\n"))
-        self.assertIn("## Verification evidence", text)
-        self.assertIn("## Next-session prompt", text)
 
     def test_a_metadata_fence_inside_a_section_is_body_text_not_metadata(self) -> None:
         """Only the block at the record's fixed position is metadata."""
@@ -1296,7 +1237,7 @@ class RecordRenderingTests(unittest.TestCase):
             if line.startswith("## ")
         ]
         self.assertEqual(headings[0], "Objective")
-        self.assertEqual(headings[-1], "Next-session prompt")
+        self.assertEqual(headings[-1], "External effects")
 
     def test_audit_begins_with_sentinel(self) -> None:
         text = render_record(self.audit)
@@ -1315,7 +1256,7 @@ class RecordRenderingTests(unittest.TestCase):
         prompt = self.continuation["next_session_prompt"]
         self.assertEqual(
             tail,
-            'Stopping here. Work remains on "epic-toolkit".\n'
+            'Stopping here. Work remains on "Scope issue-1323".\n'
             "Progress: 0 of 2 scopes complete.\n"
             "What you need to do: start a new session and paste the block "
             "below.\n\n"
@@ -1390,15 +1331,6 @@ class RecordRenderingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "exact-action-state"):
             render_terminal_response("/tmp/handoff.md", text)
 
-    def test_terminal_response_preserves_v1_tail_bytes(self) -> None:
-        text = render_record(self.continuation)
-        path = "/tmp/work spaces/continuation.md"
-
-        self.assertEqual(
-            render_terminal_response(path, text),
-            render_tail(path, text),
-        )
-
     def test_posix_tail_and_audit_tail(self) -> None:
         continuation_tail = render_tail(
             "/tmp/work spaces/continuación.md",
@@ -1416,7 +1348,8 @@ class RecordRenderingTests(unittest.TestCase):
         )
         self.assertEqual(
             audit_tail,
-            'Complete: "standalone-contract". standalone-contract\n'
+            'Complete: "Scope issue-1323". Complete the authorized outcome'
+            " for issue-1323.\n"
             "Verification: 1 passed, 0 failed, 0 not run.\n"
             "Nothing further is required of you.\n\n"
             "[Audit record (not a handoff)](</tmp/work%20spaces/audit.md>)",
@@ -1435,19 +1368,6 @@ class RecordRenderingTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "continuation-tail-size"):
             render_record(self.continuation)
-
-    def test_tail_preserves_list_valued_v1_exact_action_fields(self) -> None:
-        self.continuation["exact_action"]["constraints"] = [
-            "Keep record policy in the core.",
-            "Keep adapters host-specific.",
-        ]
-
-        tail = render_tail("/tmp/handoff.md", render_record(self.continuation))
-
-        self.assertIn(
-            "Constraints: Keep record policy in the core.; Keep adapters host-specific.",
-            tail,
-        )
 
     def test_tail_rejects_an_oversized_complete_output_from_path_expansion(
         self,
@@ -1681,26 +1601,6 @@ class RecordSizeTests(unittest.TestCase):
         data = self.record()
         sections = {name: " ".join(["word"] * 190) for name in data["sections"]}
         self.assertIn("record-size", self.render_codes(self.record(sections=sections)))
-
-    def test_a_schema_v1_record_is_untouched_by_the_limits(self):
-        data = load_fixture("continuation.json")
-        data["verification"] = [
-            {"check": "c" * 200, "result": "pass", "evidence": "e" * 200}
-        ] * 12
-        sections = dict(data["sections"])
-        sections["Verification evidence"] = json.dumps(
-            data["verification"], ensure_ascii=False, indent=2, sort_keys=True
-        )
-        data["sections"] = sections
-        codes = {issue.code for issue in validate_markdown(render_record(data))}
-        for code in (
-            "verification-count",
-            "verification-size",
-            "scope-detail-size",
-            "section-size",
-            "record-size",
-        ):
-            self.assertNotIn(code, codes)
 
 
 class SuccessorScaffoldTests(unittest.TestCase):
