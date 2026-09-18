@@ -29,9 +29,11 @@ challenge, and expected revision — begin by running `lifecycle inspect`. Use
 resume` for its direct successor, and `lifecycle join` only for a permitted
 session join. Explicitly validate the candidate against the locked authorization
 root and predecessor; an older handoff or an informal request does not authorize
-a scope-definition or root change. Use an approved transition before changing
-either. Never invent lifecycle credentials to satisfy a command: with no tracked
-session, author the record with `render`, `validate`, and `render-tail` only.
+a scope-definition or root change, and this toolkit gives you no way to make one
+inside a chain. If the goal itself has changed, say so and let the user declare
+the new one. Never invent lifecycle credentials to satisfy a command: with no
+tracked session, author the record with `render`, `validate`, and `render-tail`
+only.
 
 ## Historical records and project overlays
 
