@@ -530,7 +530,7 @@ class AcceptanceCliTests(unittest.TestCase):
                     "--target",
                     str(consumer),
                     "--release",
-                    "v0.6.0",
+                    "v1.0.0",
                     "--apply",
                 ],
                 cwd=ROOT,

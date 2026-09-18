@@ -6,6 +6,33 @@ This repository provides a shared contract, deterministic validation and renderi
 
 ## Status
 
+Version 1.0.0 removes what the 2026-09-17 review found nobody was using. The
+record schema has one version: schema v1 was kept parseable so an existing
+chain could be adopted into v2, and across the three consumers no chain ever
+was. The comment metadata form, the four sections the renderer derived
+byte-for-byte from metadata, the v1 response tail, `adopt-v1` and the
+`v1-adoption` evidence kind are gone. A record written before this schema is
+unaffected: it was already historical by policy, never opened, validated or
+migrated.
+
+The `context-health` command is gone with them. Nothing installed or called it,
+and no host exposes a context percentage to a hook, so its 50/60/70 per cent
+reminders could never fire.
+
+The distributed mechanics reference is down from 4,950 words to about 2,750.
+The reasoning behind each rule, and the failures each was written against, moved
+to `docs/design/mechanics-rationale.md` in this repository and is no longer
+installed into a consumer: a session diagnosing a block needs the rule, not its
+history. The transition mechanism moved with it — it stays in the code, and 0 of
+the 39 records across the three consumers carry one.
+
+Host verification, observed rather than assumed: on Claude Code an acceptance
+run reports `discovered=pass` and `advisory_seen=pass`, which confirms the model
+receives `hookSpecificOutput.additionalContext` at `PreToolUse` and so receives
+`AHK-DECLARE`. Codex remains **unverified**: the account had no usage credits
+when this was cut, so the host could not start a session and nothing could be
+observed.
+
 Version 0.6.0 acts on the 2026-09-17 goal-alignment and token review. The
 toolkit had become a net token cost: a 737-word block was loaded into every
 session of every consumer, and a tracked session had to author a full
@@ -32,13 +59,12 @@ the lineage an author never chooses, and a newly tracked session is handed its
 bound `inspect` command instead of buying it with a denied tool call.
 
 Ordinary tool calls no longer open lifecycle state, `NotebookEdit` is matched,
-and state written by one installed release now loads in another — the last of
-which matters immediately. Every worktree of a repository shares one lifecycle
-registry, and the previous release rejects any field it does not know, so
-**a worktree still pinned to it cannot read state a v0.6.0 runner has
-written**: a notice in an untracked session, a block in a tracked one. Re-sync
-every live worktree of a consumer to v0.6.0 promptly. From v0.6.0 onward the
-hazard cannot recur.
+and state written by one installed release now loads in another. That last one
+mattered at the time: every worktree of a repository shares one lifecycle
+registry, and 0.5.0 rejects any field it does not know, so a worktree still
+pinned to it could not read state a 0.6.0 runner had written. From 0.6.0 onward
+the hazard cannot recur, and re-pinning any repository still on 0.5.0 means
+re-syncing every live worktree of it.
 
 Version 0.5.0 stops the toolkit presenting its own malfunctions as policy
 decisions. Managed hook commands now locate the runner by walking up from the
@@ -141,16 +167,16 @@ disposable consumer can be installed from a verified local release source.
 
 ## Consumer installation
 
-Check out the public v0.6.0 release, inspect the proposed changes, then apply
+Check out the public v1.0.0 release, inspect the proposed changes, then apply
 them from that checkout:
 
 ```powershell
-git clone --branch v0.6.0 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
+git clone --branch v1.0.0 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
 Set-Location agent-handoff-toolkit
-python distribution/runner.py install --target <consumer-repository> --release v0.6.0 --dry-run
-python distribution/runner.py install --target <consumer-repository> --release v0.6.0 --apply
-python distribution/runner.py sync --target <consumer-repository> --release v0.6.0 --check
-python distribution/runner.py sync --target <consumer-repository> --release v0.6.0 --apply
+python distribution/runner.py install --target <consumer-repository> --release v1.0.0 --dry-run
+python distribution/runner.py install --target <consumer-repository> --release v1.0.0 --apply
+python distribution/runner.py sync --target <consumer-repository> --release v1.0.0 --check
+python distribution/runner.py sync --target <consumer-repository> --release v1.0.0 --apply
 ```
 
 Run install and sync only in an isolated, clean Git worktree with no concurrent
