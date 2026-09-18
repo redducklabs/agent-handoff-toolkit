@@ -578,6 +578,7 @@ class DistributionTests(unittest.TestCase):
             "contract": ROOT / "docs" / "agent-handoff" / "contract.md",
             "mechanics": ROOT / "docs" / "agent-handoff" / "mechanics.md",
             "skill": ROOT / "skills" / "agent-handoff" / "SKILL.md",
+            "rationale": ROOT / "docs" / "design" / "mechanics-rationale.md",
             "consumer": ROOT / "distribution" / "consumer-instructions.md",
         }
         normalized = {
@@ -620,18 +621,32 @@ class DistributionTests(unittest.TestCase):
             "ahk-no-handoff",
             "does not guarantee that work needing a handoff produces one",
             "a session enforces nothing until it registers a root",
-            # A malfunction is not a decision, the locator is not relative to
-            # the working directory, and the recovery path takes no credentials.
-            "runtime faults are not policy decisions",
-            "an unknown mode is not a tracked mode",
+            # A malfunction is not a decision, and the recovery path takes no
+            # credentials. Both are rules a blocked session has to know.
+            "a runtime fault is a malfunction, not a decision about the work",
             "exit status never signals a fault",
-            "locating the runner",
-            "walking upward from the hook process's working directory",
-            "`claude_project_dir` is deliberately not used",
             "lifecycle doctor",
         ):
             with self.subTest(document="mechanics", phrase=phrase):
                 self.assertIn(phrase, normalized["mechanics"])
+
+        # The reasoning behind those rules is not distributed: a session
+        # diagnosing a block needs the rule, not its history. It still has to
+        # exist, and this is where it lives.
+        for phrase in (
+            "runtime faults are not policy decisions",
+            "an unknown mode is not a tracked mode",
+            "locating the runner",
+            "walking upward from the hook process's working directory",
+            "`claude_project_dir` is deliberately not used",
+            "host input",
+            "state across installed releases",
+        ):
+            with self.subTest(document="rationale", phrase=phrase):
+                self.assertIn(phrase, normalized["rationale"])
+
+        # The distributed reference stays a reference, not an essay.
+        self.assertLess(len(normalized["mechanics"].split()), 3200)
 
         self.assertIn("mechanics.md", normalized["contract"])
 
@@ -967,12 +982,6 @@ class DistributionTests(unittest.TestCase):
                 f"python .agent-handoff-toolkit/runner.py render-tail {record}",
                 consumer,
             )
-            context_health = run_installed_command(
-                "python .agent-handoff-toolkit/runner.py context-health "
-                "--percent 61 --session-id distribution-test "
-                "--state-dir .agent-handoff-toolkit/context-state",
-                consumer,
-            )
 
         self.assertEqual(rendered.returncode, 0, rendered.stderr)
         self.assertEqual(validated.returncode, 0, validated.stderr)
@@ -981,8 +990,6 @@ class DistributionTests(unittest.TestCase):
         self.assertIn("[Continuation handoff]", tail.stdout)
         self.assertIn("Continue from handoff:", tail.stdout)
         self.assertNotIn("<!-- agent-handoff-metadata", tail.stdout)
-        self.assertEqual(context_health.returncode, 0, context_health.stderr)
-        self.assertIn("60%", context_health.stdout)
 
     def test_installed_runner_directs_managed_commands_to_release_checkout(
         self,

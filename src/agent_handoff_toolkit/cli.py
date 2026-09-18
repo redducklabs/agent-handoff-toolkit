@@ -8,14 +8,12 @@ import json
 import os
 from pathlib import Path
 import sys
-import tempfile
 from typing import Sequence
 
 from .acceptance import AcceptancePrerequisiteError, format_result, run_acceptance
 from .hooks import (
     MAX_HOOK_INPUT_BYTES,
     hook_runtime_reason,
-    observe_context,
     run_hook,
 )
 from .records import (
@@ -59,19 +57,6 @@ def _parser() -> argparse.ArgumentParser:
     acceptance.add_argument("--platform", choices=("claude", "codex"), required=True)
     acceptance.add_argument("--scratch", type=Path, required=True)
     acceptance.add_argument("--release-source", type=Path)
-
-    context = subparsers.add_parser(
-        "context-health", help="record an explicit context percentage"
-    )
-    context.add_argument("--percent", type=float, required=True)
-    context.add_argument("--session-id", required=True)
-    context.add_argument(
-        "--state-dir",
-        type=Path,
-        default=Path(tempfile.gettempdir())
-        / "agent-handoff-toolkit"
-        / "context-health",
-    )
 
     for command in ("install", "sync"):
         managed = subparsers.add_parser(
@@ -523,16 +508,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
 
     try:
-        if args.command == "context-health":
-            output = observe_context(
-                args.session_id,
-                args.percent,
-                args.state_dir,
-            )
-            if output:
-                print(output)
-            return 0
-
         if args.command == "validate":
             issues = validate_markdown(_read_text(args.record), record_path=args.record)
             if issues:

@@ -2,22 +2,17 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
-import math
-import os
 from dataclasses import dataclass
 from pathlib import Path
 import re
 from typing import Any, TYPE_CHECKING
 import unicodedata
 from urllib.parse import quote
-import uuid
 
 if TYPE_CHECKING:
     from .lifecycle_storage import LocalLifecycleStorage
 
-MILESTONES = (50, 60, 70)
 MAX_HOOK_INPUT_BYTES = 128 * 1024
 MAX_PATCH_BYTES = 64 * 1024
 
@@ -25,23 +20,6 @@ _PATCH_FILE_DIRECTIVE = re.compile(
     r"^\*\*\* (Add|Update|Delete) File: (.+?)\s*$",
     re.MULTILINE,
 )
-
-_MILESTONE_MESSAGES = {
-    50: (
-        "Context is 50% used. Identify the next natural stopping point and "
-        "keep the current workstream bounded."
-    ),
-    60: (
-        "Context is 60% used. Finish and verify the current coherent unit, "
-        "resolve every question that gates the next action, then create or "
-        "update the continuation."
-    ),
-    70: (
-        "Context is 70% used. Do not begin another substantial unit before "
-        "creating or updating the continuation and rendering its required "
-        "copy/paste response tail."
-    ),
-}
 
 # Every session in a consumer repository pays for this reminder, so it points at
 # the `agent-handoff` skill instead of directing sessions that never touch a
@@ -80,77 +58,6 @@ class HookExecution:
 class _RecordChange:
     operation: str
     path: str
-
-
-def select_milestone(percentage: float) -> int | None:
-    """Return the highest crossed context milestone."""
-    if (
-        isinstance(percentage, bool)
-        or not isinstance(percentage, (int, float))
-        or not math.isfinite(percentage)
-        or percentage < 0
-        or percentage > 100
-    ):
-        raise ValueError("Context percentage must be between 0 and 100.")
-    for milestone in reversed(MILESTONES):
-        if percentage >= milestone:
-            return milestone
-    return None
-
-
-def _state_path(state_dir: Path, session_id: str) -> Path:
-    key = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
-    return state_dir / f"{key}.json"
-
-
-def _read_milestone(path: Path) -> int | None:
-    try:
-        value: Any = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, TypeError):
-        return None
-    if not isinstance(value, dict) or value.get("milestone") not in MILESTONES:
-        return None
-    return int(value["milestone"])
-
-
-def _write_milestone(path: Path, milestone: int) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        with temporary.open("x", encoding="utf-8", newline="\n") as handle:
-            json.dump({"milestone": milestone}, handle, separators=(",", ":"))
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def observe_context(
-    session_id: str,
-    percentage: float,
-    state_dir: Path,
-) -> str | None:
-    """Record an explicit observation and return a newly due reminder.
-
-    A drop below the prior milestone is treated as compaction. Observing a value
-    below 50 clears the state completely, so all milestones can fire again.
-    """
-    if not isinstance(session_id, str) or not session_id:
-        raise ValueError("A non-empty session identifier is required.")
-    milestone = select_milestone(percentage)
-    path = _state_path(Path(state_dir), session_id)
-    prior = _read_milestone(path)
-
-    if milestone is None:
-        path.unlink(missing_ok=True)
-        return None
-    if prior == milestone:
-        return None
-
-    _write_milestone(path, milestone)
-    return _MILESTONE_MESSAGES[milestone]
 
 
 def _is_handoff_path(path: str) -> bool:

@@ -118,7 +118,6 @@ handoff-toolkit validate <record.md>
 handoff-toolkit render <record.json> --output <record.md>
 handoff-toolkit render <record.json> --successor-of <predecessor.md> --output <record.md>
 handoff-toolkit render-tail <continuation.md>
-handoff-toolkit context-health --percent <0-100> --session-id <id>
 handoff-toolkit hook --platform claude|codex --event post-tool-use
 handoff-toolkit hook --platform claude|codex --event session-end
 handoff-toolkit acceptance --platform claude|codex --scratch <empty-scratch-directory>
