@@ -21,11 +21,11 @@ from writing target files until the command finishes.
 Exit code `0` means a dry run is installable, an apply completed, or the sync
 check is current. Exit code `1` means `sync --check` found safe pending
 updates. Exit code `2` means invalid input, an unsafe path, source corruption,
-an ownership conflict, or a write failure.
+an ownership conflict, an unusable `python` launcher, or a write failure.
 
 ## Runtime prerequisite
 
-Before enabling either host's hooks, run `python --version` in the consumer repository. The `python` command must resolve to Python 3.11 or newer. This requirement is machine-readable in the pinned release checkout's `distribution/manifest.json` and matches the launcher in every distributed hook fragment.
+Before enabling either host's hooks, run `python --version` in the consumer repository. The `python` command must resolve to Python 3.11 or newer on every machine that uses the repository. `install` and `sync` refuse with a `launcher-unavailable` conflict when it does not resolve, cannot start, or is too old on the machine running them; a Windows Microsoft Store alias counts as unable to start. This requirement is machine-readable in the pinned release checkout's `distribution/manifest.json` and matches the launcher in every distributed hook fragment.
 
 ## Managed ownership and conflicts
 

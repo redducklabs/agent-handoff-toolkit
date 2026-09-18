@@ -53,6 +53,7 @@ class InstallerFixture:
         version: str,
         files: dict[str, bytes],
         artifacts: list[dict[str, object]],
+        python_command: str = "python",
     ) -> Path:
         source = self.root / name
         for relative, content in files.items():
@@ -63,7 +64,7 @@ class InstallerFixture:
             "manifest_version": 2,
             "toolkit_version": version,
             "record_schema_version": 1,
-            "runtime": {"python_command": "python", "minimum_version": "3.11"},
+            "runtime": {"python_command": python_command, "minimum_version": "3.11"},
             "text_hash": "utf8-lf-sha256-v1",
             "artifacts": artifacts,
         }
@@ -2138,12 +2139,21 @@ class CliTests(InstallerFixture, unittest.TestCase):
         self.consumer = self.root / "consumer"
         self.consumer.mkdir()
 
-    def make_cli_source(self, name: str, version: str, label: str) -> Path:
+    def make_cli_source(
+        self,
+        name: str,
+        version: str,
+        label: str,
+        python_command: str = sys.executable,
+    ) -> Path:
+        # The CLI refuses a launcher it cannot run, so the fixtures name this
+        # interpreter rather than depend on `python` being on the runner's PATH.
         source = self.make_install_source(
             name,
             version,
             {"contract.md": f"contract {label}\n".encode()},
             [self.copy_artifact_for_install()],
+            python_command=python_command,
         )
         shutil.copytree(ROOT / "src", source / "src")
         return source
@@ -2312,6 +2322,37 @@ class CliTests(InstallerFixture, unittest.TestCase):
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertIn("error:", result.stderr)
                 self.assertNotIn("Traceback", result.stderr)
+
+    def test_install_and_sync_refuse_when_the_hook_launcher_is_unusable(self) -> None:
+        """Hooks that cannot launch fail non-blockingly, so nothing reports them."""
+
+        unusable = self.make_cli_source(
+            "cli-unusable", "0.2.1", "v2", python_command="ahk-no-such-python"
+        )
+        missing = "`ahk-no-such-python` was not found on PATH"
+
+        fresh = self.run_cli("install", "--dry-run", release="v0.2.1", source=unusable)
+        self.assertEqual(fresh.returncode, 2, fresh.stderr)
+        self.assertIn("launcher-unavailable", fresh.stdout)
+        self.assertIn(missing, fresh.stdout)
+        self.assertEqual(fresh.stdout.count("CONFLICT"), 1, fresh.stdout)
+        self.assertFalse((self.consumer / ".agent-handoff-toolkit").exists())
+
+        installed = self.run_cli(
+            "install", "--apply", release="v0.2.0", source=self.source_v1
+        )
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        for mode in ("--check", "--apply"):
+            with self.subTest(mode=mode):
+                result = self.run_cli("sync", mode, release="v0.2.1", source=unusable)
+
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("launcher-unavailable", result.stdout)
+                self.assertIn(missing, result.stdout)
+                self.assertEqual(
+                    (self.consumer / "docs" / "contract.md").read_bytes(),
+                    b"contract v1\n",
+                )
 
     def test_default_source_root_is_inferred_from_the_source_checkout(self) -> None:
         result = self.run_cli(

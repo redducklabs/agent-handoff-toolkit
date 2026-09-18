@@ -1020,7 +1020,10 @@ class LockContentionTests(unittest.TestCase):
         def locking(descriptor, mode, length):
             calls.append(mode)
             if mode != module.LK_UNLCK and len(calls) <= failures:
-                raise OSError(errno.EDEADLOCK, "Resource deadlock avoided")
+                raise OSError(
+                    getattr(errno, "EDEADLOCK", errno.EDEADLK),
+                    "Resource deadlock avoided",
+                )
 
         module = SimpleNamespace(LK_LOCK=1, LK_NBLCK=2, LK_UNLCK=0, locking=locking)
         return module, calls
@@ -1039,6 +1042,26 @@ class LockContentionTests(unittest.TestCase):
             finally:
                 os.close(descriptor)
         self.assertGreater(len(calls), 3, "the contended region must be retried")
+
+    def test_module_imports_where_the_platform_lacks_the_edeadlock_alias(self):
+        """macOS defines EDEADLK but not its EDEADLOCK alias."""
+
+        script = (
+            "import errno, sys\n"
+            "if hasattr(errno, 'EDEADLOCK'):\n"
+            "    del errno.EDEADLOCK\n"
+            f"sys.path.insert(0, {str(Path(__file__).resolve().parents[1] / 'src')!r})\n"
+            "from agent_handoff_toolkit import lifecycle_storage\n"
+            "assert errno.EDEADLK in lifecycle_storage._LOCK_CONTENTION_ERRNOS\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_windows_lock_surfaces_a_non_contention_error(self):
         """Waiting out contention must not swallow a genuine lock failure."""

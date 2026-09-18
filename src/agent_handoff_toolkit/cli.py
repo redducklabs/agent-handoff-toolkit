@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+from dataclasses import replace
 import json
 import os
 from pathlib import Path
@@ -468,12 +469,28 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 return 2
 
-            plan = build_plan(
-                args.source_root if args.source_root is not None else _source_root(),
-                args.target,
-                args.release,
-                args.command,
+            from .installer import Conflict
+            from .launcher import launcher_problem
+            from .manifest import load_manifest
+
+            source_root = (
+                args.source_root if args.source_root is not None else _source_root()
             )
+            plan = build_plan(source_root, args.target, args.release, args.command)
+            manifest = load_manifest(source_root)
+            problem = launcher_problem(manifest.python_command, manifest.minimum_python)
+            if problem is not None:
+                plan = replace(
+                    plan,
+                    conflicts=(
+                        *plan.conflicts,
+                        Conflict(
+                            manifest.python_command,
+                            "launcher-unavailable",
+                            problem,
+                        ),
+                    ),
+                )
             sys.stdout.write(render_plan(plan))
             if plan.conflicts:
                 return 2
