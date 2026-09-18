@@ -445,7 +445,7 @@ class AuthorizationProposal:
             raise ValueError("proposal must create a new authorization")
         if self.from_authorization_id is not None:
             _identifier(self.from_authorization_id, "from_authorization_id")
-        if self.kind not in {"transition", "v1-adoption"} or self.status not in {
+        if self.kind != "transition" or self.status not in {
             "pending",
             "approved",
             "consumed",
@@ -469,10 +469,6 @@ class AuthorizationProposal:
                     _frozen_mapping(scope, limit=2048, label="proposal scope")
                 )
             object.__setattr__(self, name, tuple(frozen))
-        if self.kind == "v1-adoption" and not isinstance(
-            self.selected_record, RecordReference
-        ):
-            raise ValueError("adoption requires one selected record")
         if self.kind == "transition" and (
             self.from_authorization_id is None
             or not self.old_scopes
@@ -1536,9 +1532,7 @@ def _evaluate_initial_record(snapshot, candidate, data):
     kind = "initial-user-turn"
     proposal_turn = None
     if proposal and proposal.status == "consumed":
-        kind = (
-            "v1-adoption" if proposal.kind == "v1-adoption" else "approved-transition"
-        )
+        kind = "approved-transition"
         proposal_turn = proposal.assistant_turn_reference
     expected_evidence = {
         "kind": kind,

@@ -52,7 +52,6 @@ from agent_handoff_toolkit.cli import main  # noqa: E402
 from test_lifecycle import (  # noqa: E402
     make_record,
     make_scope,
-    restore_v1_sections,
 )
 
 
@@ -63,7 +62,6 @@ COMMANDS = {
     "register-root": f"--scope-id issue-1323 --scope-kind issue --scope-definition-b64 {DEFINITION}",
     "resume": "--record D:/repo/handoffs/current.md",
     "join": "--authorization-id auth-001 --expected-chain-revision 3",
-    "adopt-v1": "--record D:/repo/handoffs/current-v1.md",
 }
 
 
@@ -634,69 +632,6 @@ class OperationsTests(unittest.TestCase):
                 self.register()
         self.assertEqual(self.storage.registry_path.read_bytes(), before)
 
-    def test_v1_adoption_requires_selected_root_adjacent_approval_and_single_use(self):
-        data = make_record("continuation", record_id="unused", root="issue-new")
-        data["schema_version"] = 1
-        for key in (
-            "record_id",
-            "authorization_id",
-            "authorized_root_scope_id",
-            "predecessor",
-            "authorization_evidence",
-            "transition",
-        ):
-            data.pop(key)
-        for scope in data["active_scopes"]:
-            scope.pop("scope_definition")
-            scope.pop("scope_definition_digest")
-        text = render_record(restore_v1_sections(data))
-        selected = RecordReference(
-            "legacy-selected",
-            (self.root / "selected-v1.md").as_posix(),
-            record_digest(text),
-        )
-        self.proposal(kind="v1-adoption", record=selected)
-        with self.assertRaises(ValueError):
-            self.service.adopt_v1(
-                challenge="challenge-001",
-                record_path=selected.path,
-                record_text=text,
-                expected_session_revision=2,
-            )
-        approved = self.user_event("yes")
-        self.assertEqual(
-            approved.session.pending_transition_reference.status, "approved"
-        )
-        for path, source in (
-            (selected.path, text + "changed"),
-            ((self.root / "other.md").as_posix(), text),
-        ):
-            with self.assertRaises(ValueError):
-                self.service.adopt_v1(
-                    challenge=approved.session.bootstrap_challenge,
-                    record_path=path,
-                    record_text=source,
-                    expected_session_revision=3,
-                )
-        result = self.service.adopt_v1(
-            challenge=approved.session.bootstrap_challenge,
-            record_path=selected.path,
-            record_text=text,
-            expected_session_revision=3,
-        )
-        self.assertEqual(result.session.mode, EnforcementMode.TRACKED)
-        self.assertEqual(result.session.pending_transition_reference.status, "consumed")
-        self.assertIn(
-            "AHK-V1-SEMANTICS-UNPROVEN", self.service.inspect()["issue_codes"]
-        )
-        with self.assertRaises(ValueError):
-            self.service.adopt_v1(
-                challenge=approved.session.bootstrap_challenge,
-                record_path=selected.path,
-                record_text=text,
-                expected_session_revision=4,
-            )
-
     def call_cli(self, arguments, stdin="", session_id="session-1"):
         arguments = list(arguments)
         snapshot = self.storage.load_snapshot(session_id)
@@ -795,7 +730,6 @@ class OperationsTests(unittest.TestCase):
     def test_cli_input_and_runtime_exit_codes_and_no_raw_diagnostics(self):
         for args in (
             ["register-root"],
-            ["adopt-v1", "--confirmed"],
             ["join", "--unknown", "private-marker"],
             ["register-root", "--challenge", "private-marker"],
         ):
@@ -1344,40 +1278,6 @@ class OperationsTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "join"):
                 self.register(LifecycleService(storage, "fresh"))
             self.assertEqual(storage.registry_path.read_bytes(), before)
-
-    def test_v1_adoption_rejects_scope_kind_not_named_by_proposal(self):
-        data = make_record("continuation", record_id="unused", root="issue-new")
-        data["schema_version"] = 1
-        for key in (
-            "record_id",
-            "authorization_id",
-            "authorized_root_scope_id",
-            "predecessor",
-            "authorization_evidence",
-            "transition",
-        ):
-            data.pop(key)
-        for scope in data["active_scopes"]:
-            scope.pop("scope_definition")
-            scope.pop("scope_definition_digest")
-            scope["scope_kind"] = "rollout"
-        text = render_record(restore_v1_sections(data))
-        selected = RecordReference(
-            "legacy-selected",
-            (self.root / "selected.md").as_posix(),
-            record_digest(text),
-        )
-        self.proposal(kind="v1-adoption", record=selected)
-        approved = self.user_event("yes")
-        before = self.storage.registry_path.read_bytes()
-        with self.assertRaises(ValueError):
-            self.service.adopt_v1(
-                challenge=approved.session.bootstrap_challenge,
-                record_path=selected.path,
-                record_text=text,
-                expected_session_revision=approved.session.targeted_revision,
-            )
-        self.assertEqual(self.storage.registry_path.read_bytes(), before)
 
 
 class DoctorTests(unittest.TestCase):

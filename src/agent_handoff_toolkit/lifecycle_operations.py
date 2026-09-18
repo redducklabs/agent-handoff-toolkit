@@ -58,7 +58,6 @@ _FLAGS = {
         "expected-chain-revision",
         "expected-session-revision",
     ),
-    "adopt-v1": ("session-key", "challenge", "record", "expected-session-revision"),
     "one-off": ("session-key", "challenge", "expected-session-revision"),
 }
 
@@ -394,13 +393,6 @@ class LifecycleService:
                 ["AHK-STATE-STALE"]
                 if chain and session.chain_revision != chain.targeted_revision
                 else []
-            )
-            + (
-                ["AHK-V1-SEMANTICS-UNPROVEN"]
-                if proposal
-                and proposal.kind == "v1-adoption"
-                and proposal.status == "consumed"
-                else []
             ),
         }
 
@@ -617,9 +609,6 @@ class LifecycleService:
                 raise ValueError(
                     "old immutable definitions differ from the active chain"
                 )
-        elif kind == "v1-adoption":
-            if snapshot.chain is not None or old:
-                raise ValueError("v1 adoption requires an untracked session")
         proposal = AuthorizationProposal(
             "proposal-" + secrets.token_hex(16),
             kind,
@@ -795,70 +784,3 @@ class LifecycleService:
             ),
         )
         return response
-
-    def adopt_v1(
-        self, *, challenge, record_path, record_text, expected_session_revision
-    ):
-        snapshot = self._bootstrap(challenge, expected_session_revision)
-        proposal = snapshot.session.pending_transition_reference
-        path = canonical_record_path(record_path)
-        if (
-            proposal is None
-            or proposal.kind != "v1-adoption"
-            or proposal.status != "approved"
-            or proposal.approval_turn_reference
-            != snapshot.session.current_external_user_turn_reference
-            or proposal.selected_record.path != path
-        ):
-            raise ValueError(
-                "adoption requires adjacent approval of the selected v1 record"
-            )
-        if (
-            len(record_text.encode("utf-8")) > 131072
-            or source_digest(record_text) != proposal.selected_record.sha256
-            or validate_markdown(record_text)
-        ):
-            raise ValueError("selected v1 record changed or is invalid")
-        parsed = parse_markdown(record_text)
-        if (
-            parsed.get("schema_version") != 1
-            or parsed.get("record_type") != "continuation"
-        ):
-            raise ValueError("adoption requires one v1 continuation")
-        roots = [
-            scope for scope in parsed["active_scopes"] if scope["highest_authorized"]
-        ]
-        if (
-            len(roots) != 1
-            or roots[0]["scope_id"] != proposal.new_scopes[0]["scope_id"]
-        ):
-            raise ValueError("selected v1 root differs from the approved root")
-        identity_fields = ("scope_id", "scope_kind", "parent_scope_id")
-        if [
-            tuple(scope[key] for key in identity_fields)
-            for scope in parsed["active_scopes"]
-        ] != [
-            tuple(scope[key] for key in identity_fields)
-            for scope in proposal.new_scopes
-        ]:
-            raise ValueError("selected v1 scopes differ from the approved identities")
-        chain = ChainState(
-            proposal.to_authorization_id,
-            roots[0]["scope_id"],
-            tuple(scope_definition_digest(scope) for scope in proposal.new_scopes),
-            1,
-            "active",
-            None,
-            authorization_user_turn_reference=proposal.approval_turn_reference,
-            authorization_evidence_hmac=proposal.evidence_hmac,
-        )
-        session = replace(
-            snapshot.session,
-            targeted_revision=expected_session_revision + 1,
-            mode=EnforcementMode.TRACKED,
-            authorization_id=chain.authorization_id,
-            chain_revision=1,
-            bootstrap_challenge=None,
-            pending_transition_reference=replace(proposal, status="consumed"),
-        )
-        return self._commit(snapshot, session, chain)

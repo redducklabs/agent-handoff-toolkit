@@ -1,36 +1,51 @@
 {
-  "schema_version": 1,
-  "record_type": "completion-audit",
-  "timestamp": "2026-09-06T15:00:00Z",
   "active_scopes": [
     {
-      "scope_id": "standalone-contract",
-      "scope_kind": "standalone",
-      "parent_scope_id": null,
       "highest_authorized": true,
-      "remaining_work": false,
+      "parent_scope_id": null,
       "remaining_code": false,
       "remaining_code_detail": "No code remains within the authorized standalone outcome.",
+      "remaining_work": false,
+      "scope_definition": {
+        "outcome": "Complete the authorized outcome for issue-1323.",
+        "title": "Scope issue-1323"
+      },
+      "scope_definition_digest": "cff35d70b16213105979468f32eafa6c760c147bc07ed30999705426fb102deb",
+      "scope_id": "issue-1323",
+      "scope_kind": "standalone",
       "status": "complete"
     }
   ],
-  "completed_scope_id": "standalone-contract",
+  "authorization_basis": "The user authorized the standalone contract outcome.",
+  "authorization_evidence": {
+    "evidence_hmac": "1111111111111111111111111111111111111111111111111111111111111111",
+    "kind": "initial-user-turn",
+    "proposal_turn_ref": null,
+    "user_turn_ref": "turn-user-001"
+  },
+  "authorization_id": "auth-001",
+  "authorized_root_scope_id": "issue-1323",
+  "completed_scope_id": "issue-1323",
+  "predecessor": null,
+  "record_id": "record-audit-001",
+  "record_type": "completion-audit",
+  "schema_version": 2,
+  "sections": {
+    "Authoritative references": "- `docs/agent-handoff/contract.md`",
+    "Completed objective": "Defined and verified schema version 1.",
+    "Completed work": "The schema, parser, and validator were completed.",
+    "External effects": "No consumer repository was modified.",
+    "Final repository state": "The contract is committed on the feature branch.",
+    "Known risks or separately tracked follow-ups": "Host adapters are a separately authorized follow-up.",
+    "User decisions": "Completion audits are evidence, not restart points."
+  },
+  "timestamp": "2026-09-06T15:00:00Z",
+  "transition": null,
   "verification": [
     {
       "check": "python -m unittest discover -s tests -v",
-      "result": "pass",
-      "evidence": "The standalone contract suite passed."
+      "evidence": "The standalone contract suite passed.",
+      "result": "pass"
     }
-  ],
-  "authorization_basis": "The user authorized the standalone contract outcome.",
-  "sections": {
-    "Completed objective": "Defined and verified schema version 1.",
-    "Authoritative references": "- `docs/agent-handoff/contract.md`",
-    "User decisions": "Completion audits are evidence, not restart points.",
-    "Final repository state": "The contract is committed on the feature branch.",
-    "Completed work": "The schema, parser, and validator were completed.",
-    "Verification evidence": "- Unit tests: pass",
-    "Known risks or separately tracked follow-ups": "Host adapters are a separately authorized follow-up.",
-    "External effects": "No consumer repository was modified."
-  }
+  ]
 }

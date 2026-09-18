@@ -19,11 +19,10 @@ The block stays visible so a reviewer reading rendered Markdown still sees
 verification, the exact next action, and the scope list. A rendered metadata
 object never contains a bare fence line, because JSON escapes every newline.
 
-A schema-v1 record begins with the `<!-- agent-handoff-metadata` comment and
-closes it with `-->`. Each schema version has exactly one canonical form; a
-record that declares one version and uses the other form is invalid, and a
-record carrying a visible block plus a metadata comment is invalid because the
-comment would be invisible in rendered Markdown while claiming to be metadata.
+A record that carries a metadata comment rather than the visible block is not
+a record this toolkit wrote. Records that predate the current schema are
+historical by policy and are never opened, validated or migrated, so nothing
+reads that older form.
 
 The visible block is recognized only at a record's fixed metadata position: the
 start of a continuation, or directly after a completion audit's sentinel and its
@@ -241,32 +240,6 @@ validation, rendering, and bounded transcript-reference checks are the hard gate
 optional evaluators cannot approve a transition or replace evidence. Explicit CLI
 validation fails visibly and returns a non-zero status for invalid input.
 
-## Schema version 1 compatibility appendix
-
-Schema-v1 records remain parseable and render with their established v1 tail. They
-do not acquire invented lineage or root evidence. A lifecycle command may adopt a
-v1 record only through the explicit v1-adoption path and corresponding
-authorization evidence; new and materially replaced records use schema version 2.
-This appendix preserves historical compatibility without weakening schema-v2 root
-immutability or tracked lifecycle enforcement.
-
-A schema-v1 continuation contains exactly these level-two sections, in order:
-Objective, Authoritative references, User decisions, Repository state, Completed
-work, Verification evidence, Incomplete work and risks, Exact next action,
-External effects, Remaining code by active scope, Next-session prompt. A
-schema-v1 audit contains Completed objective, Authoritative references, User
-decisions, Final repository state, Completed work, Verification evidence, Known
-risks or separately tracked follow-ups, External effects.
-
-In schema v1 the renderer derives four of those sections from metadata and the
-validator requires exact equality with the visible section: **Verification
-evidence** is the complete `verification` list, **Exact next action** is the
-complete `exact_action` object, **Remaining code by active scope** is the
-complete `active_scopes` list, and **Next-session prompt** is the exact
-`next_session_prompt` value in a fenced `text` block. A contradictory prose
-summary is invalid even when each representation would be valid in isolation.
-Schema v2 removes these sections because each one was a second copy of a
-metadata field.
 ## Authoring input for `render`
 
 `render` reads one JSON object and writes the record document. That object is the

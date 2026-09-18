@@ -131,10 +131,6 @@ def _lifecycle_parser():
     resume.add_argument("--record", required=True)
     join = commands.add_parser("join", help="join one active authorization chain")
     join.add_argument("--authorization-id", required=True)
-    adopt = commands.add_parser(
-        "adopt-v1", help="adopt the selected v1 record after trusted adjacent approval"
-    )
-    adopt.add_argument("--record", required=True)
     one_off = commands.add_parser(
         "one-off", help="declare that this session's work needs no handoff"
     )
@@ -147,7 +143,7 @@ def _lifecycle_parser():
         "doctor", help="print a read-only runtime diagnosis with no session binding"
     )
     doctor.add_argument("--session-id")
-    for command in (register, resume, join, adopt, one_off):
+    for command in (register, resume, join, one_off):
         command.add_argument("--session-key", required=True)
         command.add_argument("--challenge", required=True)
         command.add_argument("--expected-session-revision", type=int, required=True)
@@ -158,9 +154,7 @@ def _lifecycle_parser():
     proposal.add_argument("--old-scopes-b64", required=True)
     proposal.add_argument("--new-scopes-b64", required=True)
     proposal.add_argument("--assistant-turn-reference", required=True)
-    proposal.add_argument(
-        "--kind", choices=("transition", "v1-adoption"), default="transition"
-    )
+    proposal.add_argument("--kind", choices=("transition",), default="transition")
     proposal.add_argument("--record")
     proposal.add_argument("--record-id")
     proposal.add_argument("--record-sha256")
@@ -249,7 +243,6 @@ def _doctor_report(session_id=None):
 
 def _lifecycle_main(argv):
     # Imports remain local so legacy informational hooks retain their behavior.
-    from .lifecycle import RecordReference
     from .lifecycle_operations import (
         LifecycleOperationError,
         LifecycleService,
@@ -293,7 +286,7 @@ def _lifecycle_main(argv):
         service = LifecycleService.for_control(
             storage, session_key, capability, args["expected_session_revision"]
         )
-        if operation not in {"register-root", "resume", "join", "adopt-v1", "one-off"}:
+        if operation not in {"register-root", "resume", "join", "one-off"}:
             args.pop("challenge")
         if operation == "inspect":
             service.consume_control()
@@ -308,27 +301,16 @@ def _lifecycle_main(argv):
             sys.stdout.write(response + "\n")
             return 0
         else:
-            if operation in {"resume", "adopt-v1"}:
+            if operation == "resume":
                 path = canonical_record_path(args.pop("record"))
-                if operation == "adopt-v1":
-                    pending = (
-                        service._load_snapshot().session.pending_transition_reference
-                    )
-                    if (
-                        pending is None
-                        or pending.kind != "v1-adoption"
-                        or pending.status != "approved"
-                        or pending.selected_record.path != path
-                    ):
-                        raise ValueError("selected adoption record is not approved")
                 with Path(path).open("r", encoding="utf-8") as source:
                     text = source.read(131073)
-                args.update(record_path=path, record_text=text)
-                if operation == "resume":
-                    args.update(
-                        record_metadata=parse_markdown(text),
-                        record_digest=record_digest(text),
-                    )
+                args.update(
+                    record_path=path,
+                    record_text=text,
+                    record_metadata=parse_markdown(text),
+                    record_digest=record_digest(text),
+                )
             if operation == "propose-transition":
                 for name in ("old_scopes", "new_scopes"):
                     value = args.pop(name + "_b64")
@@ -345,12 +327,8 @@ def _lifecycle_main(argv):
                 record = args.pop("record")
                 record_id = args.pop("record_id")
                 digest = args.pop("record_sha256")
-                if args["kind"] == "v1-adoption":
-                    args["selected_record"] = RecordReference(
-                        record_id, canonical_record_path(record), digest
-                    )
-                elif any(item is not None for item in (record, record_id, digest)):
-                    raise ValueError("transition cannot select a v1 record")
+                if any(item is not None for item in (record, record_id, digest)):
+                    raise ValueError("a transition cannot select a record")
             updated = getattr(service, operation.replace("-", "_"))(**args)
             result = service.inspect()
             if operation == "register-root":

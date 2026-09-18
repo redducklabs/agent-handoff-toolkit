@@ -22,11 +22,11 @@ from .lineage import (
     validate_scope_definition,
 )
 
-SCHEMA_VERSION = 1
+# One schema version. A record written before it is historical by policy and is
+# never opened, validated or migrated, so nothing here reads the old comment
+# form or the sections the renderer used to derive from metadata.
 LATEST_SCHEMA_VERSION = 2
-SUPPORTED_SCHEMA_VERSIONS = frozenset({SCHEMA_VERSION, LATEST_SCHEMA_VERSION})
-METADATA_OPEN = "<!-- agent-handoff-metadata"
-METADATA_CLOSE = "-->"
+SUPPORTED_SCHEMA_VERSIONS = frozenset({LATEST_SCHEMA_VERSION})
 # Schema v2 keeps one copy of every structured fact. The block stays visible so
 # a reviewer reading rendered Markdown still sees verification, the exact next
 # action, and the scope list that schema v1 duplicated into prose sections.
@@ -40,12 +40,8 @@ CONTINUATION_SECTIONS = (
     "User decisions",
     "Repository state",
     "Completed work",
-    "Verification evidence",
     "Incomplete work and risks",
-    "Exact next action",
     "External effects",
-    "Remaining code by active scope",
-    "Next-session prompt",
 )
 
 AUDIT_SECTIONS = (
@@ -54,37 +50,27 @@ AUDIT_SECTIONS = (
     "User decisions",
     "Final repository state",
     "Completed work",
-    "Verification evidence",
     "Known risks or separately tracked follow-ups",
     "External effects",
 )
 
-# Schema v2 drops every section the renderer derived byte-for-byte from
-# metadata; only narrative sections that have no metadata field remain.
-V2_DERIVED_SECTIONS = frozenset(
-    {
-        "Verification evidence",
-        "Exact next action",
-        "Remaining code by active scope",
-        "Next-session prompt",
-    }
-)
-
-CONTINUATION_SECTIONS_V2 = tuple(
-    name for name in CONTINUATION_SECTIONS if name not in V2_DERIVED_SECTIONS
-)
-
-AUDIT_SECTIONS_V2 = tuple(
-    name for name in AUDIT_SECTIONS if name not in V2_DERIVED_SECTIONS
+# Headings and the metadata form a record written before this schema carried.
+# Nothing renders or validates them any more. They stay named here so a pasted
+# legacy record is still recognized as a record document and refused wherever
+# one is not allowed - a next-session prompt, for instance.
+LEGACY_RECORD_MARKERS = (
+    "<!-- agent-handoff-metadata",
+    "Verification evidence",
+    "Exact next action",
+    "Remaining code by active scope",
+    "Next-session prompt",
 )
 
 SCOPE_KINDS = frozenset({"unit", "issue", "phase", "epic", "rollout", "standalone"})
 SCOPE_STATUSES = frozenset({"pending", "in-progress", "blocked", "complete"})
 NONTERMINAL_SCOPE_STATUSES = SCOPE_STATUSES - {"complete"}
 VERIFICATION_RESULTS = frozenset({"pass", "fail", "not-run"})
-AUTHORIZATION_EVIDENCE_KINDS = frozenset(
-    {"initial-user-turn", "approved-transition", "v1-adoption"}
-)
+AUTHORIZATION_EVIDENCE_KINDS = frozenset({"initial-user-turn", "approved-transition"})
 MAX_NEXT_PROMPT_WORDS = 120
 MAX_NEXT_PROMPT_CHARACTERS = 1200
 MAX_NEXT_PROMPT_LINES = 6
@@ -153,14 +139,14 @@ def _looks_like_record_document(value: str) -> bool:
         return True
     lowered = value.lower()
     markers = (
-        METADATA_OPEN,
-        METADATA_CLOSE,
         METADATA_FENCE_OPEN,
+        LEGACY_RECORD_MARKERS[0],
         AUDIT_SENTINEL,
         "# session continuation",
         "# completion audit",
         *(f"## {section.lower()}" for section in CONTINUATION_SECTIONS),
         *(f"## {section.lower()}" for section in AUDIT_SECTIONS),
+        *(f"## {section.lower()}" for section in LEGACY_RECORD_MARKERS[1:]),
     )
     return any(marker.lower() in lowered for marker in markers)
 
@@ -317,40 +303,13 @@ def _canonical_json_section(value: object) -> str:
     return _fenced_block(payload, "json")
 
 
-def _is_v2(data: Mapping[str, object]) -> bool:
-    return data.get("schema_version") == LATEST_SCHEMA_VERSION
-
-
-def _derived_sections(data: Mapping[str, object]) -> dict[str, str]:
-    if _is_v2(data):
-        # Schema v2 has no derived sections; its visible metadata is the copy.
-        return {}
-    derived: dict[str, str] = {}
-    verification = data.get("verification")
-    if isinstance(verification, list):
-        derived["Verification evidence"] = _canonical_json_section(verification)
-
-    if data.get("record_type") == "continuation":
-        exact_action = data.get("exact_action")
-        if isinstance(exact_action, Mapping):
-            derived["Exact next action"] = _canonical_json_section(exact_action)
-        scopes = data.get("active_scopes")
-        if isinstance(scopes, list):
-            derived["Remaining code by active scope"] = _canonical_json_section(scopes)
-        prompt = data.get("next_session_prompt")
-        if isinstance(prompt, str):
-            derived["Next-session prompt"] = _fenced_block(prompt, "text")
-    return derived
-
-
 def _expected_sections(
-    record_type: object, schema_version: object = SCHEMA_VERSION
+    record_type: object, schema_version: object = LATEST_SCHEMA_VERSION
 ) -> tuple[str, ...] | None:
-    latest = schema_version == LATEST_SCHEMA_VERSION
     if record_type == "continuation":
-        return CONTINUATION_SECTIONS_V2 if latest else CONTINUATION_SECTIONS
+        return CONTINUATION_SECTIONS
     if record_type == "completion-audit":
-        return AUDIT_SECTIONS_V2 if latest else AUDIT_SECTIONS
+        return AUDIT_SECTIONS
     return None
 
 
@@ -538,13 +497,6 @@ def _validate_v2_lineage_fields(
                 label="authorization_evidence.proposal_turn_ref",
                 issues=issues,
                 code="lineage-evidence",
-            )
-        if kind == "v1-adoption" and predecessor is not None:
-            issues.append(
-                _issue(
-                    "lineage-evidence",
-                    "v1-adoption evidence must begin a v2 chain without a predecessor",
-                )
             )
         _lineage_digest(
             evidence.get("evidence_hmac"),
@@ -1235,7 +1187,7 @@ def _validate_data(
         or isinstance(schema_version, bool)
         or schema_version not in SUPPORTED_SCHEMA_VERSIONS
     ):
-        issues.append(_issue("schema-version", "schema_version must be 1 or 2"))
+        issues.append(_issue("schema-version", "schema_version must be 2"))
     record_type = data.get("record_type")
     expected_sections = _expected_sections(record_type, schema_version)
     if expected_sections is None:
@@ -1562,18 +1514,11 @@ def _extract_markdown(
         return None, [_issue("metadata-type", "metadata must be a JSON object")]
 
     schema_version = metadata.get("schema_version")
-    if schema_version in SUPPORTED_SCHEMA_VERSIONS and fenced != (
-        schema_version == LATEST_SCHEMA_VERSION
-    ):
-        expected_form = (
-            "a fenced `json agent-handoff-metadata` block"
-            if schema_version == LATEST_SCHEMA_VERSION
-            else "an agent-handoff metadata comment"
-        )
+    if schema_version in SUPPORTED_SCHEMA_VERSIONS and not fenced:
         issues.append(
             _issue(
                 "metadata-form",
-                f"a schema-v{schema_version} record must use {expected_form}",
+                "a record must use a fenced `json agent-handoff-metadata` block",
             )
         )
 
@@ -1630,15 +1575,6 @@ def _extract_markdown(
     data = dict(metadata)
     data["sections"] = sections
     issues.extend(_validate_data(data, record_path=record_path))
-    for section_name, canonical_text in _derived_sections(data).items():
-        actual_text = sections.get(section_name)
-        if actual_text is not None and actual_text != canonical_text:
-            issues.append(
-                _issue(
-                    "section-consistency",
-                    f"{section_name} must exactly match its canonical metadata rendering",
-                )
-            )
     return data, issues
 
 
@@ -1691,12 +1627,7 @@ def render_record(data: Mapping[str, object]) -> str:
         indent=2,
         sort_keys=True,
     )
-    if _is_v2(data):
-        metadata_block = (
-            f"{METADATA_FENCE_OPEN}\n{metadata_json}\n{METADATA_FENCE_CLOSE}"
-        )
-    else:
-        metadata_block = f"{METADATA_OPEN}\n{metadata_json}\n{METADATA_CLOSE}"
+    metadata_block = f"{METADATA_FENCE_OPEN}\n{metadata_json}\n{METADATA_FENCE_CLOSE}"
     title = (
         "# Session continuation"
         if record_type == "continuation"
@@ -1706,10 +1637,8 @@ def render_record(data: Mapping[str, object]) -> str:
     if record_type == "completion-audit":
         preamble = f"{AUDIT_SENTINEL}\n\n{metadata_block}"
 
-    derived_sections = _derived_sections(data)
     rendered_sections = "\n\n".join(
-        f"## {name}\n\n{derived_sections.get(name, str(sections[name]).strip())}"
-        for name in expected_sections
+        f"## {name}\n\n{str(sections[name]).strip()}" for name in expected_sections
     )
     return f"{preamble}\n\n{title}\n\n{rendered_sections}\n"
 
@@ -1872,8 +1801,6 @@ def render_terminal_response(
     """Render the complete schema-v2 terminal assistant response."""
 
     data = parse_markdown(text)
-    if data["schema_version"] == SCHEMA_VERSION:
-        return render_tail(record_path, text)
     absolute_path = _absolute_markdown_path(record_path)
     if data["record_type"] == "continuation":
         response = _continuation_tail(data, absolute_path)

@@ -3,9 +3,8 @@
 This document is normative for schema version 2 and is what an author reads
 before writing a record. `mechanics.md` carries the exact formats the toolkit
 enforces — lineage fields, canonical JSON, the generated response, lifecycle
-enforcement, the enforcement boundary, and the schema version 1 compatibility
-appendix. The validator rejects a record that violates them, so an author does
-not need to reproduce them from memory.
+enforcement, and the enforcement boundary. The validator rejects a record that
+violates them, so an author does not need to reproduce them from memory.
 
 ## Record decision
 
@@ -45,7 +44,7 @@ Reconciliation is preflight, not the exact next action. The continuation also na
 
 ## Metadata is the only copy
 
-A schema-v2 record begins with one visible fenced `json agent-handoff-metadata`
+A record begins with one visible fenced `json agent-handoff-metadata`
 block holding schema version, record type, timestamp, lineage, scope
 declarations, question gates, verification classifications, exact-action fields,
 and the stored next-session prompt. A completion audit places its sentinel
@@ -54,8 +53,8 @@ before that block.
 That block is the sole copy of every structured fact. A schema-v2 record
 contains no narrative restatement of verification, the exact next action, the
 scope list, or the next-session prompt, and no section repeats a value that
-already has a metadata field. Schema-v1 records keep their metadata comment and
-their derived sections; see the compatibility appendix in `mechanics.md`.
+already has a metadata field. A record that predates this schema is historical
+by policy: do not open, validate or migrate it.
 
 ## Continuation sections
 
@@ -115,7 +114,7 @@ not fit is rejected while it is being written rather than at `Stop`.
 ## Exact next action
 
 Each `exact_action` field is either non-empty text or a non-empty list of text
-items, preserving schema-v1 compatibility. Every item is trimmed, single-line,
+items. Every item is trimmed, single-line,
 and free of unsafe control or line-separator characters, Markdown fences, and
 handoff-document structure. Each `exact_action` item must not be a no-action
 assertion. `constraints` names the governing decisions and prohibitions; it does
