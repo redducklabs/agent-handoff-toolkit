@@ -6,6 +6,27 @@ This repository provides a shared contract, deterministic validation and renderi
 
 ## Status
 
+Version 1.0.1 fixes two faults that could stop the toolkit running on a host
+without reporting anything. `_LOCK_CONTENTION_ERRNOS` named `errno.EDEADLOCK`
+directly, which is a Linux and Windows alias macOS does not define, so
+importing `lifecycle_storage` raised `AttributeError` and every module that
+reaches it failed at import: on macOS the installed runner could not start and
+the test suite stopped at collection. Both spellings are now resolved by name.
+A test that deletes the alias before importing the module reproduces the
+failure on the Linux CI runners, so the regression is covered where it can be
+run.
+
+Hook commands run `python`. Where that name is missing, as on stock macOS,
+Debian and Ubuntu, or is the Windows Store alias stub, every hook failed
+non-blockingly and the lifecycle went dead with nothing visible to say so.
+`install` and `sync` now resolve the manifest's `python_command` on `PATH`, run
+the resolved program with `--version`, and raise a `launcher-unavailable`
+conflict when it is absent, cannot start, exits non-zero, reports no version, or
+is below the manifest minimum. The check lives in the CLI, not `build_plan`, so
+a plan still does not depend on the machine computing it. The hook command
+strings are unchanged, the record schema and lifecycle state format are
+unchanged, and the installed files stay byte-identical across operating systems.
+
 Version 1.0.0 removes what the 2026-09-17 review found nobody was using. The
 record schema has one version: schema v1 was kept parseable so an existing
 chain could be adopted into v2, and across the three consumers no chain ever
@@ -167,16 +188,16 @@ disposable consumer can be installed from a verified local release source.
 
 ## Consumer installation
 
-Check out the public v1.0.0 release, inspect the proposed changes, then apply
+Check out the public v1.0.1 release, inspect the proposed changes, then apply
 them from that checkout:
 
 ```powershell
-git clone --branch v1.0.0 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
+git clone --branch v1.0.1 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
 Set-Location agent-handoff-toolkit
-python distribution/runner.py install --target <consumer-repository> --release v1.0.0 --dry-run
-python distribution/runner.py install --target <consumer-repository> --release v1.0.0 --apply
-python distribution/runner.py sync --target <consumer-repository> --release v1.0.0 --check
-python distribution/runner.py sync --target <consumer-repository> --release v1.0.0 --apply
+python distribution/runner.py install --target <consumer-repository> --release v1.0.1 --dry-run
+python distribution/runner.py install --target <consumer-repository> --release v1.0.1 --apply
+python distribution/runner.py sync --target <consumer-repository> --release v1.0.1 --check
+python distribution/runner.py sync --target <consumer-repository> --release v1.0.1 --apply
 ```
 
 Run install and sync only in an isolated, clean Git worktree with no concurrent
