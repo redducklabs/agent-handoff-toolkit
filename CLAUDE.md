@@ -4,7 +4,16 @@ Read `docs/agent-handoff/contract.md` and `docs/agent-handoff/mechanics.md` befo
 
 - Preserve the continuation/completion-audit distinction.
 - Keep the core package independent of Claude Code, Codex, GitHub, and tracker APIs.
-- Informational hooks fail open; tracked lifecycle hooks fail closed. Explicit CLI validation fails closed.
+- Informational hooks fail open; tracked lifecycle hooks fail closed at
+  `PreToolUse` and `Stop`. Explicit CLI validation fails closed.
+- `UserPromptSubmit` is never a decision point, for any cause. A hook may
+  decide only where the blocked party can still act on the feedback, and
+  blocking a prompt erases the user's message and starts no turn. Its
+  bookkeeping is best effort: a failed step is named and the turn proceeds.
+  Enrollment is the one step that is not independent - a `Track:` or
+  `Continue from handoff:` declaration is registered only when its own turn
+  was observed, and a declaration that could not be enrolled says the session
+  is untracked.
 - A runtime fault is a malfunction, not a policy decision. It blocks only a
   session whose declared mode was actually read and is outside `OPEN` and
   `ONE_OFF`; otherwise it is reported as a notice carrying no decision. Every
@@ -32,6 +41,13 @@ Read `docs/agent-handoff/contract.md` and `docs/agent-handoff/mechanics.md` befo
 - Resolved SDD review-package warning: relative scratch-package paths resolve against the command's working directory. Run the generator from the intended linked worktree or use its verified absolute workspace path; otherwise it targets the primary checkout where the plan workspace does not exist.
 - In a tag-only or shallow release checkout, `git fetch origin main` may not create `origin/main`. Run `git fetch origin main:refs/remotes/origin/main` before creating a main-based worktree.
 - Resolved Git Bash warning: MSYS path conversion rewrites a `rev:path` argument such as `git show origin/main:.agent-handoff-toolkit/install-state.json` into `origin\main;.agent-handoff-toolkit\install-state.json`, and Git then reports an ambiguous argument. Export `MSYS_NO_PATHCONV=1` for those commands.
+- Resolved runner buffering warning: the bootstrap runner captures the CLI's
+  stdout so a mid-write failure cannot emit two hook responses. The CLI
+  reconfigures whatever stream it is handed to UTF-8, so a plain `StringIO`
+  makes that call silently skip and the real stream then raises
+  `UnicodeEncodeError` on the first non-ASCII character under a cp1252
+  console. Give the buffer a no-op `reconfigure` and reconfigure the real
+  stream before writing the captured response.
 - Run Ruff through the repository configuration in `pyproject.toml`; unconfigured broad rules incorrectly reject the intentional catch-all boundary that makes automatic hooks fail open.
 - Resolved Windows verification warning: a default temporary directory beneath an unrelated Git checkout used to make non-Git lifecycle tests inherit that checkout and create test state in its metadata. Tests now set `GIT_CEILING_DIRECTORIES`, which fences `git rev-parse`, and an empty `.git` directory in the temporary consumer, which fences only the installer's pure-Python ancestor walk. Git ignores a ceiling that is not a strict ancestor of the directory being resolved, so set the ceiling above the directory the test resolves from: the temporary root when resolving a child of it, its parent when resolving the root itself. No `TEMP`/`TMP` preparation is needed.
 

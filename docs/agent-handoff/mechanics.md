@@ -157,18 +157,50 @@ are a closed vocabulary of identifiers. The adapter emits no other issue text:
 no prompt, reply, or transcript content can reach the host through it.
 
 Informational hooks fail open. Tracked lifecycle hooks fail closed on
-`UserPromptSubmit` and `Stop`, including corrupt tracked state, unreadable
+`PreToolUse` and `Stop`, including corrupt tracked state, unreadable
 candidates, missing owned runtime files, and lifecycle validation exceptions.
-A session in `OPEN` or `ONE_OFF` fails open at both events by construction: it
-has registered no root and so has no lifecycle state to fail closed on.
-Successful lifecycle checks emit no routine model context.
+A session in `OPEN` or `ONE_OFF` fails open by construction: it has registered
+no root and so has no lifecycle state to fail closed on. Successful lifecycle
+checks emit no routine model context.
 
-A runtime fault is a malfunction, not a decision about the work.
-`AHK-HOOK-RUNTIME` blocks only a session whose own state was read and shows a
-declared mode outside `OPEN` and `ONE_OFF`; otherwise it is a bare
-`systemMessage` carrying no decision, so the host behaves as it would with no
-hook installed. Every report names its failing stage and exception class after
-`failed=`. A hook command's exit status never signals a fault.
+`UserPromptSubmit` is never a decision point, for any cause. A hook may decide
+only where the party it blocks can still act on the feedback: a denied tool
+call and a refused turn ending both leave the agent running and able to
+correct, while blocking a prompt erases the user's message and starts no turn,
+so nobody remains who could act on the reason — and the state bookkeeping that
+would clear the condition runs only on a decision carrying a mutation, which
+no turn ever begins to produce. Nothing is given up by declining to decide
+there: that event has no policy denial. It reports instead, naming the issue
+on `additionalContext` for the agent and one sentence on `systemMessage` for
+the user.
+
+Its bookkeeping is best effort. Each step is attempted, a step that fails is
+named, and the turn proceeds either way, so a state the toolkit does not
+anticipate costs a skipped step rather than a session nobody can talk to. The
+one dependency that is deliberately not best effort is enrollment: a `Track:`
+or `Continue from handoff:` declaration is registered only when the turn that
+carried it was observed, because authorization binds to the stored turn
+reference and enrolling without it would name the wrong turn. A declaration
+that could not be enrolled says the session is untracked.
+
+A runtime fault is a malfunction, not a decision about the work. Once the
+adapter has loaded, `AHK-HOOK-RUNTIME` blocks only a session whose own state
+was read and shows a declared mode outside `OPEN` and `ONE_OFF`, and never at
+`UserPromptSubmit`; otherwise it is a bare `systemMessage` carrying no
+decision, so the host behaves as it would with no hook installed.
+
+Install corruption is the exception, and it is deliberate. When the package or
+the adapter cannot be imported — or its dispatch fails outright — nothing is
+in a position to read what the session declared, so `PreToolUse` is denied and
+`Stop` is blocked regardless of mode. That is the one boundary where a session
+that declared nothing is still gated, because the alternative is running
+unobserved on a runtime known to be broken. `UserPromptSubmit` is delivered
+even there.
+
+Every report names its failing stage and exception class after `failed=`; the
+bootstrap boundary distinguishes an import that produced no runtime from a
+dispatch that failed after one loaded. A hook command's exit status never
+signals a fault.
 
 ## Recovering a broken hook runtime
 

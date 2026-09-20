@@ -112,7 +112,7 @@ class HostHookTests(unittest.TestCase):
 
         for event, key in (
             ("stop", "reason"),
-            ("user-prompt-submit", "reason"),
+            ("user-prompt-submit", "additionalContext"),
             ("pre-tool-use", "permissionDecisionReason"),
         ):
             with mock_patch.dict(
@@ -125,6 +125,9 @@ class HostHookTests(unittest.TestCase):
                 self.assertEqual(output.exit_code, 0)
                 self.assertIn("AHK-HOOK-RUNTIME", reason)
                 self.assertIn("stage:load-adapter", reason)
+                # Work fails closed here; the user's own message never does.
+                if event == "user-prompt-submit":
+                    self.assertNotIn("decision", data)
 
     def test_cli_bounds_input_read_before_dispatch(self):
         class BoundedInput(io.StringIO):
