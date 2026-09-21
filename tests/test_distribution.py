@@ -35,7 +35,16 @@ RUNNER_LOCATOR = (
 # which is install corruption and still fails closed. It names the stage so a
 # consumer can tell it apart from a lifecycle decision.
 BOOTSTRAP_REASON = (
-    "AHK-HOOK-RUNTIME: Repair lifecycle runtime and retry. failed=stage:import-runtime"
+    "AHK-HOOK-RUNTIME: Repair lifecycle runtime and retry. "
+    "failed=stage:import-runtime,error:SyntaxError"
+)
+
+# A dispatch failure reached the same standalone renderer, but it is not an
+# import failure: the runtime loaded and then something in it raised. Calling
+# it an import failure sends a consumer looking for a broken install.
+DISPATCH_REASON = (
+    "AHK-HOOK-RUNTIME: Repair lifecycle runtime and retry. "
+    "failed=stage:dispatch-runtime,error:RuntimeError"
 )
 
 
@@ -251,16 +260,16 @@ class DistributionTests(unittest.TestCase):
         manifest = load_manifest()
 
         self.assertEqual(manifest["manifest_version"], 2)
-        self.assertEqual(manifest["toolkit_version"], "1.0.1")
+        self.assertEqual(manifest["toolkit_version"], "1.1.0")
         self.assertEqual(manifest["text_hash"], "utf8-lf-sha256-v1")
         self.assertIn(
-            '__version__ = "1.0.1"',
+            '__version__ = "1.1.0"',
             (ROOT / "src/agent_handoff_toolkit/__init__.py").read_text(
                 encoding="utf-8"
             ),
         )
         self.assertIn(
-            'version = "1.0.1"',
+            'version = "1.1.0"',
             (ROOT / "pyproject.toml").read_text(encoding="utf-8"),
         )
         self.assertEqual(manifest["record_schema_version"], 2)
@@ -1043,6 +1052,296 @@ class DistributionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(actual, expected)
 
+    def test_runner_catches_a_dispatch_failure_after_a_successful_import(
+        self,
+    ) -> None:
+        """The guarantee has to be closed under its own failures.
+
+        The bootstrap fallback covered the import and nothing after it, so a
+        fault raised by the very machinery that renders these notices escaped
+        the only handler positioned to catch it: no output, a traceback, and a
+        non-zero status on the one event that must never lose the user's
+        message.
+        """
+
+        with tempfile.TemporaryDirectory() as directory:
+            consumer = Path(directory)
+            runner = consumer / ".agent-handoff-toolkit" / "runner.py"
+            runner.parent.mkdir()
+            shutil.copyfile(ROOT / "distribution" / "runner.py", runner)
+            installed_source = runner.parent / "src" / "agent_handoff_toolkit"
+            shutil.copytree(ROOT / "src" / "agent_handoff_toolkit", installed_source)
+            (installed_source / "cli.py").write_text(
+                "def main(argv=None):\n"
+                "    raise RuntimeError('renderer unavailable')\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+
+            result = run_installed_command(
+                "python .agent-handoff-toolkit/runner.py hook "
+                "--platform claude --event user-prompt-submit",
+                consumer,
+                "{}",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            output = json.loads(result.stdout)
+            self.assertNotIn("decision", output)
+            self.assertEqual(
+                output["hookSpecificOutput"]["additionalContext"], DISPATCH_REASON
+            )
+
+    def test_a_malformed_gated_hook_command_never_exits_two(self) -> None:
+        """A corrupted managed command must not read as a denial.
+
+        The classifier accepted only one exact argument shape, so an extra or
+        reordered argument fell through to argparse, which exits 2 - the
+        host's block signal - on the one event that must never lose the
+        user's message.
+        """
+
+        for event, key in (
+            ("user-prompt-submit", "additionalContext"),
+            ("pre-tool-use", "permissionDecisionReason"),
+            ("stop", "reason"),
+        ):
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "distribution/runner.py",
+                    "hook",
+                    "--platform",
+                    "claude",
+                    "--event",
+                    event,
+                    "--unexpected",
+                ],
+                cwd=ROOT,
+                input="{}",
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+            with self.subTest(event=event):
+                self.assertEqual(result.returncode, 0, result.stderr)
+                data = json.loads(result.stdout)
+                reason = data.get(key) or data["hookSpecificOutput"][key]
+                self.assertIn("AHK-HOOK-RUNTIME", reason)
+                if event == "user-prompt-submit":
+                    self.assertNotIn("decision", data)
+
+        # The informational events the adapters also install decide nothing,
+        # so a malformed invocation of one is silent rather than a denial.
+        for event in ("session-start", "session-end", "post-tool-use"):
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "distribution/runner.py",
+                    "hook",
+                    "--platform",
+                    "claude",
+                    "--event",
+                    event,
+                    "--unexpected",
+                ],
+                cwd=ROOT,
+                input="{}",
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+            with self.subTest(event=event):
+                self.assertEqual(result.returncode, 0, result.stderr)
+                # Silent means silent: argparse writes its usage to stderr,
+                # and an informational hook that decides nothing should not
+                # be spraying diagnostics into a host's logs either.
+                self.assertEqual(result.stdout, "")
+                self.assertEqual(result.stderr, "")
+
+    def test_a_gated_hook_flooding_stdout_still_answers_once(self) -> None:
+        """An oversized response is a malfunction, not a response.
+
+        The cap compared the size written so far, so one enormous write was
+        stored whole and published, which is the case the cap exists for.
+        """
+
+        with tempfile.TemporaryDirectory() as directory:
+            consumer = Path(directory)
+            runner = consumer / ".agent-handoff-toolkit" / "runner.py"
+            runner.parent.mkdir()
+            shutil.copyfile(ROOT / "distribution" / "runner.py", runner)
+            installed_source = runner.parent / "src" / "agent_handoff_toolkit"
+            shutil.copytree(ROOT / "src" / "agent_handoff_toolkit", installed_source)
+            # One valid JSON object, far past the cap, written in one call.
+            # Invalid floods are already caught by the one-response gate, so
+            # only a valid oversized one exercises the cap itself.
+            flooding = (
+                "import sys\n\n\n"
+                "def main(argv=None):\n"
+                "    body = chr(97) * (4 << 20)\n"
+                '    sys.stdout.write("{" + chr(34) + "systemMessage" + chr(34)\n'
+                '                     + ":" + chr(34) + body + chr(34) + "}")\n'
+                "    return 0\n"
+            )
+            (installed_source / "cli.py").write_text(
+                flooding, encoding="utf-8", newline="\n"
+            )
+
+            result = run_installed_command(
+                "python .agent-handoff-toolkit/runner.py hook "
+                "--platform claude --event user-prompt-submit",
+                consumer,
+                "{}",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertLess(len(result.stdout), 4 << 20)
+            data = json.loads(result.stdout)
+            self.assertNotIn("decision", data)
+            self.assertIn(
+                "AHK-HOOK-RUNTIME",
+                data["hookSpecificOutput"]["additionalContext"],
+            )
+
+    def test_a_gated_hook_asked_for_help_still_answers_as_a_hook(self) -> None:
+        """`--help` on a gated invocation is not a hook response.
+
+        argparse writes plain help and exits zero, which the buffered path
+        published verbatim: a host expecting one JSON object got usage text.
+        Any abnormal exit of a gated hook now yields one structured notice.
+        """
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "distribution/runner.py",
+                "hook",
+                "--platform",
+                "claude",
+                "--event",
+                "user-prompt-submit",
+                "--help",
+            ],
+            cwd=ROOT,
+            input="{}",
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout)
+        self.assertNotIn("decision", data)
+        self.assertIn(
+            "AHK-HOOK-RUNTIME", data["hookSpecificOutput"]["additionalContext"]
+        )
+
+    def test_a_gated_dispatch_exiting_mid_write_publishes_one_response(
+        self,
+    ) -> None:
+        """SystemExit must not publish a half-written response either.
+
+        The exception path discarded partial output and substituted the
+        fallback; the SystemExit path published whatever had been written,
+        which for a gated event is a truncated object.
+        """
+
+        with tempfile.TemporaryDirectory() as directory:
+            consumer = Path(directory)
+            runner = consumer / ".agent-handoff-toolkit" / "runner.py"
+            runner.parent.mkdir()
+            shutil.copyfile(ROOT / "distribution" / "runner.py", runner)
+            installed_source = runner.parent / "src" / "agent_handoff_toolkit"
+            shutil.copytree(ROOT / "src" / "agent_handoff_toolkit", installed_source)
+            exiting = (
+                "import sys\n\n\n"
+                "def main(argv=None):\n"
+                '    sys.stdout.write(chr(123) + chr(34) + "decision")\n'
+                "    raise SystemExit(2)\n"
+            )
+            (installed_source / "cli.py").write_text(
+                exiting, encoding="utf-8", newline="\n"
+            )
+
+            result = run_installed_command(
+                "python .agent-handoff-toolkit/runner.py hook "
+                "--platform claude --event user-prompt-submit",
+                consumer,
+                "{}",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            data = json.loads(result.stdout)
+            self.assertNotIn("decision", data)
+            self.assertIn(
+                "AHK-HOOK-RUNTIME",
+                data["hookSpecificOutput"]["additionalContext"],
+            )
+
+    def test_runner_still_publishes_output_that_exits_through_systemexit(
+        self,
+    ) -> None:
+        """Buffering must not swallow ordinary output.
+
+        `argparse` prints help and raises `SystemExit`, which an
+        `except Exception` does not catch, so the buffered text was discarded
+        and the command printed nothing at all.
+        """
+
+        result = subprocess.run(
+            [sys.executable, "distribution/runner.py", "--help"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("usage:", result.stdout)
+
+    def test_runner_never_emits_two_responses_when_dispatch_fails_mid_write(
+        self,
+    ) -> None:
+        """One hook invocation is one response, or the host reads neither.
+
+        The outer boundary wrote its own object after whatever the dispatch
+        had already written, so a failure part-way through emitting a response
+        left a truncated object followed by a second one. Buffering the
+        dispatch means nothing is published until it returns.
+        """
+
+        with tempfile.TemporaryDirectory() as directory:
+            consumer = Path(directory)
+            runner = consumer / ".agent-handoff-toolkit" / "runner.py"
+            runner.parent.mkdir()
+            shutil.copyfile(ROOT / "distribution" / "runner.py", runner)
+            installed_source = runner.parent / "src" / "agent_handoff_toolkit"
+            shutil.copytree(ROOT / "src" / "agent_handoff_toolkit", installed_source)
+            partial = (
+                "import sys\n\n\n"
+                "def main(argv=None):\n"
+                '    sys.stdout.write(chr(123) + chr(34) + "decision")\n'
+                '    raise RuntimeError("failed mid-write")\n'
+            )
+            (installed_source / "cli.py").write_text(
+                partial,
+                encoding="utf-8",
+                newline="\n",
+            )
+
+            result = run_installed_command(
+                "python .agent-handoff-toolkit/runner.py hook "
+                "--platform claude --event user-prompt-submit",
+                consumer,
+                "{}",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            output = json.loads(result.stdout)
+            self.assertNotIn("decision", output)
+            self.assertEqual(
+                output["hookSpecificOutput"]["additionalContext"], DISPATCH_REASON
+            )
+
     def test_runner_classifies_all_hook_import_failures_at_the_bootstrap_boundary(
         self,
     ) -> None:
@@ -1079,13 +1378,24 @@ class DistributionTests(unittest.TestCase):
                                     }
                                 },
                             )
-                        else:
+                        elif event == "stop":
                             self.assertEqual(
                                 output,
                                 {
                                     "decision": "block",
                                     "reason": BOOTSTRAP_REASON,
                                 },
+                            )
+                        else:
+                            # Install corruption still fails closed for work,
+                            # but never for the user's own message: erasing a
+                            # prompt leaves nobody able to act on the reason,
+                            # and the runner cannot be repaired by a session
+                            # that cannot be spoken to.
+                            self.assertNotIn("decision", output)
+                            self.assertEqual(
+                                output["hookSpecificOutput"]["additionalContext"],
+                                BOOTSTRAP_REASON,
                             )
 
                 for event in ("session-start", "post-tool-use"):
@@ -1111,18 +1421,18 @@ class DistributionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             consumer = Path(directory)
             result = run_source_cli(
-                "install", "--apply", target=consumer, release="v1.0.1"
+                "install", "--apply", target=consumer, release="v1.1.0"
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            check = run_source_cli("sync", "--check", target=consumer, release="v1.0.1")
+            check = run_source_cli("sync", "--check", target=consumer, release="v1.1.0")
             self.assertEqual(check.returncode, 0, check.stderr)
             state = json.loads(
                 (consumer / ".agent-handoff-toolkit/install-state.json").read_text(
                     encoding="utf-8"
                 )
             )
-            self.assertEqual(state["release"], "v1.0.1")
-            self.assertEqual(state["toolkit_version"], "1.0.1")
+            self.assertEqual(state["release"], "v1.1.0")
+            self.assertEqual(state["toolkit_version"], "1.1.0")
             self.assertEqual(state["state_version"], 1)
             self.assertEqual(state["record_schema_version"], 2)
             self.assertEqual(
@@ -1313,11 +1623,11 @@ class DistributionTests(unittest.TestCase):
             legacy_record.write_bytes(legacy_bytes)
 
             upgraded = run_source_cli(
-                "sync", "--apply", target=consumer, release="v1.0.1"
+                "sync", "--apply", target=consumer, release="v1.1.0"
             )
             self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
             current = run_source_cli(
-                "sync", "--check", target=consumer, release="v1.0.1"
+                "sync", "--check", target=consumer, release="v1.1.0"
             )
 
             self.assertEqual(current.returncode, 0, current.stderr)
@@ -1344,8 +1654,8 @@ class DistributionTests(unittest.TestCase):
                     encoding="utf-8"
                 )
             )
-            self.assertEqual(state["release"], "v1.0.1")
-            self.assertEqual(state["toolkit_version"], "1.0.1")
+            self.assertEqual(state["release"], "v1.1.0")
+            self.assertEqual(state["toolkit_version"], "1.1.0")
             self.assertEqual(state["record_schema_version"], 2)
             installed_source = (
                 consumer / ".agent-handoff-toolkit" / "src" / "agent_handoff_toolkit"
@@ -1388,7 +1698,7 @@ class DistributionTests(unittest.TestCase):
                 json.dumps(modified), encoding="utf-8", newline="\n"
             )
             conflict = run_source_cli(
-                "sync", "--check", target=conflicted, release="v1.0.1"
+                "sync", "--check", target=conflicted, release="v1.1.0"
             )
             self.assertEqual(conflict.returncode, 2)
             self.assertIn("managed-json-modified", conflict.stdout)
@@ -1415,7 +1725,7 @@ class DistributionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             consumer = Path(directory)
             installed = run_source_cli(
-                "install", "--apply", target=consumer, release="v1.0.1"
+                "install", "--apply", target=consumer, release="v1.1.0"
             )
             self.assertEqual(installed.returncode, 0, installed.stderr)
             installed_configs = {

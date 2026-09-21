@@ -338,6 +338,8 @@ def render_hook_execution(
     if decision.kind is DecisionKind.ALLOW:
         return HookExecution()
     reason = _reason(decision)
+    if event is EventName.USER_PROMPT_SUBMIT:
+        return _prompt_notice(decision, reason)
     if decision.kind is DecisionKind.POLICY_FAILURE:
         warning = "AHK-STOP-CIRCUIT: Lifecycle policy failure; attempted completion is not compliant. A real external user turn is required."
         output = {"continue": False, "stopReason": warning, "systemMessage": warning}
@@ -382,6 +384,54 @@ def _runtime_issue(stage, error=None):
         "Lifecycle check failed.",
         _ACTIONS["AHK-HOOK-RUNTIME"],
         detail_codes=tuple(details),
+    )
+
+
+def _prompt_notice(decision, reason):
+    """Deliver the user's message and say what failed, deciding nothing.
+
+    A hook may decide only where the party it blocks can act on the feedback.
+    `PreToolUse` denies a tool call and `Stop` refuses a turn ending, and in
+    both the agent is still running and can correct. Blocking
+    `UserPromptSubmit` erases the user's message and starts no turn, so nobody
+    remains who could act on the reason string - and the session could not
+    recover, because the state bookkeeping that would clear the condition runs
+    only on a decision carrying a mutation, and no turn ever began to produce
+    one. A peer session publishing a record was enough to silence every other
+    session on its chain, permanently.
+
+    Nothing is given up by refusing to decide here. `evaluate_user_prompt`
+    returns `ALLOW` on every path; this event has no policy denial to lose.
+    The agent-addressed detail goes to `additionalContext` where the model can
+    act on it, and one sentence goes to `systemMessage` so the user knows the
+    toolkit reported something and their turn continued anyway.
+    """
+
+    codes = ", ".join(
+        dict.fromkeys(
+            issue.code if issue.code in _ACTIONS else "AHK-HOOK-RUNTIME"
+            for issue in decision.issues
+        )
+    )
+    sentence = (
+        f"Agent handoff toolkit reported {codes}; this prompt was delivered "
+        "and the session continues."
+        if codes
+        else "Agent handoff toolkit reported an issue; this prompt was "
+        "delivered and the session continues."
+    )
+    return HookExecution(
+        stdout=json.dumps(
+            {
+                "systemMessage": sentence,
+                "hookSpecificOutput": {
+                    "hookEventName": "UserPromptSubmit",
+                    "additionalContext": reason,
+                },
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
     )
 
 
@@ -894,65 +944,276 @@ def _pre_tool(event, snapshot, root, storage, raw_id):
     )
 
 
+def _reconcile_chain(storage, raw_id, snapshot):
+    """Bring a session's view of its own chain up to date, best effort.
+
+    Every worktree of a repository shares one lifecycle state root, so a peer
+    joined to the same authorization leaves this session one revision behind
+    the moment it publishes, and a peer that publishes a completion audit
+    leaves this session holding a lease on a finished chain. Both are ordinary
+    consequences of a supported configuration - `join` exists for it - and
+    neither is this session's fault, so neither may cost it anything more than
+    a refresh.
+
+    `_apply` does not reject every mutation from a session in this state; it
+    rejects one whose resulting `chain_revision` still differs from the live
+    chain. That is exactly why this runs first: the other prompt-path
+    mutations all preserve the stale value and would be refused, while this
+    one carries the live value and is accepted.
+
+    Releasing a completed lease preserves the previous external turn
+    reference, because the reentry that follows requires the new reference to
+    differ from the recorded one.
+    """
+
+    chain, session = snapshot.chain, snapshot.session
+    if chain is None or session.mode in _UNGATED:
+        return snapshot, None
+    completed = (
+        chain.status == "complete" and session.mode is not EnforcementMode.COMPLETE
+    )
+    if not completed and session.chain_revision == chain.targeted_revision:
+        return snapshot, None
+    mutated = replace(
+        session,
+        targeted_revision=session.targeted_revision + 1,
+        chain_revision=chain.targeted_revision,
+    )
+    if completed:
+        mutated = replace(mutated, mode=EnforcementMode.COMPLETE)
+    try:
+        updated = _commit(storage, raw_id, snapshot, LifecycleMutation(mutated))
+    except Exception as error:
+        # A failed reconciliation is survivable: the turn proceeds with stale
+        # bookkeeping rather than the session losing its only input channel.
+        return snapshot, _step_note("reconcile-chain", error)
+    if completed:
+        return updated, (
+            "AHK-CHAIN-COMPLETED: another session completed this authorization; "
+            "this session no longer holds it. Any further work needs a new "
+            "declaration."
+        )
+    return updated, (
+        "AHK-CHAIN-ADVANCED: another session advanced this authorization to "
+        f"revision {chain.targeted_revision}. Rebuild any successor in "
+        "progress against the current record before ending the turn."
+    )
+
+
+def _step_note(step, error):
+    """Name a best-effort step that failed, in the closed vocabulary only."""
+
+    name = type(error).__name__
+    detail = name if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", name) else "Exception"
+    return (
+        f"AHK-STEP-SKIPPED failed=step:{step},error:{detail.replace('_', '-')}: "
+        "lifecycle bookkeeping for this turn was skipped; the turn continues."
+    )
+
+
+def _merge_context(execution, notices):
+    """Fold best-effort notices into whatever context the turn already emits.
+
+    Both channels are preserved. Rebuilding through the context helper alone
+    dropped any `systemMessage` the inner output carried, which is the only
+    channel the user sees: the agent would be told what failed and the person
+    waiting on the turn would not.
+    """
+
+    if not notices:
+        return execution
+    message = "\n".join(notices)
+    sentence = None
+    if execution.stdout:
+        try:
+            data = json.loads(execution.stdout)
+            existing = data.get("hookSpecificOutput", {}).get("additionalContext")
+            if existing:
+                message = message + "\n" + existing
+            sentence = data.get("systemMessage")
+        except Exception:
+            pass
+    if sentence is None and any("AHK-STEP-SKIPPED" in note for note in notices):
+        sentence = (
+            "Agent handoff toolkit skipped some bookkeeping for this turn; "
+            "the prompt was delivered and the session continues."
+        )
+    if sentence is None:
+        # Not every notice is a malfunction. A reconciliation that worked is
+        # the common one, and announcing it to the user as skipped bookkeeping
+        # reported a fault every time a peer advanced the chain and everything
+        # went right. The agent is still told, on its own channel.
+        return _context("UserPromptSubmit", message)
+    output = {
+        "systemMessage": sentence,
+        "hookSpecificOutput": {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": message,
+        },
+    }
+    return HookExecution(
+        stdout=json.dumps(output, ensure_ascii=False, separators=(",", ":"))
+    )
+
+
 def _user_prompt(event, snapshot, storage, raw_id, root):
+    """Observe the turn without ever deciding against it.
+
+    Each step is attempted; a step that fails is named and the next one is
+    still attempted. The user's message is delivered either way, which is the
+    whole point: a state nobody enumerated degrades to a skipped step and a
+    notice, never to a session that cannot be spoken to.
+    """
+
+    notices = []
+    if event.external_user_turn:
+        # Wrapped as well as guarded internally: the internal guard covers the
+        # write, and this covers everything else in the step, so a fault
+        # deciding *whether* to reconcile is named as this step rather than
+        # escaping to the backstop and skipping the rest of the turn.
+        snapshot, notice = _attempt(
+            "reconcile-chain",
+            notices,
+            lambda: _reconcile_chain(storage, raw_id, snapshot),
+            (snapshot, None),
+        )
+        if notice is not None:
+            notices.append(notice)
+    # The individual steps name themselves; this is the backstop for anything
+    # raised between them, including by the notice machinery itself.
+    output = _attempt(
+        "prompt-path",
+        notices,
+        lambda: _user_prompt_steps(event, snapshot, storage, raw_id, root, notices),
+        HookExecution(),
+    )
+    return _merge_context(output, notices)
+
+
+def _declaration_kind(message):
+    """Name the enrollment a prompt asked for, if it asked for one."""
+
+    first_line = (message or "").split("\n", 1)[0]
+    if re.fullmatch(r"Continue from handoff: (.+)", first_line):
+        return "RESUME"
+    if re.fullmatch(r"Track: (.{3,200})", first_line):
+        return "TRACK"
+    return None
+
+
+def _attempt(step, notices, action, fallback):
+    """Run one best-effort step; name it and carry on if it fails."""
+
+    try:
+        return action()
+    except Exception as error:
+        notices.append(_step_note(step, error))
+        return fallback
+
+
+def _user_prompt_steps(event, snapshot, storage, raw_id, root, notices):
     session = snapshot.session
     pending = session.pending_correction_hmac
-    if (
-        event.external_user_turn
-        and pending
-        and session.correction_cycle_count > 0
-        and hmac.compare_digest(
+
+    def echoed():
+        # Classifying is part of this step. Deriving the challenge encodes the
+        # user's own message, which can raise on input the host accepted and
+        # UTF-8 does not - an unpaired surrogate is enough - and that fault
+        # belongs to this step rather than to the whole turn.
+        if not (
+            event.external_user_turn and pending and session.correction_cycle_count > 0
+        ):
+            return False
+        return hmac.compare_digest(
             pending,
             _correction_hmac(storage.secret, session, event.current_user_message),
         )
-    ):
-        _commit(
-            storage,
-            raw_id,
-            snapshot,
-            LifecycleMutation(
-                replace(
-                    session,
-                    targeted_revision=session.targeted_revision + 1,
-                    pending_correction_hmac=None,
-                )
-            ),
-        )
-        return HookExecution()
-    if not event.external_user_turn:
-        return HookExecution()
-    if session.worktree_baseline is None:
-        digest = worktree_digest(root)
-        if digest is not None:
-            snapshot = _commit(
+
+    if _attempt("correction-echo", notices, echoed, False):
+        cleared = _attempt(
+            "correction-echo",
+            notices,
+            lambda: _commit(
                 storage,
                 raw_id,
                 snapshot,
                 LifecycleMutation(
                     replace(
-                        snapshot.session,
+                        session,
+                        targeted_revision=session.targeted_revision + 1,
+                        pending_correction_hmac=None,
+                    )
+                ),
+            ),
+            None,
+        )
+        # Returning here is right when the echo was recorded: that turn is the
+        # correction, not new work. When it was not recorded, returning would
+        # also skip observing a real user turn on account of an unrelated
+        # storage failure, so the turn continues down the ordinary path.
+        if cleared is not None:
+            return HookExecution()
+        # The commit was refused, so the snapshot in hand is still the live
+        # one and the ordinary path can use it unchanged.
+    if not event.external_user_turn:
+        return HookExecution()
+    if session.worktree_baseline is None:
+        # Purely advisory: the Stop backstop reads it, and losing it costs one
+        # turn of that backstop rather than the turn itself.
+        def baseline(current=snapshot):
+            digest = worktree_digest(root)
+            if digest is None:
+                return current
+            return _commit(
+                storage,
+                raw_id,
+                current,
+                LifecycleMutation(
+                    replace(
+                        current.session,
                         worktree_baseline=digest,
-                        targeted_revision=snapshot.session.targeted_revision + 1,
+                        targeted_revision=current.session.targeted_revision + 1,
                     )
                 ),
             )
-            session = snapshot.session
+
+        snapshot = _attempt("worktree-baseline", notices, baseline, snapshot)
+        session = snapshot.session
     if event.current_user_reference == session.current_external_user_turn_reference:
         return HookExecution()
     if session.mode is EnforcementMode.COMPLETE:
-        reset = evaluate_user_prompt(event, snapshot)
-        # evaluate_user_prompt carries the advisory baseline and the
-        # once-per-session flag across the reentry; only the fresh bootstrap
-        # challenge is added here.
-        mutation = replace(
-            reset.mutation,
-            session=replace(
-                reset.mutation.session,
-                bootstrap_challenge="challenge-" + secrets.token_hex(16),
-            ),
-        )
-        snapshot = _commit(storage, raw_id, snapshot, mutation)
+
+        def reenter(current=snapshot):
+            reset = evaluate_user_prompt(event, current)
+            # evaluate_user_prompt carries the advisory baseline and the
+            # once-per-session flag across the reentry; only the fresh
+            # bootstrap challenge is added here.
+            mutation = replace(
+                reset.mutation,
+                session=replace(
+                    reset.mutation.session,
+                    bootstrap_challenge="challenge-" + secrets.token_hex(16),
+                ),
+            )
+            return _commit(storage, raw_id, current, mutation)
+
+        snapshot = _attempt("chain-reentry", notices, reenter, snapshot)
         session = snapshot.session
+        if session.mode is EnforcementMode.COMPLETE:
+            # Reentry did not take. Observing the turn against a released
+            # chain is not meaningful, and the next turn reenters cleanly.
+            # The turn is not silent about it, though: reentry is what would
+            # have made this session eligible to enroll, so a declaration
+            # arriving on it goes unmet, and `Stop` allows a COMPLETE session
+            # unconditionally. Saying nothing would let declared work proceed
+            # with no handoff obligation and no one told.
+            declaration = _declaration_kind(event.current_user_message)
+            if declaration is not None:
+                notices.append(
+                    f"AHK-{declaration}-FAILED failed=step:chain-reentry: this "
+                    "session is untracked. Tell the user."
+                )
+            return HookExecution()
     proposal = session.pending_transition_reference
     preceding = None
     if (
@@ -965,35 +1226,106 @@ def _user_prompt(event, snapshot, storage, raw_id, root):
     ):
         preceding = proposal.assistant_turn_reference
     service = LifecycleService(storage, raw_id)
-    updated = service.observe_user_turn(
-        event,
-        preceding_assistant_turn_reference=preceding,
-        expected_chain_revision=snapshot.chain.targeted_revision
-        if snapshot.chain
-        else 0,
-        expected_session_revision=session.targeted_revision,
-    )
-    if updated.session.pending_correction_hmac is not None:
-        updated = _commit(
-            storage,
-            raw_id,
-            updated,
-            LifecycleMutation(
-                replace(
-                    updated.session,
-                    targeted_revision=updated.session.targeted_revision + 1,
-                    pending_correction_hmac=None,
-                )
-            ),
+
+    def observe():
+        return service.observe_user_turn(
+            event,
+            preceding_assistant_turn_reference=preceding,
+            expected_chain_revision=snapshot.chain.targeted_revision
+            if snapshot.chain
+            else 0,
+            expected_session_revision=session.targeted_revision,
         )
+
+    # This step records more than the turn reference: it classifies a
+    # transition approval and can install a successor chain. Losing it costs
+    # the turn's authorization-bearing bookkeeping, so the steps that depend
+    # on it do not run, and a user's approval may have to be reissued rather
+    # than merely waited out.
+    updated = _attempt("observe-turn", notices, observe, None)
+    if updated is None:
+        # Enrollment is deliberately *not* independent of observation.
+        # `register_root` binds the new authorization to whatever turn
+        # reference is already stored, so enrolling after a failed
+        # observation would name the previous turn as the authority for this
+        # one - worse than not enrolling. It is skipped, and an explicit
+        # declaration that was eligible and went unmet is said out loud, in
+        # the words the existing enrollment failures already use. A session
+        # that was never eligible to enroll is not told it is untracked,
+        # because it is not.
+        if session.mode in _UNGATED:
+            declaration = _declaration_kind(event.current_user_message)
+            if declaration is not None:
+                notices.append(
+                    f"AHK-{declaration}-FAILED failed=step:observe-turn: this "
+                    "session is untracked. Tell the user."
+                )
+        return HookExecution()
+    if updated.session.pending_correction_hmac is not None:
+
+        def clear(current=updated):
+            return _commit(
+                storage,
+                raw_id,
+                current,
+                LifecycleMutation(
+                    replace(
+                        current.session,
+                        targeted_revision=current.session.targeted_revision + 1,
+                        pending_correction_hmac=None,
+                    )
+                ),
+            )
+
+        # Its own step: clearing a spent challenge is unrelated to recording
+        # the answer to a question, and a failure here used to discard that
+        # answer as collateral.
+        updated = _attempt("correction-clear", notices, clear, updated)
     request = updated.session.pending_decision_reference
-    if request is not None and _decision_resolved(event.current_user_message, request):
-        decision = evaluate_user_prompt(event, updated, decision_resolved=True)
-        updated = _commit(storage, raw_id, updated, decision.mutation)
+    if request is not None:
+
+        def resolve(current=updated):
+            # Classifying the answer belongs inside the step: deciding whether
+            # the prompt resolves the question can fail just as recording it
+            # can, and a fault there is this step's, not the whole turn's.
+            if not _decision_resolved(event.current_user_message, request):
+                return current
+            decision = evaluate_user_prompt(event, current, decision_resolved=True)
+            return _commit(storage, raw_id, current, decision.mutation)
+
+        # Recording the answer is its own step: losing it must not cost the
+        # turn, and the session re-asks rather than proceeding as if answered.
+        updated = _attempt("decision-answer", notices, resolve, updated)
     # The pointer line is the whole resume decision. The prompt body was never
     # the evidence - the record's digest and the live chain are - and requiring
     # the paste to match the renderer byte for byte meant one stray space left
     # the session untracked with nothing said to anyone.
+    eligible = updated.session.mode in _UNGATED
+    declared = _declaration_kind(event.current_user_message) if eligible else None
+    if declared is not None:
+        # Enrollment is its own step. `_resume_chain` and `_track_root` name
+        # their own expected failures, but an unexpected one here reached the
+        # generic backstop and reported `step:prompt-path`, leaving a session
+        # the user explicitly asked to track with no word that it is not.
+        enrolled = _attempt(
+            "enroll",
+            notices,
+            lambda: _enroll(event, updated, service, storage, root),
+            None,
+        )
+        if enrolled is not None:
+            return enrolled
+        notices.append(
+            f"AHK-{declared}-FAILED failed=step:enroll: this session is "
+            "untracked. Tell the user."
+        )
+        return HookExecution()
+    return _pending_clarification(updated)
+
+
+def _enroll(event, updated, service, storage, root):
+    """Register the enrollment the prompt declared, or say why it did not."""
+
     first_line = (event.current_user_message or "").split("\n", 1)[0]
     match = re.fullmatch(r"Continue from handoff: (.+)", first_line)
     if match and updated.session.mode in _UNGATED:
@@ -1035,6 +1367,12 @@ def _user_prompt(event, snapshot, storage, raw_id, root):
             "completion audit; the rest of the prompt is the work."
             + _credentials(root, storage, updated),
         )
+    return HookExecution()
+
+
+def _pending_clarification(updated):
+    """Ask for the outstanding answer, whatever else the turn did."""
+
     remaining_proposal = updated.session.pending_transition_reference
     if updated.session.pending_decision_reference or (
         remaining_proposal and remaining_proposal.status == "pending"

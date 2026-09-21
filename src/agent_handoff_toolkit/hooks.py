@@ -30,6 +30,45 @@ _SESSION_START_REMINDER = (
 )
 
 
+PROMPT_NOTICE_SENTENCE = (
+    "Agent handoff toolkit reported a fault; this prompt was delivered and "
+    "the session continues."
+)
+
+
+def hook_failure_output(event: str, reason: str) -> dict[str, Any]:
+    """Shape one boundary failure for a host, deciding nothing on a prompt.
+
+    Shared by every failure boundary above the lifecycle adapter, including
+    the ones that exist because that adapter could not be loaded, so it must
+    stay free of lifecycle imports. `event` is the compact spelling both
+    callers already normalize to.
+
+    A denied tool call and a refused turn ending both leave the agent running
+    and able to act on the reason. Blocking `UserPromptSubmit` erases the
+    user's message and starts no turn, which leaves nobody who can act on it -
+    so a fault reports itself there instead of deciding.
+    """
+
+    if event == "pretooluse":
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason,
+            }
+        }
+    if event == "userpromptsubmit":
+        return {
+            "systemMessage": PROMPT_NOTICE_SENTENCE,
+            "hookSpecificOutput": {
+                "hookEventName": "UserPromptSubmit",
+                "additionalContext": reason,
+            },
+        }
+    return {"decision": "block", "reason": reason}
+
+
 def hook_runtime_reason(stage: str, error: BaseException | None = None) -> str:
     """Render an opaque runtime fault with its failing stage and exception.
 
@@ -316,14 +355,5 @@ def run_hook(
         # stage and the exception class, both fixed identifiers - never the
         # message, which could carry host content.
         reason = hook_runtime_reason("load-adapter", error)
-        if name == "pretooluse":
-            value = {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": reason,
-                }
-            }
-        else:
-            value = {"decision": "block", "reason": reason}
+        value = hook_failure_output(name, reason)
         return HookExecution(stdout=json.dumps(value, separators=(",", ":")))

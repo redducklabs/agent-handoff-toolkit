@@ -6,7 +6,37 @@ This repository provides a shared contract, deterministic validation and renderi
 
 ## Status
 
-Version 1.0.1 fixes two faults that could stop the toolkit running on a host
+Version 1.1.0 stops the toolkit from being able to silence a session.
+`UserPromptSubmit` is no longer a decision point, for any cause. A hook may
+decide only where the party it blocks can still act on the feedback: a denied
+tool call and a refused turn ending both leave the agent running and able to
+correct, while blocking a prompt erases the user's message and starts no
+turn — and the bookkeeping that would clear the condition runs only on a
+decision carrying a mutation, which no turn ever begins to produce. A peer
+session publishing a record was enough to silence every other session on its
+chain, permanently, with the corrective action it printed unavailable in
+exactly that state. Nothing was given up by declining to decide there: that
+event never had a policy denial.
+
+Its bookkeeping is now best effort. Each step is attempted, a step that fails
+is named in the delivered context, and the turn proceeds, so a state the
+toolkit does not anticipate costs a skipped step rather than a session nobody
+can talk to. A session whose peer advanced or completed the chain reconciles
+on its next prompt, `lifecycle inspect` works in the state that prescribes it,
+and the bootstrap runner delivers prompts even when no package module can be
+imported. Enrollment is deliberately not independent: a `Track:` or
+`Continue from handoff:` declaration registers only when its own turn was
+observed, because authorization binds to the stored turn reference, and a
+declaration that could not be enrolled says the session is untracked.
+`PreToolUse` and `Stop` are unchanged and still fail closed for tracked work.
+
+One way to stall a session remains and is not fixed here: a registry lock held
+by a live process hangs a hook rather than blocking it. Bounding that needs
+non-blocking acquisition on both platforms and an explicit unknown-outcome
+result from a compare-and-swap that may already have published, which is its
+own change.
+
+Version 1.0.1 fixed two faults that could stop the toolkit running on a host
 without reporting anything. `_LOCK_CONTENTION_ERRNOS` named `errno.EDEADLOCK`
 directly, which is a Linux and Windows alias macOS does not define, so
 importing `lifecycle_storage` raised `AttributeError` and every module that
@@ -171,7 +201,10 @@ handoff-toolkit acceptance --platform claude|codex --scratch <empty-scratch-dire
 ```
 
 Advisory automatic hooks fail open so they cannot break an agent session.
-Tracked lifecycle hooks (`UserPromptSubmit`, `PreToolUse`, and `Stop`) fail closed.
+Tracked lifecycle hooks fail closed at `PreToolUse` and `Stop`.
+`UserPromptSubmit` decides nothing, for any cause: it reports and delivers the
+message, because a block there erases the user's own words and leaves nobody
+able to act on the reason.
 Explicit commands fail closed and return a non-zero exit code for invalid input.
 
 `acceptance` is an opt-in local host smoke check. It creates and removes the
@@ -188,16 +221,16 @@ disposable consumer can be installed from a verified local release source.
 
 ## Consumer installation
 
-Check out the public v1.0.1 release, inspect the proposed changes, then apply
+Check out the public v1.1.0 release, inspect the proposed changes, then apply
 them from that checkout:
 
 ```powershell
-git clone --branch v1.0.1 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
+git clone --branch v1.1.0 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
 Set-Location agent-handoff-toolkit
-python distribution/runner.py install --target <consumer-repository> --release v1.0.1 --dry-run
-python distribution/runner.py install --target <consumer-repository> --release v1.0.1 --apply
-python distribution/runner.py sync --target <consumer-repository> --release v1.0.1 --check
-python distribution/runner.py sync --target <consumer-repository> --release v1.0.1 --apply
+python distribution/runner.py install --target <consumer-repository> --release v1.1.0 --dry-run
+python distribution/runner.py install --target <consumer-repository> --release v1.1.0 --apply
+python distribution/runner.py sync --target <consumer-repository> --release v1.1.0 --check
+python distribution/runner.py sync --target <consumer-repository> --release v1.1.0 --apply
 ```
 
 Run install and sync only in an isolated, clean Git worktree with no concurrent

@@ -292,16 +292,35 @@ class LifecycleService:
         return self.storage.load_snapshot(self.session_id)
 
     def consume_control(self):
+        """Spend the control capability, reconciling the chain view it needs.
+
+        `inspect` runs this first, and a session whose peer has advanced or
+        completed the chain could not get past it: the mutation preserved the
+        stale `chain_revision`, `_apply` refused it, and the command exited
+        `AHK-STATE-STALE`. That is the command the blocking feedback tells a
+        session to run, so the prescribed recovery was unavailable in exactly
+        the state that prescribes it. Carrying the live revision - and, for a
+        chain that has since completed, releasing the lease the same way the
+        prompt path does - makes the diagnosis reachable without deciding
+        anything about the work.
+        """
+
         if self._control is None:
             raise ValueError("control binding required")
         snapshot = self._load_snapshot()
-        return self._commit(
-            snapshot,
-            replace(
-                snapshot.session,
-                targeted_revision=snapshot.session.targeted_revision + 1,
-            ),
+        session = replace(
+            snapshot.session,
+            targeted_revision=snapshot.session.targeted_revision + 1,
         )
+        chain = snapshot.chain
+        if chain is not None and session.mode not in _UNGATED:
+            session = replace(session, chain_revision=chain.targeted_revision)
+            if (
+                chain.status == "complete"
+                and session.mode is not EnforcementMode.COMPLETE
+            ):
+                session = replace(session, mode=EnforcementMode.COMPLETE)
+        return self._commit(snapshot, session)
 
     def _snapshot(self, expected_session_revision, expected_chain_revision=None):
         for revision in (expected_session_revision, expected_chain_revision):
@@ -388,7 +407,14 @@ class LifecycleService:
             # The exact message a tracked session may end a turn on without
             # authoring a record. It is published here rather than in blocking
             # feedback, which carries issue codes and bounded identifiers only.
-            "progress_response": progress_response(chain) if chain else None,
+            # A completed chain has no such message: reporting work in
+            # progress there would tell a session that just reconciled onto a
+            # finished authorization something plainly untrue.
+            "progress_response": (
+                progress_response(chain)
+                if chain is not None and chain.status == "active"
+                else None
+            ),
             "issue_codes": (
                 ["AHK-STATE-STALE"]
                 if chain and session.chain_revision != chain.targeted_revision

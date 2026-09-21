@@ -257,6 +257,93 @@ class OperationsTests(unittest.TestCase):
         ):
             self.assertNotEqual(main(args), 0)
 
+    def test_inspect_recovers_a_session_whose_peer_advanced_the_chain(self):
+        """The prescribed recovery has to work in the state that prescribes it.
+
+        Blocking feedback tells a stale session to reload `lifecycle inspect`.
+        `inspect` consumes its control capability first, and that mutation
+        preserved the stale `chain_revision`, so `_apply` refused it and the
+        command exited `AHK-STATE-STALE`. The session was told to run the one
+        command it could not run.
+        """
+
+        registered = self.register()
+        authorization = registered.chain.authorization_id
+        self.seed("session-2")
+        peer = LifecycleService(self.storage, "session-2")
+        peer.join(
+            challenge="challenge-001",
+            authorization_id=authorization,
+            expected_chain_revision=registered.chain.targeted_revision,
+            expected_session_revision=1,
+        )
+        # The peer publishes, which advances the chain and leaves session-1
+        # exactly one revision behind.
+        state = self.storage.load_snapshot("session-2")
+        advanced = replace(
+            state.chain, targeted_revision=state.chain.targeted_revision + 1
+        )
+        self.storage.compare_and_swap(
+            "session-2",
+            state.chain.targeted_revision,
+            state.session.targeted_revision,
+            LifecycleMutation(
+                replace(
+                    state.session,
+                    targeted_revision=state.session.targeted_revision + 1,
+                    chain_revision=advanced.targeted_revision,
+                ),
+                advanced,
+            ),
+        )
+        stale = self.storage.load_snapshot("session-1")
+        self.assertNotEqual(stale.session.chain_revision, stale.chain.targeted_revision)
+        service = LifecycleService.for_control(
+            self.storage,
+            stale.session.session_key,
+            self.storage.control_capability(stale.session),
+            stale.session.targeted_revision,
+        )
+        service.consume_control()
+        report = service.inspect()
+        self.assertEqual(report["chain_revision"], advanced.targeted_revision)
+        self.assertIsNotNone(report["progress_response"])
+
+        # The same command has to work once that chain is finished, and must
+        # not report work in progress on work that is done.
+        state = self.storage.load_snapshot("session-2")
+        completed = replace(
+            state.chain,
+            targeted_revision=state.chain.targeted_revision + 1,
+            status="complete",
+        )
+        self.storage.compare_and_swap(
+            "session-2",
+            state.chain.targeted_revision,
+            state.session.targeted_revision,
+            LifecycleMutation(
+                replace(
+                    state.session,
+                    targeted_revision=state.session.targeted_revision + 1,
+                    chain_revision=completed.targeted_revision,
+                    mode=EnforcementMode.COMPLETE,
+                ),
+                completed,
+            ),
+        )
+        stranded = self.storage.load_snapshot("session-1")
+        released = LifecycleService.for_control(
+            self.storage,
+            stranded.session.session_key,
+            self.storage.control_capability(stranded.session),
+            stranded.session.targeted_revision,
+        )
+        released.consume_control()
+        finished = released.inspect()
+        self.assertEqual(finished["chain_revision"], completed.targeted_revision)
+        self.assertEqual(finished["mode"], EnforcementMode.COMPLETE.value)
+        self.assertIsNone(finished["progress_response"])
+
     def test_control_service_register_and_inspect_rotate_derived_capability(self):
         snapshot = self.storage.load_snapshot("session-1")
         key = snapshot.session.session_key

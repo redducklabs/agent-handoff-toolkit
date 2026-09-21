@@ -14,6 +14,7 @@ from typing import Sequence
 from .acceptance import AcceptancePrerequisiteError, format_result, run_acceptance
 from .hooks import (
     MAX_HOOK_INPUT_BYTES,
+    hook_failure_output,
     hook_runtime_reason,
     run_hook,
 )
@@ -404,6 +405,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
 
     if args.command == "hook":
+        published = False
         try:
             output = run_hook(
                 args.platform,
@@ -412,11 +414,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 _repository_root(Path.cwd()),
             )
             sys.stdout.write(output.stdout)
-            sys.stderr.write(output.stderr)
             sys.stdout.flush()
+            # One invocation is one response. Past this point the host has the
+            # answer, so a later failure - writing the advisory channel, say -
+            # must not append a second object beside the first.
+            published = True
+            sys.stderr.write(output.stderr)
             sys.stderr.flush()
             return output.exit_code
         except Exception as error:
+            if published:
+                return 0
             # Exit 2 is the host's block signal: it denies the tool, erases the
             # prompt, or refuses the stop, and is indistinguishable from a
             # deliberate denial. `run_hook` already renders every decision it
@@ -426,16 +434,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if event not in {"stop", "pretooluse", "userpromptsubmit"}:
                 return 0
             reason = hook_runtime_reason("dispatch-hook", error)
-            if event == "pretooluse":
-                value = {
-                    "hookSpecificOutput": {
-                        "hookEventName": "PreToolUse",
-                        "permissionDecision": "deny",
-                        "permissionDecisionReason": reason,
-                    }
-                }
-            else:
-                value = {"decision": "block", "reason": reason}
+            value = hook_failure_output(event, reason)
             sys.stdout.write(json.dumps(value, separators=(",", ":")))
             sys.stdout.flush()
             return 0

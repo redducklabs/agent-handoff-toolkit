@@ -254,6 +254,39 @@ class NormalizationTests(unittest.TestCase):
             self.assertIn("policy failure", data["systemMessage"].lower())
             self.assertNotIn("decision", data)
 
+    def test_no_prompt_decision_of_any_kind_reaches_a_host(self):
+        """The renderer is the chokepoint, so it must hold for every kind.
+
+        `POLICY_FAILURE` is reachable only from `Stop` today, but the renderer
+        does not restrict it by event, and an invariant that depends on no
+        caller ever changing is not an invariant.
+        """
+
+        issue = LifecycleIssue(
+            "AHK-STOP-WORK", "Work remains.", "Continue authorized work."
+        )
+        for host in ("claude", "codex"):
+            for kind in (DecisionKind.BLOCK, DecisionKind.POLICY_FAILURE):
+                with self.subTest(host=host, kind=kind):
+                    output = render_hook_execution(
+                        host,
+                        EventName.USER_PROMPT_SUBMIT,
+                        LifecycleDecision(kind, (issue,)),
+                    )
+                    self.assertEqual(output.exit_code, 0)
+                    self.assertEqual(output.stderr, "")
+                    data = json.loads(output.stdout)
+                    self.assertNotIn("decision", data)
+                    self.assertNotIn("continue", data)
+                    self.assertEqual(
+                        data["hookSpecificOutput"]["hookEventName"],
+                        "UserPromptSubmit",
+                    )
+                    self.assertIn(
+                        "AHK-STOP-WORK",
+                        data["hookSpecificOutput"]["additionalContext"],
+                    )
+
     def test_detail_codes_never_cost_an_issue_its_line(self):
         """Detail is additional; it never displaces a code or its action."""
 
@@ -1866,6 +1899,387 @@ class EnforcementTests(unittest.TestCase):
             self.invoke(session_id="joined", last_assistant_message=successor),
             "AHK-STOP-STALE",
         )
+
+    def test_a_peer_publication_never_silences_the_joined_session(self):
+        """A peer advancing the chain must not erase another session's prompt.
+
+        Blocking a `Stop` leaves the agent running and able to act on the
+        feedback. Blocking `UserPromptSubmit` destroys the user's message and
+        starts no turn, so nobody is left who can act on it - and the session
+        could not recover, because the reconciliation bookkeeping runs only on
+        a decision carrying a mutation, and no turn ever began to produce one.
+        The prompt is delivered and the session reconciles instead.
+        """
+
+        self.register()
+        path, text, message = self.record()
+        self.invoke(last_assistant_message=message)
+        self.invoke(
+            "UserPromptSubmit",
+            session_id="joined",
+            prompt=render_resume_prompt(path, path.read_text(encoding="utf-8")),
+        )
+        predecessor = {
+            "record_id": "first",
+            "path": path.as_posix(),
+            "sha256": record_digest(text),
+        }
+        _, _, successor = self.record(name="second", predecessor=predecessor)
+        self.assertEqual(self.invoke(last_assistant_message=successor), HookExecution())
+        output = self.invoke(
+            "UserPromptSubmit",
+            session_id="joined",
+            turn_id="turn-2",
+            prompt="What is the current status?",
+        )
+        self.assertEqual(output.exit_code, 0)
+        self.assertEqual(output.stderr, "")
+        data = json.loads(output.stdout) if output.stdout else {}
+        self.assertNotIn("decision", data)
+        self.assertNotIn("continue", data)
+        context = data["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("AHK-CHAIN-ADVANCED", context)
+        # Reconciling worked. Telling the user the toolkit skipped bookkeeping
+        # would report a malfunction on the ordinary path.
+        self.assertNotIn("systemMessage", data)
+        joined = self.storage.load_snapshot("joined")
+        self.assertEqual(joined.session.chain_revision, joined.chain.targeted_revision)
+
+    def test_a_declaration_that_cannot_be_observed_is_never_enrolled_silently(self):
+        """Enrollment is not independent of observation, and must not be.
+
+        `register_root` binds the new authorization to whatever external turn
+        reference is already stored, so enrolling after a failed observation
+        would name the previous turn as the authority for this one. Skipping
+        it is right; skipping it quietly is not, because the user asked for
+        tracking in so many words.
+        """
+
+        for index, (prompt, code) in enumerate(
+            (
+                ("Track: ship the reconciliation fix", "AHK-TRACK-FAILED"),
+                (
+                    "Continue from handoff: D:/repo/handoffs/first.md",
+                    "AHK-RESUME-FAILED",
+                ),
+            )
+        ):
+            with self.subTest(code=code):
+                with patch(
+                    "agent_handoff_toolkit.hook_adapters.LifecycleService"
+                    ".observe_user_turn",
+                    side_effect=StaleLifecycleState(
+                        "session requires chain reconciliation"
+                    ),
+                ):
+                    output = self.invoke(
+                        "UserPromptSubmit",
+                        turn_id=f"turn-7-{index}",
+                        prompt=prompt,
+                    )
+                self.assertEqual(output.exit_code, 0)
+                data = json.loads(output.stdout)
+                self.assertNotIn("decision", data)
+                context = data["hookSpecificOutput"]["additionalContext"]
+                self.assertIn(code, context)
+                self.assertIn("untracked", context)
+                self.assertEqual(
+                    self.storage.load_snapshot("session-1").session.mode,
+                    EnforcementMode.OPEN,
+                )
+
+    def test_a_tracked_session_is_never_told_that_it_is_untracked(self):
+        """The untracked warning has to be true when it is emitted.
+
+        Enrollment is only ever eligible for a session that has registered no
+        root. Keying the warning off the prompt text alone told a tracked
+        session that it was untracked whenever a turn's bookkeeping failed and
+        the message happened to start with the declaration prefix.
+        """
+
+        self.register()
+        with patch(
+            "agent_handoff_toolkit.hook_adapters.LifecycleService.observe_user_turn",
+            side_effect=StaleLifecycleState("session requires chain reconciliation"),
+        ):
+            output = self.invoke(
+                "UserPromptSubmit",
+                turn_id="turn-8",
+                prompt="Track: an unrelated second goal",
+            )
+        context = json.loads(output.stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("step:observe-turn", context)
+        self.assertNotIn("untracked", context)
+
+    def test_a_failed_step_is_named_as_itself_and_not_as_a_later_one(self):
+        """A report that names the wrong stage is worse than a vague one.
+
+        Wrapping the whole sequence in one attempt labelled every failure
+        `observe-turn`, including failures that happened before observation
+        was reached, and skipped the independent steps that follow.
+        """
+
+        self.register()
+        path, text, message = self.record()
+        self.invoke(last_assistant_message=message)
+        self.invoke(
+            "UserPromptSubmit",
+            session_id="joined",
+            prompt=render_resume_prompt(path, path.read_text(encoding="utf-8")),
+        )
+        predecessor = {
+            "record_id": "first",
+            "path": path.as_posix(),
+            "sha256": record_digest(text),
+        }
+        _, _, audit = self.record(
+            kind="completion-audit", name="final", predecessor=predecessor
+        )
+        self.invoke(last_assistant_message=audit)
+        with patch(
+            "agent_handoff_toolkit.hook_adapters.evaluate_user_prompt",
+            side_effect=RuntimeError("reentry unavailable"),
+        ):
+            output = self.invoke(
+                "UserPromptSubmit",
+                session_id="joined",
+                turn_id="turn-4",
+                prompt="Anything at all",
+            )
+        self.assertEqual(output.exit_code, 0)
+        data = json.loads(output.stdout)
+        self.assertNotIn("decision", data)
+        context = data["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("step:chain-reentry", context)
+        self.assertNotIn("step:observe-turn", context)
+
+    def test_a_failing_reconciliation_still_delivers_the_prompt(self):
+        """Reconciliation is an optimisation, not a precondition.
+
+        If the refresh itself cannot be written, the turn proceeds with stale
+        bookkeeping. That is a degraded turn; losing the input channel is not.
+        """
+
+        self.register()
+        path, text, message = self.record()
+        self.invoke(last_assistant_message=message)
+        self.invoke(
+            "UserPromptSubmit",
+            session_id="joined",
+            prompt=render_resume_prompt(path, path.read_text(encoding="utf-8")),
+        )
+        predecessor = {
+            "record_id": "first",
+            "path": path.as_posix(),
+            "sha256": record_digest(text),
+        }
+        _, _, successor = self.record(name="second", predecessor=predecessor)
+        self.invoke(last_assistant_message=successor)
+        with patch(
+            "agent_handoff_toolkit.hook_adapters._commit",
+            side_effect=StaleLifecycleState("targeted lifecycle revision changed"),
+        ):
+            output = self.invoke(
+                "UserPromptSubmit",
+                session_id="joined",
+                turn_id="turn-5",
+                prompt="Still here?",
+            )
+        self.assertEqual(output.exit_code, 0)
+        data = json.loads(output.stdout)
+        self.assertNotIn("decision", data)
+        self.assertIn(
+            "step:reconcile-chain",
+            data["hookSpecificOutput"]["additionalContext"],
+        )
+
+    def test_an_unexpected_enrollment_failure_still_says_untracked(self):
+        """`_resume_chain` and `_track_root` name their expected failures.
+
+        An unexpected one reached the generic backstop and reported
+        `step:prompt-path`, so a session the user explicitly asked to track
+        was left untracked with nobody told.
+        """
+
+        with patch(
+            "agent_handoff_toolkit.hook_adapters._track_root",
+            side_effect=RuntimeError("registration unavailable"),
+        ):
+            output = self.invoke(
+                "UserPromptSubmit",
+                turn_id="turn-11",
+                prompt="Track: a goal the toolkit cannot register",
+            )
+        self.assertEqual(output.exit_code, 0)
+        data = json.loads(output.stdout)
+        self.assertNotIn("decision", data)
+        context = data["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("step:enroll", context)
+        self.assertIn("AHK-TRACK-FAILED", context)
+        self.assertIn("untracked", context)
+
+    def test_a_failed_correction_classification_does_not_cost_the_turn(self):
+        """Deriving the challenge encodes the user's own message.
+
+        That can raise on input the host accepted and UTF-8 does not, and the
+        classification sat outside the step, so an unrelated fault skipped
+        every later step including observing the turn.
+        """
+
+        self.register()
+        with patch(
+            "agent_handoff_toolkit.hook_adapters._correction_hmac",
+            side_effect=UnicodeEncodeError("utf-8", "", 0, 1, "surrogates"),
+        ):
+            output = self.invoke("UserPromptSubmit", turn_id="turn-12")
+        self.assertEqual(output.exit_code, 0)
+        data = json.loads(output.stdout) if output.stdout else {}
+        self.assertNotIn("decision", data)
+        # The later step still ran: the turn is observed despite the fault.
+        session = self.storage.load_snapshot("session-1").session
+        self.assertEqual(session.current_external_user_turn_reference, "turn-12")
+
+    def test_a_failure_between_steps_still_delivers_the_prompt(self):
+        """The backstop covers what the individual steps do not.
+
+        Each step names itself, but something has to hold when the failure is
+        between them - or inside the machinery that builds the notices.
+        """
+
+        with patch(
+            "agent_handoff_toolkit.hook_adapters._user_prompt_steps",
+            side_effect=RuntimeError("anything at all"),
+        ):
+            output = self.invoke("UserPromptSubmit", turn_id="turn-6")
+        self.assertEqual(output.exit_code, 0)
+        self.assertEqual(output.stderr, "")
+        data = json.loads(output.stdout)
+        self.assertNotIn("decision", data)
+        self.assertNotIn("continue", data)
+        self.assertIn(
+            "step:prompt-path", data["hookSpecificOutput"]["additionalContext"]
+        )
+
+    def test_reconciling_does_not_let_a_stale_successor_publish(self):
+        """The one test that proves liveness was not bought with lineage.
+
+        Reconciliation refreshes what a session believes about its chain, so
+        the question it raises is whether a draft written against the old
+        predecessor can now land. It cannot: the revision a candidate carries
+        is stamped at Stop, and the real gate is predecessor identity - record
+        id, basename and digest against the chain's current record.
+        """
+
+        self.register()
+        path, text, message = self.record()
+        self.invoke(last_assistant_message=message)
+        self.invoke(
+            "UserPromptSubmit",
+            session_id="joined",
+            prompt=render_resume_prompt(path, path.read_text(encoding="utf-8")),
+        )
+        predecessor = {
+            "record_id": "first",
+            "path": path.as_posix(),
+            "sha256": record_digest(text),
+        }
+        # The joined session drafts S0 against P0 while the peer publishes P1.
+        _, _, stale_successor = self.record(name="stale", predecessor=predecessor)
+        _, _, peer_successor = self.record(name="second", predecessor=predecessor)
+        self.assertEqual(
+            self.invoke(last_assistant_message=peer_successor), HookExecution()
+        )
+        live = self.storage.load_snapshot("session-1").chain.current_record_reference
+        # The prompt reconciles the joined session onto the advanced chain.
+        self.invoke(
+            "UserPromptSubmit",
+            session_id="joined",
+            turn_id="turn-10",
+            prompt="Carry on.",
+        )
+        joined = self.storage.load_snapshot("joined")
+        self.assertEqual(joined.session.chain_revision, joined.chain.targeted_revision)
+        # S0 still names P0, which is no longer the chain's record.
+        self.assert_block(
+            self.invoke(session_id="joined", last_assistant_message=stale_successor),
+            "AHK-STOP-PREDECESSOR",
+        )
+        self.assertEqual(
+            self.storage.load_snapshot("joined").chain.current_record_reference, live
+        )
+
+    def test_a_peer_completion_releases_this_session_rather_than_stranding_it(self):
+        """Completing a chain must not strand the peers joined to it.
+
+        Only the publishing session is moved to `COMPLETE`; peers stay
+        `TRACKED` on a finished chain, which persisted state permits and every
+        later mutation then refuses as an unreleased lease. The session could
+        be neither spoken to nor finished. Reconciliation releases the lease,
+        and the existing reentry takes it from there.
+        """
+
+        self.register()
+        path, text, message = self.record()
+        self.invoke(last_assistant_message=message)
+        self.invoke(
+            "UserPromptSubmit",
+            session_id="joined",
+            prompt=render_resume_prompt(path, path.read_text(encoding="utf-8")),
+        )
+        predecessor = {
+            "record_id": "first",
+            "path": path.as_posix(),
+            "sha256": record_digest(text),
+        }
+        _, _, audit = self.record(
+            kind="completion-audit", name="final", predecessor=predecessor
+        )
+        self.assertEqual(self.invoke(last_assistant_message=audit), HookExecution())
+        self.assertEqual(
+            self.storage.load_snapshot("session-1").chain.status, "complete"
+        )
+        output = self.invoke(
+            "UserPromptSubmit",
+            session_id="joined",
+            turn_id="turn-3",
+            prompt="Now what?",
+        )
+        self.assertEqual(output.exit_code, 0)
+        data = json.loads(output.stdout) if output.stdout else {}
+        self.assertNotIn("decision", data)
+        self.assertNotIn("continue", data)
+        # Released and reentered on this same turn, so the session is free to
+        # declare new work rather than holding a lease on a finished
+        # authorization. Accepting COMPLETE here would let the test pass with
+        # the reentry never happening.
+        session = self.storage.load_snapshot("joined").session
+        self.assertEqual(session.mode, EnforcementMode.OPEN)
+        self.assertIsNone(session.authorization_id)
+
+    def test_one_failed_prompt_step_does_not_skip_the_others(self):
+        """A step that fails is named; the steps after it still run.
+
+        A single outer handler would deliver the prompt and skip everything
+        after the failure, so an unrelated fault in advisory bookkeeping would
+        leave the turn unobserved and the correction circuit armed - a session
+        that can be spoken to but cannot end a turn. Each step stands alone.
+        """
+
+        self.register()
+        with patch(
+            "agent_handoff_toolkit.hook_adapters.worktree_digest",
+            side_effect=OSError(errno.EACCES, "Permission denied"),
+        ):
+            output = self.invoke("UserPromptSubmit", turn_id="turn-9")
+        self.assertEqual(output.exit_code, 0)
+        self.assertEqual(output.stderr, "")
+        data = json.loads(output.stdout)
+        self.assertNotIn("decision", data)
+        context = data["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("step:worktree-baseline", context)
+        # The later step still ran: the turn is observed despite the failure.
+        session = self.storage.load_snapshot("session-1").session
+        self.assertEqual(session.current_external_user_turn_reference, "turn-9")
 
     def test_approved_transition_publication_uses_chain_evidence(self):
         self.register()
