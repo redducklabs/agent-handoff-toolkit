@@ -86,6 +86,40 @@ def hook_runtime_reason(stage: str, error: BaseException | None = None) -> str:
     )
 
 
+def hook_repository_root(payload: object, fallback: Path) -> Path:
+    """Name the checkout a hook serves: the one holding the session's cwd.
+
+    Every host payload carries `cwd`, the session's current directory. The
+    hook process's own directory is not guaranteed to be that, and a project
+    variable stays at the original checkout even inside a worktree - while
+    desktop worktrees live inside the main checkout, so rooting at the process
+    silently served a worktree session from the main checkout's runner and
+    `handoffs/`. The root is the nearest directory at or above an absolute,
+    existing payload `cwd` that holds `.git`, file or directory. Anything
+    else - no `cwd`, a relative or missing one, none of its ancestors a
+    checkout - keeps `fallback`, the process-derived root, and the event's
+    own containment check still applies to whatever was chosen.
+    """
+
+    fallback = Path(fallback).resolve()
+    cwd = payload.get("cwd") if isinstance(payload, dict) else None
+    if not isinstance(cwd, str) or not cwd or len(cwd) > 4096 or "\x00" in cwd:
+        return fallback
+    start = Path(cwd)
+    try:
+        if not start.is_absolute() or not start.is_dir():
+            return fallback
+        resolved = start.resolve()
+        for candidate in (resolved, *resolved.parents):
+            if (candidate / ".git").exists():
+                return candidate
+    except (OSError, ValueError):
+        # An unreadable or unrepresentable path names no checkout; the
+        # process-derived root is the documented answer for that.
+        return fallback
+    return fallback
+
+
 @dataclass(frozen=True)
 class HookExecution:
     stdout: str = ""
@@ -307,7 +341,9 @@ def _run_advisory_hook(
         if normalized_event == "session-start":
             return _hook_output("SessionStart", _SESSION_START_REMINDER)
         if normalized_event == "session-end":
-            return _session_end_notice(payload, repo_root, storage)
+            return _session_end_notice(
+                payload, hook_repository_root(payload, repo_root), storage
+            )
         if normalized_event != "post-tool-use":
             return ""
 

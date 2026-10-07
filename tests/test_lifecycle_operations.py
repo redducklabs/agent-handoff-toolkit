@@ -996,7 +996,7 @@ class OperationsTests(unittest.TestCase):
     def test_real_cli_forces_utf8_for_decision_stdin_and_stdout(self):
         self.register()
         snapshot = self.storage.load_snapshot("session-1")
-        question = "Which café " + secrets.token_hex(8) + "?"
+        question = "Which café ● " + secrets.token_hex(8) + "?"
         result = subprocess.run(
             [
                 sys.executable,

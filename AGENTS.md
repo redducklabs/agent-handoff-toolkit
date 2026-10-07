@@ -20,9 +20,11 @@ Read `docs/agent-handoff/contract.md` and `docs/agent-handoff/mechanics.md` befo
   `AHK-HOOK-RUNTIME` report names its failing stage and exception after
   `failed=`, and no hook command exits 2.
 - Managed hook commands locate the runner by walking up from the hook
-  process's working directory. Never reintroduce a path relative to it: hosts
-  run hooks in the agent's directory, and a missing script file exits 2, which
-  every gated event reads as a block.
+  process's working directory. Never reintroduce a path relative to it: a
+  missing script file exits 2, which every gated event reads as a block.
+  Hosts do not reliably run hooks in the session's directory, so a hook roots
+  at the checkout named by the payload `cwd`, and the located runner hands
+  the invocation off to the runner of that checkout.
 - Never claim semantic truth is mechanically verified. Validation proves structure and internal consistency only.
 - Add or update tests before implementation changes and run the full verification commands in `README.md` before reporting success.
 - Do not add secrets, credentials, prompts, replies, transcripts, or customer data to fixtures or logs.

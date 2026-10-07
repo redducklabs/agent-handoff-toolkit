@@ -549,6 +549,41 @@ class EnforcementTests(unittest.TestCase):
             self.invoke("PreToolUse", tool_input={"command": command}), "AHK-PRE-ROOT"
         )
 
+    def test_hook_roots_at_the_checkout_named_by_the_payload_cwd(self):
+        """The session's directory names the checkout, not the hook process's.
+
+        Desktop worktrees live inside the main checkout, at
+        `<repo>/.claude/worktrees/<name>`, and the host does not promise to
+        start the hook process in the session's directory. Rooting at the
+        process's directory passed the containment check and then bound every
+        command to the main checkout's runner and `handoffs/`, so worktree
+        records read as outside `handoffs/` and bound commands went stale.
+        """
+
+        worktree = self.root / ".claude" / "worktrees" / "x"
+        (worktree / "handoffs").mkdir(parents=True)
+        (worktree / ".agent-handoff-toolkit").mkdir()
+        (worktree / ".git").write_text("gitdir: elsewhere\n")
+        runner = worktree / ".agent-handoff-toolkit" / "runner.py"
+        runner.write_text("# owned runner\n")
+
+        def invoke(name, **changes):
+            return run_hook(
+                "claude",
+                name,
+                json.dumps(payload(worktree, name, **changes)),
+                self.root,
+                self.storage,
+            )
+
+        self.assertEqual(invoke("UserPromptSubmit"), HookExecution())
+        stale = f"python {runner.as_posix()} lifecycle inspect"
+        reason = json.loads(invoke("PreToolUse", tool_input={"command": stale}).stdout)[
+            "hookSpecificOutput"
+        ]["permissionDecisionReason"]
+        command = reason.split("Command: ", 1)[1]
+        self.assertEqual(command.split()[1], runner.as_posix())
+
     def stop_payload(self, drop=(), **changes):
         value = payload(self.root, "Stop", **changes)
         for key in drop:

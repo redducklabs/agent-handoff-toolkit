@@ -103,6 +103,28 @@ def _configure_output_encoding() -> None:
             reconfigure(encoding="utf-8", errors="strict")
 
 
+def _read_stdin(limit: int, *, strict: bool = False) -> str:
+    """Read at most `limit` bytes of stdin as the UTF-8 the hosts write.
+
+    The text layer of a piped stdin decodes with the console code page - cp1252
+    on a stock Windows install - which turns UTF-8 bytes it leaves undefined,
+    such as the 0x8F in `●`, into an error or a lone surrogate and garbles every
+    other non-ASCII character. The bytes are read below that layer instead.
+
+    With `strict`, bytes that are not UTF-8 raise here. Otherwise they are
+    carried as lone surrogates, so a hook's own input reader - which encodes
+    the text strictly to bound it - rejects them and reports that under its
+    stage and failure policy instead of this boundary's. A stream with no byte
+    layer, such as an in-memory test double, is read as text.
+    """
+
+    buffer = getattr(sys.stdin, "buffer", None)
+    if buffer is None:
+        return sys.stdin.read(limit)
+    data = buffer.read(limit)
+    return data.decode("utf-8", errors="strict" if strict else "surrogateescape")
+
+
 class _LifecycleParser(argparse.ArgumentParser):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, allow_abbrev=False, **kwargs)
@@ -296,10 +318,12 @@ def _lifecycle_main(argv):
         elif operation == "one-off":
             result = service.one_off(**args)
         elif operation == "request-decision":
-            reconfigure = getattr(sys.stdin, "reconfigure", None)
-            if callable(reconfigure):
-                reconfigure(encoding="utf-8", errors="strict")
-            response = service.request_decision(question=sys.stdin.read(401), **args)
+            # The question is bounded to 400 UTF-8 bytes, so 401 bytes is
+            # enough to see an overrun; bytes that are not UTF-8 are input
+            # errors.
+            response = service.request_decision(
+                question=_read_stdin(401, strict=True), **args
+            )
             sys.stdout.write(response + "\n")
             return 0
         else:
@@ -410,7 +434,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             output = run_hook(
                 args.platform,
                 args.event,
-                sys.stdin.read(MAX_HOOK_INPUT_BYTES + 1),
+                _read_stdin(MAX_HOOK_INPUT_BYTES + 1),
                 _repository_root(Path.cwd()),
             )
             sys.stdout.write(output.stdout)

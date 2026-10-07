@@ -43,20 +43,28 @@ install corruption rather than a transient fault.
 Each managed hook command finds `.agent-handoff-toolkit/runner.py` by walking
 upward from the hook process's working directory, and does nothing at all when
 no install is found there. Naming the runner by a path relative to that working
-directory does not work: hosts run hook commands in the directory the agent is
-working in, so any session below the repository root failed to start Python,
+directory does not work: hook commands commonly run in the directory the agent
+is working in, so any session below the repository root failed to start Python,
 and a missing script file exits 2 — which every gated event reads as a block.
 
-The walk is also the only form that is correct across checkouts. A worktree
-carries its own copy of the install, so the walk runs the runner pinned by the
-checkout the agent is actually working in. `CLAUDE_PROJECT_DIR` is deliberately
-not used: Claude Code documents that it stays at the project root the session
-started in even after the agent enters a worktree, so locating the runner
-through it would run one checkout's pinned release against another's. Codex
-documents no equivalent variable, and the walk needs none on either host.
+A worktree carries its own copy of the install, and the toolkit has to run the
+runner pinned by the checkout the agent is actually working in.
+`CLAUDE_PROJECT_DIR` is deliberately not used: Claude Code documents that it
+stays at the project root the session started in even after the agent enters a
+worktree, so locating the runner through it would run one checkout's pinned
+release against another's. Codex documents no equivalent variable.
 
-The runner still takes the repository it operates on from its working
-directory, unchanged.
+The hook process's directory is not a promise either. Desktop worktrees live
+inside the main checkout, at `<repo>/.claude/worktrees/<name>`, and a hook
+process started in the main checkout walked to the main checkout's runner,
+rooted the session there, and bound its commands to that runner and its
+`handoffs/`. Every host payload carries `cwd`, the session's own directory, so
+that names the checkout: the hook's repository root is the nearest directory at
+or above it holding `.git`, and the located runner hands the invocation, once,
+to the runner of that checkout when it is a different file. The process's
+directory remains the fallback for a payload that names no checkout, and the
+hand-off falls through to the located runner whenever the other one does not
+answer cleanly, so neither step can turn a fault into a block.
 
 ## State across installed releases
 

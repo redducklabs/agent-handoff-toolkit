@@ -20,7 +20,7 @@ import shlex
 import stat
 import unicodedata
 
-from .hooks import HookExecution
+from .hooks import HookExecution, hook_repository_root
 from .lifecycle import (
     AffirmationResult,
     AuthorityCategory,
@@ -1625,7 +1625,8 @@ def run_lifecycle_hook(platform, name, raw, repo_root, storage=None):
             )
             if not control and tool not in _WRITE_TOOLS[platform]:
                 return HookExecution()
-        root = Path(repo_root).resolve()
+        stage = "resolve-root"
+        root = hook_repository_root(payload, repo_root)
         raw_id = _string(payload.get("session_id"), 4096)
         if storage is None:
             stage = "open-state"
@@ -1636,7 +1637,7 @@ def run_lifecycle_hook(platform, name, raw, repo_root, storage=None):
         stage = "load-state"
         snapshot = storage.load_snapshot(raw_id)
         stage = "normalize-event"
-        event = normalize_event(platform, name, payload, repo_root)
+        event = normalize_event(platform, name, payload, root)
         event = replace(event, session_key=snapshot.session.session_key)
         stage = "evaluate"
         if event_kind is EventName.PRE_TOOL_USE:
@@ -1684,7 +1685,7 @@ def run_lifecycle_hook(platform, name, raw, repo_root, storage=None):
         and snapshot is not None
         and snapshot.session.mode in _UNGATED
     ):
-        note = _no_handoff_note(snapshot, Path(repo_root).resolve(), storage, raw_id)
+        note = _no_handoff_note(snapshot, root, storage, raw_id)
         if note is not None:
             return note
     return output

@@ -5,7 +5,9 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
+import runpy
 import sys
 
 
@@ -168,8 +170,127 @@ def _publish(text: str) -> None:
     sys.stdout.flush()
 
 
+# The CLI reads at most this many bytes of hook input, so replaying exactly
+# this many keeps every bound it applies unchanged.
+_MAX_HOOK_INPUT = 128 * 1024 + 1
+# Set on the hand-off so the runner it reaches dispatches instead of looking
+# again: one hop, whatever the two runners' payload readings would say.
+_HANDOFF_MARKER = "AHK_RUNNER_HANDOFF"
+
+
+def _session_runner(data: bytes) -> Path | None:
+    """Name the runner pinned by the checkout the payload's `cwd` is in.
+
+    The managed command locates this runner by walking up from the hook
+    process's directory, and the host does not promise that is the session's.
+    A desktop worktree sits inside the main checkout, so the walk can land on
+    the main checkout's runner while the session works in the worktree. The
+    payload's `cwd` is the session's directory; the nearest runner at or above
+    it is the one that checkout pins. `None` means there is nothing to hand
+    to: no usable `cwd`, no runner there, or this very runner.
+    """
+
+    payload = json.loads(data.decode("utf-8"))
+    cwd = payload.get("cwd") if isinstance(payload, dict) else None
+    if not isinstance(cwd, str) or not cwd or "\x00" in cwd:
+        return None
+    start = Path(cwd)
+    if not start.is_absolute() or not start.is_dir():
+        return None
+    start = start.resolve()
+    for directory in (start, *start.parents):
+        candidate = directory / ".agent-handoff-toolkit" / "runner.py"
+        if candidate.is_file():
+            if candidate.resolve() == Path(__file__).resolve() or os.path.samefile(
+                candidate, __file__
+            ):
+                return None
+            return candidate
+    return None
+
+
+def _hand_off(arguments: list[str]) -> bool:
+    """Run a hook through the session checkout's runner, if it has another.
+
+    Returns True when that runner answered and its answer has been published.
+    Anything else - no other runner, a guarded second hop, a runner that
+    raised, exited non-zero, or answered with something other than one
+    response - publishes nothing and returns False, so this runner serves the
+    hook as before. Either way the stdin bytes read here are put back for
+    whoever dispatches next.
+    """
+
+    if not arguments or arguments[0] != "hook":
+        return False
+    source = getattr(sys.stdin, "buffer", None)
+    if source is None:
+        return False
+    try:
+        data = source.read(_MAX_HOOK_INPUT)
+    except (OSError, ValueError):
+        # Unreadable input names no other checkout. Nothing was consumed, and
+        # the CLI's own read reports the fault under its failure policy.
+        return False
+
+    def replay() -> None:
+        sys.stdin = io.TextIOWrapper(io.BytesIO(data), encoding="utf-8")
+
+    replay()
+    if os.environ.get(_HANDOFF_MARKER):
+        return False
+    try:
+        target = _session_runner(data)
+    except Exception:
+        # An unreadable payload names no other checkout. The CLI reads the
+        # same bytes and reports what is wrong with them.
+        return False
+    if target is None:
+        return False
+
+    saved_argv, saved_path = sys.argv, list(sys.path)
+    answer = _HookBuffer()
+    answered = False
+    try:
+        os.environ[_HANDOFF_MARKER] = "1"
+        sys.argv = [str(target), *arguments]
+        with (
+            contextlib.redirect_stdout(answer),
+            contextlib.redirect_stderr(_HookBuffer()),
+        ):
+            try:
+                runpy.run_path(str(target), run_name="__main__")
+                answered = True
+            except SystemExit as exit_:
+                answered = exit_.code in (0, None)
+    except BaseException:
+        answered = False
+    finally:
+        os.environ.pop(_HANDOFF_MARKER, None)
+        sys.argv = saved_argv
+        sys.path[:] = saved_path
+        # The other runner imported its own copy of the package. Dropping it
+        # keeps a fall-through from running that copy as this runner's.
+        for name in [
+            name
+            for name in sys.modules
+            if name == "agent_handoff_toolkit"
+            or name.startswith("agent_handoff_toolkit.")
+        ]:
+            del sys.modules[name]
+        replay()
+
+    text = answer.getvalue()
+    if not answered or answer.overflowed or (text and not _one_response(text)):
+        return False
+    _publish(text)
+    return True
+
+
 def main() -> int:
     """Load the package adjacent to this runner and dispatch its CLI."""
+    # Before anything is imported: the runner handed to loads its own package.
+    if _hand_off(sys.argv[1:]):
+        return 0
     source_root = Path(__file__).resolve().parent / "src"
     if not source_root.is_dir():
         source_root = Path(__file__).resolve().parents[1] / "src"
