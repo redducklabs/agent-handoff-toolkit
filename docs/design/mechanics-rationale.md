@@ -371,6 +371,23 @@ directory that is not a repository, a `git` invocation that times out or
 returns unparseable output, an unreadable state file, or an unexpected
 exception in either advisory path all produce no message and no error.
 
+**`AHK-CONTEXT-HIGH`** answers a field report: a tracked session on a 1M
+window auto-compacted twice, near 967k tokens each time, without writing a
+handoff. The user chose an advisory at 80% over a gate, so it never blocks and
+never refuses a turn ending. It is sent only at `PreToolUse`, on
+`additionalContext`: on `Stop` the only channel the model reads is a block, and
+a `systemMessage` reaches the user, not the model. The transcript is read for
+numbers only, within a 512 KiB tail, and state stores only the transcript size
+at which the notice was shown; a re-arm is looked for only in what the
+transcript gained since. Cost was measured: the tail read is about 2 ms on a
+2.5 MB transcript, while opening lifecycle state is about 190 ms on Windows (a
+git subprocess, path checks and a lock). So an ordinary tool call, which
+otherwise returns before state is opened, opens it for this advisory only while
+one of the last five main-thread readings is below 80% - the calls around the
+crossing - rather than on every call for the rest of the fill. A writing tool
+opens state anyway and always checks, which covers a session that becomes
+tracked after the crossing. Codex is not read: its transcript format differs.
+
 **The guarantee this supports.** The toolkit does not guarantee that work
 needing a handoff produces one. It guarantees that declared tracked work
 follows the lifecycle, and it reports undeclared work that ends unfinished. A

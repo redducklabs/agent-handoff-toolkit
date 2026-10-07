@@ -608,8 +608,16 @@ class SessionState:
     no_handoff_note_emitted: bool = False
     last_stop_was_progress: bool = False
     turn_origin: str | None = None
+    # The transcript size at which `AHK-CONTEXT-HIGH` was last shown, or None
+    # while it is armed. A size, never content.
+    context_advisory_offset: int | None = None
 
     def __post_init__(self) -> None:
+        if self.context_advisory_offset is not None and (
+            type(self.context_advisory_offset) is not int
+            or self.context_advisory_offset < 0
+        ):
+            raise ValueError("context_advisory_offset must be a non-negative int")
         if self.turn_origin is not None and (
             not isinstance(self.turn_origin, str)
             or self.turn_origin not in TURN_ORIGINS

@@ -13,13 +13,11 @@ repository's `docs/design/mechanics-rationale.md`, which is not distributed.
 A schema-v2 record begins with a visible fenced block opened by
 ```` ```json agent-handoff-metadata ```` and closed by a bare ```` ``` ````
 line. A completion audit places its sentinel and a blank line before that block.
-The block stays visible so a reviewer reading rendered Markdown still sees
-verification, the exact next action, and the scope list. A rendered metadata
+A rendered metadata
 object never contains a bare fence line, because JSON escapes every newline.
 
-Records that predate the current schema, including any carrying a metadata
-comment instead of the visible block, are historical: never opened, validated
-or migrated.
+Records that predate the current schema are historical: never opened,
+validated or migrated.
 
 The visible block is recognized only at a record's fixed metadata position: the
 start of a continuation, or directly after a completion audit's sentinel and its
@@ -114,7 +112,7 @@ with `<task-notification>`, `Another Claude session sent a message:`, or a
 `<cross-session-message` or `<agent-message` element. State recorded before
 origins existed reads as unknown and accepts `reply`. A host-started prompt is
 not a user turn: it never answers a pending decision, breaks a proposal's
-adjacency, or resets the correction circuit. `AHK-USER-CLARIFY` names the
+adjacency, resets the correction circuit, or reenters a completed session. `AHK-USER-CLARIFY` names the
 replies that resolve a decision. A session that *ends* on any of these lines is
 reported at `SessionEnd`, an informational hook that fails open. The lines are
 never in blocking feedback.
@@ -145,8 +143,8 @@ checkout holding the record. Silence is not a permitted outcome for a prompt
 that carried a pointer.
 
 `AHK-RESUMED` and `AHK-TRACKED` both carry the bound `inspect` command after
-`Command:`, so a newly tracked session has its session key, challenge and
-expected revision without spending a tool call on a denial.
+`Command:`, so a newly tracked session needs no denial to learn its
+credentials.
 
 A stored record path is a locator, not identity. Where one is read, the
 record's basename under this checkout's `handoffs/` is used, or the path itself
@@ -233,12 +231,12 @@ the local HMAC secret never appear in its output.
 
 ## Enforcement modes and the write/stop advisories
 
-A session begins in `OPEN`. Nothing it does is gated: shell commands, file
-edits, MCP calls, web fetches, subagents, and todo lists all run untouched. The
+A session begins in `OPEN`. Nothing it does is gated. The
 one interception that remains is the toolkit's own control commands
 (`python <runner> lifecycle …`), which is also how a session learns its session
 key, challenge, and expected revision. A tool call that is neither a control
-command nor a call to a known writing tool is decided before any state is read.
+command nor a call to a known writing tool is decided before any state is
+read, except as `AHK-CONTEXT-HIGH` states.
 
 A session moves to `TRACKED` by registering a root, and to `ONE_OFF` by running
 `lifecycle one-off`, which grants no authority and only records that the
@@ -246,16 +244,15 @@ session decided its work needs no handoff. Both `OPEN` and `ONE_OFF` stay
 ungated for everything but control commands. The legacy state value
 `"untracked"` loads as `OPEN`.
 
-Two advisories make undeclared drift visible without gating anything. Neither
-blocks, neither carries a `permissionDecision` of any kind, and neither can
-error: any failure in either path produces no message at all.
+Three advisories gate nothing. None blocks, carries a `permissionDecision`, or
+can error: any failure produces no message.
 
 - **`AHK-DECLARE`** fires at most once per session, in `OPEN` only, on the
   first call to a known file-writing tool — `Write`, `Edit`, `MultiEdit` and
   `NotebookEdit` on Claude Code, `apply_patch` on Codex. Not `Bash`, not an MCP
-  tool. It is delivered as `hookSpecificOutput.additionalContext`, because it
-  is addressed to the model: it names both lifecycle commands in their plain
-  form, which the control interception binds. Its delivery is verified on
+  tool. It is sent on `hookSpecificOutput.additionalContext`, naming both
+  lifecycle commands in plain form, which the control interception binds. Its
+  delivery is verified on
   Claude Code by an acceptance run (`advisory_seen=pass`) and unverified on
   Codex. It names no session key,
   challenge or absolute path. It never fires for a session that has already
@@ -263,11 +260,20 @@ error: any failure in either path produces no message at all.
 - **`AHK-NO-HANDOFF`** fires at most once per session, at `Stop`, for a session
   still in `OPEN` or `ONE_OFF`, when both hold: `git status --porcelain` is
   non-empty, and its digest differs from the digest recorded at the session's
-  first `UserPromptSubmit`. Both facts come from one `git status`. Together they
-  mean the repository changed while the session was open and is ending with
-  work uncommitted — not that the session made the change; the mechanism cannot
-  establish that. It is user-facing text and asks the user to request a
-  handoff. A declared one-off still receives it.
+  first `UserPromptSubmit`. Both come from one `git status`, and mean the
+  repository changed while the session was open, not that the session changed
+  it. It asks the user, on `systemMessage`, to request a handoff. A declared
+  one-off still receives it.
+- **`AHK-CONTEXT-HIGH`** serves a `TRACKED` or `AWAITING_DECISION` session on
+  Claude Code. `PreToolUse` reads numbers only from the last 512 KiB of
+  `transcript_path`: the newest main-thread usage (`input_tokens`
+  plus both cache counts), against `AHK_CONTEXT_WINDOW_TOKENS`, else 1,000,000
+  when the model id carries `[1m]` or the tail shows a count above 200,000,
+  else 200,000. At 80% it asks once, on `additionalContext`, for the
+  continuation handoff, and re-arms after a reading below 50% or a compaction.
+  An ordinary call opens state for it only while one of the last five readings
+  is below 80%. It is never sent at `Stop`, which has no non-blocking model
+  channel.
 
 **The guarantee this supports.** The toolkit does not guarantee that work
 needing a handoff produces one. It guarantees that declared tracked work
@@ -337,8 +343,7 @@ scope's `scope_definition` and `scope_definition_digest`. The author supplies
 `record_id`, `timestamp`, the per-scope progress fields, `verification`,
 `exact_action`, `next_session_prompt` and the sections.
 
-Root immutability is unchanged, because the definitions are copied from the
-predecessor and never recomputed from author input. Supplying one of those
+The definitions are copied, never recomputed from author input. Supplying one of those
 fields with a different value is rejected (`successor-inherited`), as is naming
 a scope the predecessor does not hold (`successor-scope`); either needs an
 approved transition. `validate_successor` still runs at `Stop`.

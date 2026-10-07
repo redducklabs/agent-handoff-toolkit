@@ -1020,6 +1020,262 @@ def _write_advisory(event, snapshot, root, storage, raw_id):
         return HookExecution()
 
 
+# Context pressure. Claude Code writes its transcript as JSON lines; a
+# main-thread assistant entry carries the token usage of the context it was
+# answered from. Only numbers are read: the usage counts, a compaction's
+# `preTokens`, and whether the model id carries the 1M marker. Nothing else
+# in an entry is retained, stored or emitted.
+_TRANSCRIPT_TAIL_BYTES = 512 * 1024
+_CONTEXT_WINDOW = 200_000
+_CONTEXT_WINDOW_LARGE = 1_000_000
+_CONTEXT_HIGH = 0.8
+_CONTEXT_REARM = 0.5
+# Main-thread readings an ordinary tool call looks back over. Opening state
+# costs a git subprocess and a lock, so a call that is not otherwise opening
+# it does so only while one of these readings was below the threshold: the
+# few calls around the crossing, not every call for the rest of the fill.
+_CONTEXT_CROSSING_READINGS = 5
+_CONTEXT_STATE_MODES = frozenset(
+    {EnforcementMode.TRACKED, EnforcementMode.AWAITING_DECISION}
+)
+
+
+def _count(value):
+    return value if type(value) is int and value >= 0 else None
+
+
+def _context_entry(line):
+    """Read one transcript line as `(kind, tokens, large_model)`, or None."""
+
+    if b'"assistant"' not in line and b"compact_boundary" not in line:
+        return None
+    try:
+        entry = json.loads(line)
+    except ValueError:
+        return None
+    if not isinstance(entry, dict):
+        return None
+    if entry.get("type") == "system" and entry.get("subtype") == "compact_boundary":
+        metadata = entry.get("compactMetadata")
+        tokens = (
+            _count(metadata.get("preTokens")) if isinstance(metadata, dict) else None
+        )
+        return None if tokens is None else ("compact", tokens, False)
+    if entry.get("type") != "assistant" or entry.get("isSidechain") is not False:
+        return None
+    message = entry.get("message")
+    if not isinstance(message, dict):
+        return None
+    model = message.get("model")
+    usage = message.get("usage")
+    if not isinstance(model, str) or model == "<synthetic>":
+        return None
+    if not isinstance(usage, dict):
+        return None
+    parts = [
+        _count(usage.get(name, 0))
+        for name in (
+            "input_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+        )
+    ]
+    if "input_tokens" not in usage or None in parts:
+        return None
+    return ("usage", sum(parts), "[1m]" in model)
+
+
+def _transcript_lines(path, start=0):
+    """Return the transcript size and its complete lines from `start` on.
+
+    At most the last `_TRANSCRIPT_TAIL_BYTES` are read. A read that does not
+    begin at `start` begins mid-line, so its first partial line is dropped.
+    """
+
+    with open(path, "rb") as handle:
+        size = os.fstat(handle.fileno()).st_size
+        if start > size:
+            return size, []
+        begin = max(start, size - _TRANSCRIPT_TAIL_BYTES, 0)
+        handle.seek(begin)
+        data = handle.read(size - begin)
+    lines = data.split(b"\n")
+    if begin != start:
+        lines = lines[1:]
+    return size, lines
+
+
+def _context_window():
+    value = os.environ.get("AHK_CONTEXT_WINDOW_TOKENS", "")
+    if value.isascii() and value.isdigit() and 0 < int(value) <= 10**9:
+        return int(value)
+    return None
+
+
+def _context_reading(path):
+    """Return `(tokens, window, size, recent)` for the latest main-thread usage.
+
+    `recent` holds the token counts of up to `_CONTEXT_CROSSING_READINGS`
+    latest main-thread readings, newest first. None when there is no
+    transcript, no readable usage, or anything fails.
+    """
+
+    try:
+        size, lines = _transcript_lines(path)
+        readings = []
+        for line in reversed(lines):
+            entry = _context_entry(line)
+            if entry is not None and entry[0] == "usage":
+                readings.append(entry)
+                if len(readings) == _CONTEXT_CROSSING_READINGS:
+                    break
+        if not readings:
+            return None
+        _, tokens, large = readings[0]
+        window = _context_window()
+        if window is None:
+            if large or tokens > _CONTEXT_WINDOW:
+                window = _CONTEXT_WINDOW_LARGE
+            elif tokens < _CONTEXT_WINDOW * _CONTEXT_HIGH:
+                # Below the threshold under either window: no need to look
+                # for evidence of the larger one.
+                window = _CONTEXT_WINDOW
+            else:
+                entries = (_context_entry(line) for line in lines)
+                window = (
+                    _CONTEXT_WINDOW_LARGE
+                    if any(
+                        entry is not None and (entry[2] or entry[1] > _CONTEXT_WINDOW)
+                        for entry in entries
+                    )
+                    else _CONTEXT_WINDOW
+                )
+        return tokens, window, size, tuple(entry[1] for entry in readings)
+    except Exception:
+        return None
+
+
+def _context_crossing(platform, payload):
+    """Report, before any state is opened, whether context just reached 80%.
+
+    True when the latest main-thread reading is at the threshold and the
+    readings before it in the tail are fewer than the look-back or not all at
+    it. A call that opens state anyway, a writing tool, checks regardless.
+    """
+
+    try:
+        path = payload.get("transcript_path")
+        if platform != "claude" or not isinstance(path, str) or not path.strip():
+            return False
+        if not Path(path).is_absolute():
+            return False
+        reading = _context_reading(path)
+        if reading is None:
+            return False
+        tokens, window, _, recent = reading
+        threshold = window * _CONTEXT_HIGH
+        return tokens >= threshold and (
+            len(recent) < _CONTEXT_CROSSING_READINGS
+            or any(count < threshold for count in recent)
+        )
+    except Exception:
+        return False
+
+
+def _context_rearmed(path, offset, window):
+    """Report whether context fell below half since the advisory was shown.
+
+    Only what the transcript gained since then is read, within the same bound.
+    A compaction or a main-thread reading below half re-arms it; so does a
+    transcript smaller than the one the advisory was shown for.
+    """
+
+    size, lines = _transcript_lines(path, offset)
+    if size < offset:
+        return True
+    for line in lines:
+        entry = _context_entry(line)
+        if entry is None:
+            continue
+        if entry[0] == "compact" or entry[1] < window * _CONTEXT_REARM:
+            return True
+    return False
+
+
+def _context_advisory(event, snapshot, storage, raw_id):
+    """Say, once per fill, that context is high, and decide nothing.
+
+    Advisory only: it never blocks, carries no `permissionDecision`, and any
+    failure yields None, leaving the tool call exactly as it would have been.
+    It reaches the model on `additionalContext`. `Stop` has no channel the
+    model reads that does not block, so it is not repeated there.
+    """
+
+    try:
+        session = snapshot.session
+        path = event.transcript_reference
+        if (
+            event.host != "claude"
+            or path is None
+            or session.mode not in _CONTEXT_STATE_MODES
+        ):
+            return None
+        reading = _context_reading(path)
+        if reading is None:
+            return None
+        tokens, window, size, _ = reading
+        if tokens < window * _CONTEXT_HIGH:
+            return None
+        offset = session.context_advisory_offset
+        if offset is not None and not _context_rearmed(path, offset, window):
+            return None
+        _commit(
+            storage,
+            raw_id,
+            snapshot,
+            LifecycleMutation(
+                replace(
+                    session,
+                    context_advisory_offset=size,
+                    targeted_revision=session.targeted_revision + 1,
+                )
+            ),
+        )
+        return _context(
+            "PreToolUse",
+            "AHK-CONTEXT-HIGH: Context is at least 80% full. Write the "
+            "continuation handoff now, while there is room, then continue. "
+            "Shown again only after context falls below half.",
+        )
+    except Exception:
+        return None
+
+
+def _context_only(platform, name, payload, repo_root, storage):
+    """Serve a call that reached state only for the context advisory.
+
+    Before the advisory existed such a call returned without opening state, so
+    any failure here returns exactly that: no message and no decision.
+    """
+
+    try:
+        root = hook_repository_root(payload, repo_root)
+        raw_id = _string(payload.get("session_id"), 4096)
+        if storage is None:
+            state_root = os.environ.get("AHK_STATE_ROOT")
+            storage = LocalLifecycleStorage(
+                root, state_root=Path(state_root) if state_root else None
+            )
+        snapshot = storage.load_snapshot(raw_id)
+        if snapshot.session.mode not in _CONTEXT_STATE_MODES:
+            return HookExecution()
+        event = normalize_event(platform, name, payload, root)
+        advisory = _context_advisory(event, snapshot, storage, raw_id)
+        return advisory if advisory is not None else HookExecution()
+    except Exception:
+        return HookExecution()
+
+
 def _pre_tool(event, snapshot, root, storage, raw_id):
     session = snapshot.session
     command = (
@@ -1050,7 +1306,8 @@ def _pre_tool(event, snapshot, root, storage, raw_id):
             and session.current_external_user_turn_reference is not None
         ):
             return _write_advisory(event, snapshot, root, storage, raw_id)
-        return HookExecution()
+        advisory = _context_advisory(event, snapshot, storage, raw_id)
+        return advisory if advisory is not None else HookExecution()
     if session.current_external_user_turn_reference is None:
         return render_hook_execution(
             event.host,
@@ -1461,6 +1718,33 @@ def _user_prompt_steps(event, snapshot, storage, raw_id, root, notices):
         session = snapshot.session
     if event.current_user_reference == session.current_external_user_turn_reference:
         return HookExecution()
+    # Who started the turn decides one `Stop` ending: the `reply` line is
+    # accepted only after a turn the user started. It is recorded with the
+    # observed turn, in the same write.
+    origin = prompt_origin(event.current_user_message)
+    if session.mode is EnforcementMode.COMPLETE and origin == "host":
+        # A task notification arriving after the audit is not the user
+        # starting new work. Reentry would take its turn reference as the
+        # user's and make the session eligible to enroll on the host's behalf,
+        # so only its origin is recorded and the completed state stays.
+        if session.turn_origin != "host":
+
+            def record_host(current=snapshot):
+                return _commit(
+                    storage,
+                    raw_id,
+                    current,
+                    LifecycleMutation(
+                        replace(
+                            current.session,
+                            turn_origin="host",
+                            targeted_revision=current.session.targeted_revision + 1,
+                        )
+                    ),
+                )
+
+            _attempt("turn-origin", notices, record_host, snapshot)
+        return HookExecution()
     if session.mode is EnforcementMode.COMPLETE:
 
         def reenter(current=snapshot):
@@ -1494,10 +1778,6 @@ def _user_prompt_steps(event, snapshot, storage, raw_id, root, notices):
                     "session is untracked. Tell the user."
                 )
             return HookExecution()
-    # Who started the turn decides one `Stop` ending: the `reply` line is
-    # accepted only after a turn the user started. It is recorded with the
-    # observed turn, in the same write.
-    origin = prompt_origin(event.current_user_message)
     proposal = session.pending_transition_reference
     preceding = None
     if (
@@ -1984,7 +2264,12 @@ def run_lifecycle_hook(platform, name, raw, repo_root, storage=None):
             command = inputs.get("command") if isinstance(inputs, Mapping) else None
             control = _control_segment(command) is not None
             if not control and tool not in _WRITE_TOOLS[platform]:
-                return HookExecution()
+                # The context advisory is the one exception, and only around
+                # the reading where the bounded transcript tail first shows
+                # 80%. Otherwise the call returns before any state is opened.
+                if not _context_crossing(platform, payload):
+                    return HookExecution()
+                return _context_only(platform, name, payload, repo_root, storage)
         stage = "resolve-root"
         root = hook_repository_root(payload, repo_root)
         raw_id = _string(payload.get("session_id"), 4096)

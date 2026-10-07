@@ -3201,6 +3201,34 @@ class EnforcementTests(unittest.TestCase):
         self.assertEqual(self.invoke("PreToolUse"), HookExecution())
         self.assertEqual(self.invoke(), HookExecution())
 
+    def test_a_host_prompt_never_reenters_a_completed_session(self):
+        """A task notification after an audit is not the user starting work.
+
+        Reentry used to take the notification's turn reference as the user's,
+        which made the session eligible to enroll on the host's behalf and
+        discarded the completed state the user had not left.
+        """
+
+        self.register()
+        _, _, audit = self.record("completion-audit", "audit")
+        self.assertEqual(self.invoke(last_assistant_message=audit), HookExecution())
+        before = self.storage.load_snapshot("session-1").session
+        self.assertIs(before.mode, EnforcementMode.COMPLETE)
+        self.host_prompt()
+        after = self.storage.load_snapshot("session-1").session
+        self.assertIs(after.mode, EnforcementMode.COMPLETE)
+        self.assertEqual(
+            after.current_external_user_turn_reference,
+            before.current_external_user_turn_reference,
+        )
+        self.assertEqual(after.authorization_id, before.authorization_id)
+        self.assertEqual(after.turn_origin, "host")
+        # The user's own next turn still reenters as before.
+        self.invoke("UserPromptSubmit", turn_id="fresh-user", prompt="Next task.")
+        fresh = self.storage.load_snapshot("session-1").session
+        self.assertIs(fresh.mode, EnforcementMode.OPEN)
+        self.assertEqual(fresh.current_external_user_turn_reference, "fresh-user")
+
     def test_emitted_absolute_control_command_executes_owned_runner_from_other_cwd(
         self,
     ):

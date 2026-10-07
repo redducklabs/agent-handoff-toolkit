@@ -35,6 +35,11 @@ the new one. Never invent lifecycle credentials to satisfy a command: with no
 tracked session, author the record with `render`, `validate`, and `render-tail`
 only.
 
+An `AHK-CONTEXT-HIGH` notice in a tracked session means the context window is
+at least 80% full. Write the continuation now, while there is room to do it
+well, and then keep working; it blocks nothing and is not shown again until
+context falls below half.
+
 ## Historical records and project overlays
 
 Every handoff record that existed before the current pinned release was adopted
