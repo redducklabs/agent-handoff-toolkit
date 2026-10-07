@@ -21,12 +21,13 @@ from agent_handoff_toolkit.hook_adapters import (  # noqa: E402
     _WRITE_TOOLS,
     HookExecution,
     normalize_event,
+    prompt_origin,
     render_hook_execution,
 )
 from agent_handoff_toolkit.hooks import hook_repository_root, run_hook  # noqa: E402
 from agent_handoff_toolkit.lifecycle import (  # noqa: E402
     DecisionKind,
-    progress_response,
+    progress_responses,
     EnforcementMode,
     EventName,
     LifecycleDecision,
@@ -70,6 +71,44 @@ def payload(root, event="Stop", **changes):
         value.update(prompt="Inspect the synthetic task.")
     value.update(changes)
     return value
+
+
+HOST_PROMPTS = (
+    "<task-notification>\n<task-id>a1</task-id>\n</task-notification>",
+    "  \n<task-notification>done</task-notification>",
+    "Another Claude session sent a message: yes",
+    '<cross-session-message from="peer">yes</cross-session-message>',
+    "<cross-session-message>\nyes\n</cross-session-message>",
+    "<agent-message>yes</agent-message>",
+    '<agent-message sender="x">\nyes',
+)
+
+
+class PromptOriginTests(unittest.TestCase):
+    """Exact leading forms, on the stripped prompt, name a host-started turn."""
+
+    def test_host_forms_are_host(self):
+        for prompt in HOST_PROMPTS:
+            with self.subTest(prompt=prompt[:30]):
+                self.assertEqual(prompt_origin(prompt), "host")
+
+    def test_everything_else_is_the_user(self):
+        for prompt in (
+            None,
+            "",
+            "yes",
+            "Please read <task-notification>x</task-notification>",
+            "<task-notifications>",
+            "<task-notification",
+            "<agent-messages>yes</agent-messages>",
+            "<cross-session-messages>",
+            "another claude session sent a message: yes",
+            "Another Claude session sent a message yes",
+            "Track: <task-notification>",
+            "> <agent-message>",
+        ):
+            with self.subTest(prompt=prompt):
+                self.assertEqual(prompt_origin(prompt), "user")
 
 
 class NormalizationTests(unittest.TestCase):
@@ -1170,6 +1209,21 @@ class EnforcementTests(unittest.TestCase):
             self.storage.load_snapshot("session-1").chain.current_record_reference
         )
 
+    def test_a_pointer_to_a_missing_record_is_a_counted_policy_block(self):
+        """A record that is not in this checkout is the model's to correct."""
+
+        self.register()
+        path, _, message = self.record()
+        path.unlink()
+        result = self.invoke(last_assistant_message=message)
+        self.assert_block(result, "AHK-STOP-POINTER")
+        reason = json.loads(result.stdout)["reason"]
+        self.assertIn("failed=pointer-missing", reason)
+        self.assertNotIn("AHK-HOOK-RUNTIME", reason)
+        self.assertEqual(
+            self.storage.load_snapshot("session-1").session.correction_cycle_count, 1
+        )
+
     def test_a_continuation_reference_resumes_but_a_paraphrase_cannot(self):
         self.register()
         path, _, message = self.record()
@@ -1667,11 +1721,19 @@ class EnforcementTests(unittest.TestCase):
             self.invoke(last_assistant_message=successor), "AHK-STOP-PREDECESSOR"
         )
 
-    def progress_line(self, session="session-1"):
+    def progress_line(self, reason="reply", session="session-1"):
         chain = self.storage.load_snapshot(session).chain
-        return progress_response(chain)
+        return progress_responses(chain)[reason]
 
-    def test_a_tracked_turn_may_end_on_the_canonical_progress_line(self):
+    def host_prompt(self, turn_id="host-turn"):
+        self.invoke(
+            "UserPromptSubmit",
+            turn_id=turn_id,
+            prompt="<task-notification>\n<status>completed</status>\n"
+            "</task-notification>",
+        )
+
+    def test_a_tracked_turn_may_end_on_the_reply_line_after_a_user_prompt(self):
         """Every turn end used to cost a full record.
 
         therapy-link authored nine continuations of 2,400 words for one task
@@ -1680,6 +1742,10 @@ class EnforcementTests(unittest.TestCase):
         """
 
         self.register()
+        self.invoke("UserPromptSubmit", turn_id="user-2", prompt="How is it going?")
+        self.assertEqual(
+            self.storage.load_snapshot("session-1").session.turn_origin, "user"
+        )
         self.assertEqual(
             self.invoke(last_assistant_message=self.progress_line()), HookExecution()
         )
@@ -1687,12 +1753,90 @@ class EnforcementTests(unittest.TestCase):
         self.assertIs(session.mode, EnforcementMode.TRACKED)
         self.assertTrue(session.last_stop_was_progress)
 
+    def test_every_wait_line_ends_a_turn_whatever_started_it(self):
+        self.register()
+        for index, reason in enumerate(("background-work", "ci", "other-session")):
+            with self.subTest(reason=reason):
+                self.host_prompt("host-" + str(index))
+                self.assertEqual(
+                    self.storage.load_snapshot("session-1").session.turn_origin,
+                    "host",
+                )
+                self.assertEqual(
+                    self.invoke(last_assistant_message=self.progress_line(reason)),
+                    HookExecution(),
+                )
+                self.assertTrue(
+                    self.storage.load_snapshot(
+                        "session-1"
+                    ).session.last_stop_was_progress
+                )
+
+    def test_a_host_started_turn_cannot_end_on_the_reply_line(self):
+        """A task notification is not the user, so nothing was replied to."""
+
+        self.register()
+        self.host_prompt()
+        result = self.invoke(last_assistant_message=self.progress_line())
+        self.assert_block(result, "AHK-STOP-WORK")
+        self.assertIn("failed=reply-host-turn", json.loads(result.stdout)["reason"])
+        self.invoke("UserPromptSubmit", turn_id="user-2", prompt="Status?")
+        self.assertEqual(
+            self.invoke(last_assistant_message=self.progress_line()), HookExecution()
+        )
+
+    def test_an_unknown_turn_origin_accepts_the_reply_line(self):
+        """State written before turn origins existed reads as unknown."""
+
+        self.register()
+        state = self.storage.load_snapshot("session-1")
+        self.storage.compare_and_swap(
+            "session-1",
+            state.chain.targeted_revision,
+            state.session.targeted_revision,
+            LifecycleMutation(
+                replace(
+                    state.session,
+                    targeted_revision=state.session.targeted_revision + 1,
+                    turn_origin=None,
+                ),
+            ),
+        )
+        self.assertEqual(
+            self.invoke(last_assistant_message=self.progress_line()), HookExecution()
+        )
+
+    def test_the_old_bare_progress_line_is_no_longer_an_ending(self):
+        self.register()
+        title = self.storage.load_snapshot("session-1").chain.root_title
+        old = (
+            f'In progress: "{title}". Last handoff: none yet. '
+            'Say "continue" to keep going, or ask for a handoff.'
+        )
+        self.assert_block(self.invoke(last_assistant_message=old), "AHK-STOP-WORK")
+
+    def test_stop_work_says_keep_working_and_names_every_legal_ending(self):
+        self.register()
+        reason = json.loads(self.invoke(last_assistant_message="Paused.").stdout)[
+            "reason"
+        ]
+        for phrase in (
+            "Executable work remains, so keep working.",
+            "Waiting on",
+            "reply line",
+            "lifecycle inspect",
+            "decision request",
+            "continuation",
+            "audit",
+        ):
+            self.assertIn(phrase, reason)
+
     def test_any_other_record_less_message_is_still_blocked(self):
         self.register()
         for message in (
             "Still working on it.",
             self.progress_line() + " Nearly done.",
-            self.progress_line().replace("In progress", "In-progress"),
+            self.progress_line("ci").replace("Waiting on", "Waiting for"),
         ):
             with self.subTest(message=message[:40]):
                 self.assert_block(
@@ -1733,10 +1877,13 @@ class EnforcementTests(unittest.TestCase):
         blocked = self.invoke(last_assistant_message="Still working.")
         reason = json.loads(blocked.stdout)["reason"]
         self.assertIn("AHK-STOP-WORK", reason)
-        self.assertNotIn("In progress:", reason)
+        self.assertNotIn("Replied to your message", reason)
+        self.assertNotIn("Waiting on background", reason)
+        published = self.service.inspect()["progress_responses"]
         self.assertEqual(
-            self.service.inspect()["progress_response"], self.progress_line()
+            published, progress_responses(self.storage.load_snapshot("session-1").chain)
         )
+        self.assertEqual(published["reply"], self.progress_line())
 
     def test_session_end_reports_a_session_that_closed_on_a_progress_line(self):
         self.register()
@@ -1924,6 +2071,88 @@ class EnforcementTests(unittest.TestCase):
             self.storage.load_snapshot("session-1").session.mode,
             EnforcementMode.TRACKED,
         )
+
+    def test_a_host_prompt_is_never_judged_as_the_pending_answer(self):
+        """Task notifications and peer messages arrive as prompts, not answers.
+
+        One session drew thirteen `AHK-USER-CLARIFY` notices from them while
+        its decision waited on the user.
+        """
+
+        self.register()
+        self.assertEqual(
+            self.invoke(last_assistant_message=self.decision()), HookExecution()
+        )
+        for index, prompt in enumerate(HOST_PROMPTS):
+            with self.subTest(prompt=prompt[:30]):
+                output = self.invoke(
+                    "UserPromptSubmit", turn_id="host-" + str(index), prompt=prompt
+                )
+                self.assertNotIn("CLARIFY", output.stdout)
+                session = self.storage.load_snapshot("session-1").session
+                self.assertIs(session.mode, EnforcementMode.AWAITING_DECISION)
+                self.assertIsNotNone(session.pending_decision_reference)
+                self.assertEqual(session.turn_origin, "host")
+        self.invoke("UserPromptSubmit", turn_id="user-2", prompt="yes")
+        self.assertIs(
+            self.storage.load_snapshot("session-1").session.mode,
+            EnforcementMode.TRACKED,
+        )
+
+    def test_clarify_names_the_replies_it_accepts(self):
+        self.register()
+        self.invoke(last_assistant_message=self.decision())
+        output = self.invoke(
+            "UserPromptSubmit",
+            turn_id="user-2",
+            prompt="yes- always merge on green",
+        )
+        context = json.loads(output.stdout)["hookSpecificOutput"]["additionalContext"]
+        for phrase in (
+            "AHK-USER-CLARIFY",
+            "Re-ask the pending question",
+            "cannot record completion until the user answers yes or no",
+            "yes, yeah, yep, approved, looks right, go ahead, go with <option>",
+            "no, nope, reject, rejected",
+            "Do not perform the blocked action on an ambiguous reply",
+        ):
+            self.assertIn(phrase, context)
+        self.assertNotIn("always merge", output.stdout)
+        self.assertIs(
+            self.storage.load_snapshot("session-1").session.mode,
+            EnforcementMode.AWAITING_DECISION,
+        )
+
+    def test_clarify_names_exactly_the_classifier_replies(self):
+        from agent_handoff_toolkit import hook_adapters, lifecycle
+
+        approvals = hook_adapters._APPROVAL_FORMS.split(", ")
+        rejections = hook_adapters._REJECTION_FORMS.split(", ")
+        self.assertEqual(set(approvals) - {"go with <option>"}, lifecycle._APPROVALS)
+        self.assertEqual(set(rejections), lifecycle._REJECTIONS)
+        for form, expected in [
+            *((form, lifecycle.AffirmationResult.APPROVE) for form in approvals),
+            *((form, lifecycle.AffirmationResult.REJECT) for form in rejections),
+        ]:
+            with self.subTest(form=form):
+                self.assertIs(
+                    lifecycle.classify_affirmation(form.replace("<option>", "b")),
+                    expected,
+                )
+
+    def test_clarify_for_an_input_decision_names_the_field_form(self):
+        self.register()
+        self.invoke(last_assistant_message=self.decision("missing-input"))
+        output = self.invoke(
+            "UserPromptSubmit", turn_id="user-2", prompt="staging please"
+        )
+        context = json.loads(output.stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("target: <value>", context)
+        self.assertIn("Re-ask the pending question", context)
+        self.assertIn(
+            "Do not perform the blocked action on an ambiguous reply", context
+        )
+        self.assertNotIn("staging", context)
 
     def test_runtime_failures_from_malformed_stop_count_toward_visible_circuit(self):
         self.register()

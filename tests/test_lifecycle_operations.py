@@ -307,7 +307,11 @@ class OperationsTests(unittest.TestCase):
         service.consume_control()
         report = service.inspect()
         self.assertEqual(report["chain_revision"], advanced.targeted_revision)
-        self.assertIsNotNone(report["progress_response"])
+        self.assertNotIn("progress_response", report)
+        self.assertEqual(
+            set(report["progress_responses"]),
+            {"background-work", "ci", "other-session", "reply"},
+        )
 
         # The same command has to work once that chain is finished, and must
         # not report work in progress on work that is done.
@@ -342,7 +346,7 @@ class OperationsTests(unittest.TestCase):
         finished = released.inspect()
         self.assertEqual(finished["chain_revision"], completed.targeted_revision)
         self.assertEqual(finished["mode"], EnforcementMode.COMPLETE.value)
-        self.assertIsNone(finished["progress_response"])
+        self.assertIsNone(finished["progress_responses"])
 
     def test_control_service_register_and_inspect_rotate_derived_capability(self):
         snapshot = self.storage.load_snapshot("session-1")

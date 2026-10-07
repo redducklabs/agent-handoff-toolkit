@@ -134,27 +134,44 @@ and unable to reach any legal terminal outcome.
 
 Tracked sessions have five permitted stop outcomes: continue working, await a
 legitimate decision request, create a valid continuation, complete the
-authorized root with an audit, or end the turn on the canonical progress line.
+authorized root with an audit, or end the turn on one of the progress lines.
 
 `Stop` runs at every turn end, not at the end of a session, so requiring a
 record at every one of them made "I have opened the pull request, watching CI"
-cost a full continuation. The progress line is the alternative:
+cost a full continuation. The progress lines are the alternative. Nothing else
+record-less is accepted, and the comparison is exact. The guarantee they leave
+is: every turn end is a record, an audit, a decision response, or one of those
+lines, and a session that *ends* on one is reported at `SessionEnd`. That is
+weaker on paper than "every turn end is a record", and the evidence is that
+the stronger rule was being paid for in tens of thousands of tokens of record
+text per task per day.
 
-```text
-In progress: "<root title>". Last handoff: <path or none yet>. Say "continue" to keep going, or ask for a handoff.
-```
+There used to be one line, `In progress: ... Say "continue" to keep going, or
+ask for a handoff.`, and it gave no reason. In one session 227 turns ended on
+it. Most were legitimate waits on subagents or other sessions, but the line
+told the user to type "continue" to a session that would resume by itself, and
+agents also used it as an idle pause while executable work remained. Each
+line now names why the turn ended. Three say what the session is waiting on -
+background work, CI, another session - and that it resumes when that reports.
+Only `reply` asks the user to say "continue", and it is accepted only after a
+turn the user started: a task notification or a peer's message is nobody to
+reply to. `AHK-STOP-WORK` says so: executable work remains, so keep working.
 
-Nothing else record-less is accepted, and the comparison is exact. The
-guarantee it leaves is: every turn end is a record, an audit, a decision
-response, or that line, and a session that *ends* on that line is reported at
-`SessionEnd`. That is weaker on paper than "every turn end is a record", and
-the evidence is that the stronger rule was being paid for in tens of thousands
-of tokens of record text per task per day.
+The host marks none of its own turns. `UserPromptSubmit` fires for a task
+notification or a cross-session message exactly as for the user, so the turn
+origin is read from the prompt's opening, by exact prefixes on the stripped
+text. The same classification keeps those prompts from being judged as the
+answer to a pending decision: one session drew thirteen `AHK-USER-CLARIFY`
+notices from them. A user who types one of those openings is read as the host,
+which costs a skipped answer check and the `reply` ending, never an
+authorization. State written before origins were recorded reads as unknown and
+keeps the `reply` ending: refusing it would block existing sessions on a fact
+nobody recorded.
 
-The line is published by `lifecycle inspect` as `progress_response`, not in
-blocking feedback. It contains the declared goal in the user's own words, and
-feedback carries issue codes, the corrective action and bounded identifiers
-only — never authored text.
+The lines are published by `lifecycle inspect` as `progress_responses`, keyed
+by reason, not in blocking feedback. They contain the declared goal in the
+user's own words, and feedback carries issue codes, the corrective action and
+bounded identifiers only — never authored text.
 
 `SessionEnd` is an informational hook and fails open. It emits a
 `systemMessage` only when the session is `TRACKED` and its last stop was a

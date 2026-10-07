@@ -1745,6 +1745,43 @@ class SuccessorScaffoldTests(unittest.TestCase):
         self.assertEqual(validate_markdown(output.read_text(encoding="utf-8")), [])
 
 
+class ProgressResponseTests(unittest.TestCase):
+    """A record-less turn ending names why the turn ended."""
+
+    def test_each_reason_has_one_exact_line(self):
+        from agent_handoff_toolkit.records import (
+            PROGRESS_REASONS,
+            render_progress_responses,
+        )
+
+        self.assertEqual(
+            PROGRESS_REASONS, ("background-work", "ci", "other-session", "reply")
+        )
+        lines = render_progress_responses("Ship it", "/repo/handoffs/a.md")
+        self.assertEqual(
+            lines,
+            {
+                "background-work": 'Waiting on background work for "Ship it". '
+                "This session resumes when it reports. "
+                "Last handoff: /repo/handoffs/a.md.",
+                "ci": 'Waiting on CI for "Ship it". This session resumes when it '
+                "reports. Last handoff: /repo/handoffs/a.md.",
+                "other-session": 'Waiting on another session for "Ship it". '
+                "This session resumes when it replies. "
+                "Last handoff: /repo/handoffs/a.md.",
+                "reply": 'Replied to your message about "Ship it". '
+                "Last handoff: /repo/handoffs/a.md. "
+                'Say "continue" to keep going, or ask for a handoff.',
+            },
+        )
+
+    def test_a_chain_with_no_record_says_none_yet(self):
+        from agent_handoff_toolkit.records import render_progress_responses
+
+        for line in render_progress_responses("Ship it", None).values():
+            self.assertIn("Last handoff: none yet.", line)
+
+
 class PlainResponseTests(unittest.TestCase):
     """Goal 4: the response names the goal, the progress and the ask."""
 

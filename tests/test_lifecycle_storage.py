@@ -287,6 +287,26 @@ class LifecycleStorageTests(unittest.TestCase):
         self.assertIsNone(loaded_chain.successor_authorization_id)
         self.assertIsNone(loaded_chain.publication_evidence)
 
+    def test_turn_origin_loads_from_older_state_as_unknown(self):
+        """State written before the turn origin existed reads it as unknown."""
+
+        from agent_handoff_toolkit.lifecycle_storage import _model
+
+        loaded = _model(
+            {"session_key": "a" * 64, "targeted_revision": 3, "mode": "open"},
+            SessionState,
+        )
+        self.assertIsNone(loaded.turn_origin)
+        for origin in ("user", "host"):
+            self.assertEqual(
+                replace(loaded, turn_origin=origin).turn_origin,
+                origin,
+            )
+        for invalid in ("assistant", "", 1, True):
+            with self.subTest(origin=invalid):
+                with self.assertRaises(ValueError):
+                    replace(loaded, turn_origin=invalid)
+
     def test_state_missing_an_identity_field_still_fails(self):
         from agent_handoff_toolkit.lifecycle_storage import _model
 

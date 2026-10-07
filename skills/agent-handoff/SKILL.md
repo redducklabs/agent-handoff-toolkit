@@ -107,10 +107,16 @@ python .agent-handoff-toolkit/runner.py render-tail <record-path>
 
 That command emits `render_terminal_response`, the exact output `Stop` enforces.
 
-A tracked turn that is simply not finished does not need a record. End it on
-the exact `progress_response` from `lifecycle inspect` and nothing else; any
-other record-less message is blocked. A session that ends on that line is
-reported to the user, so use it to pause, not to conclude.
+While executable work remains, keep working; a turn never ends as an idle
+pause. A tracked turn that cannot continue yet does not need a record. One
+that waits on background work, CI or another session ends on the exact
+`background-work`, `ci` or `other-session` line from `progress_responses` in
+`lifecycle inspect`, and the session resumes when that work reports. One that
+answers the user's own message may end on the `reply` line, which is refused
+after a turn the host started, such as a task notification or another
+session's message. Any other record-less message is blocked. A session that
+ends on one of these lines is reported to the user, so use them to wait, not
+to conclude.
 
 If progress genuinely requires user authority, register a legitimate decision request rather than asking whether to continue or stop. A decision request must name the blocked exact action and recognized authority category; it does not change the authorized root.
 

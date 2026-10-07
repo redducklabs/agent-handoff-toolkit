@@ -181,10 +181,11 @@ items.
   decisions, and validation gates. Its stored context is limited to 120 words
   and the complete generated tail to 300 words. The response must not reproduce
   the handoff document. The absolute clickable link remains the final line.
-- A tracked session may also end a turn on the canonical progress line instead
-  of authoring a record. `lifecycle inspect` publishes that line as
-  `progress_response`, and a session that ends on one is reported at
-  `SessionEnd`.
+- A tracked session may also end a turn without a record on one exact line
+  from `lifecycle inspect`'s `progress_responses`: a wait on background work,
+  CI or another session, or a `reply` to the user's own message, which is
+  refused after a turn the host started. A session that ends on one is
+  reported at `SessionEnd`.
 
 See [the contract](docs/agent-handoff/contract.md) for what an author must write, and [the mechanics reference](docs/agent-handoff/mechanics.md) for the exact formats and enforcement the toolkit applies.
 

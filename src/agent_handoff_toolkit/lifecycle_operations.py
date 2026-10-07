@@ -33,7 +33,7 @@ from .lifecycle import (
     LifecycleMutation,
     _UNGATED,
     classify_affirmation,
-    progress_response,
+    progress_responses,
     render_decision_response,
 )
 from .lifecycle_storage import LocalLifecycleStorage, StaleLifecycleState
@@ -404,14 +404,15 @@ class LifecycleService:
             else (
                 proposal.kind if proposal and proposal.status != "consumed" else None
             ),
-            # The exact message a tracked session may end a turn on without
-            # authoring a record. It is published here rather than in blocking
-            # feedback, which carries issue codes and bounded identifiers only.
-            # A completed chain has no such message: reporting work in
-            # progress there would tell a session that just reconciled onto a
-            # finished authorization something plainly untrue.
-            "progress_response": (
-                progress_response(chain)
+            # The exact messages a tracked session may end a turn on without
+            # authoring a record, keyed by a closed set of reasons. They are
+            # published here rather than in blocking feedback, which carries
+            # issue codes and bounded identifiers only. A completed chain has
+            # none: reporting work in progress there would tell a session
+            # that just reconciled onto a finished authorization something
+            # plainly untrue.
+            "progress_responses": (
+                progress_responses(chain)
                 if chain is not None and chain.status == "active"
                 else None
             ),
@@ -662,7 +663,14 @@ class LifecycleService:
         preceding_assistant_turn_reference,
         expected_chain_revision,
         expected_session_revision,
+        turn_origin=None,
     ):
+        """Record a new external user turn and any adjacent proposal answer.
+
+        `turn_origin`, when given, records who started the turn - `"user"` or
+        `"host"` - in the same write; None leaves the recorded origin alone.
+        """
+
         snapshot = self._snapshot(expected_session_revision, expected_chain_revision)
         if (
             event.event is not EventName.USER_PROMPT_SUBMIT
@@ -750,6 +758,8 @@ class LifecycleService:
             correction_cycle_count=0,
             last_issue_signature=None,
         )
+        if turn_origin is not None:
+            session = replace(session, turn_origin=turn_origin)
         if chain:
             session = replace(
                 session,

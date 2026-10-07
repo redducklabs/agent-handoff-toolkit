@@ -1768,22 +1768,37 @@ def render_tail(record_path: str | os.PathLike[str], text: str) -> str:
     return _audit_tail(data, absolute_path)
 
 
-def render_progress_response(root_title: str, last_record_path: str | None) -> str:
-    """Render the one message a tracked session may end a turn on without a record.
+PROGRESS_REASONS = ("background-work", "ci", "other-session", "reply")
+
+
+def render_progress_responses(
+    root_title: str, last_record_path: str | None
+) -> dict[str, str]:
+    """Render the messages a tracked session may end a turn on without a record.
 
     A `Stop` fires at every turn end, not at the end of a session, so a
     tracked session had to author a full record every time the agent stopped
     talking - "I have opened the pull request, watching CI" cost a 2,400-word
-    record. This line is the alternative: it says the work is still open, says
-    where the last handoff is, and tells the user what to do next.
+    record. These lines are the alternative. Each names why the turn ended:
+    three say what the session is waiting on and that it resumes by itself,
+    and only `reply` - an answer to the user's own message - asks the user to
+    say "continue". A single reasonless line invited exactly that prompt on
+    every wait, and served as an idle pause while executable work remained.
     """
 
     title = str(root_title).strip() or "this work"
     where = str(last_record_path).strip() if last_record_path else ""
-    return (
-        f'In progress: "{title}". Last handoff: {where or "none yet"}. '
-        'Say "continue" to keep going, or ask for a handoff.'
-    )
+    last = f"Last handoff: {where or 'none yet'}."
+    return {
+        "background-work": f'Waiting on background work for "{title}". '
+        f"This session resumes when it reports. {last}",
+        "ci": f'Waiting on CI for "{title}". This session resumes when it '
+        f"reports. {last}",
+        "other-session": f'Waiting on another session for "{title}". '
+        f"This session resumes when it replies. {last}",
+        "reply": f'Replied to your message about "{title}". {last} '
+        'Say "continue" to keep going, or ask for a handoff.',
+    }
 
 
 def render_resume_prompt(record_path: str | os.PathLike[str], text: str) -> str:

@@ -5,9 +5,8 @@ It is the reference for tooling, tests, and anyone diagnosing a blocked session.
 An author writing a record needs `contract.md`; the validator enforces
 everything below, so an author does not reproduce it from memory.
 
-It states what the toolkit does, not why. The reasoning behind each rule lives
-in the toolkit repository's `docs/design/mechanics-rationale.md` and is
-deliberately not distributed: a session diagnosing a block needs the rule.
+It states what the toolkit does; the reasoning lives in the toolkit
+repository's `docs/design/mechanics-rationale.md`, which is not distributed.
 
 ## Metadata block forms
 
@@ -55,12 +54,10 @@ the scope ID, kind, parent, and normalized definition. Status and remaining-work
 fields remain progress fields, but a successor cannot alter an inherited scope's
 definition, kind, parent, or digest without an approved transition.
 
-`transition` is `null` in every record of an ordinary chain, and no record in
-any consumer has ever carried one. A transition exists only to re-root a live
-chain under explicit, adjacent user approval; the toolkit repository's
-`docs/design/mechanics-rationale.md` states how that approval is established. If
-the goal itself has changed, the plainer path is to say so and let the user
-declare the new one.
+`transition` is `null` in every record of an ordinary chain. A transition
+exists only to re-root a live chain under explicit, adjacent user approval,
+established as `docs/design/mechanics-rationale.md` states. A changed goal is
+plainer to declare anew.
 
 ## Final response
 
@@ -85,7 +82,7 @@ A decision request's response keeps its four-line structure, which the HMAC
 verification depends on, and reads `Paused: I need one decision from you.`
 and `This blocks: <blocked action field>`.
 
-The complete generated tail, including its fence and link, is limited to 300 words and 2,400 characters. It must not reproduce the handoff document. The detailed record remains the source of truth; the tail is only a concise pointer and executable start. Completion responses label their link **Audit record (not a handoff)** and do not generate a restart prompt. The tail joins `exact_action` list items with `; `.
+The complete generated tail, including its fence and link, is limited to 300 words and 2,400 characters. It must not reproduce the handoff document. Completion responses label their link **Audit record (not a handoff)** and do not generate a restart prompt. The tail joins `exact_action` list items with `; `.
 
 A schema-v2 terminal response is entirely generated: the renderer is the only
 source, there is no handwritten preamble, and the normalized terminal message
@@ -99,16 +96,27 @@ and the response links an audit rather than a continuation.
 
 A tracked session has five permitted stop outcomes: keep working, await a
 legitimate decision request, create a valid continuation, complete the
-authorized root with an audit, or end the turn on the canonical progress line:
+authorized root with an audit, or end the turn on a line that `lifecycle
+inspect` publishes as `progress_responses`, keyed by reason:
 
 ```text
-In progress: "<root title>". Last handoff: <path or none yet>. Say "continue" to keep going, or ask for a handoff.
+background-work: Waiting on background work for "<root title>". This session resumes when it reports. Last handoff: <path or none yet>.
+ci: Waiting on CI for "<root title>". This session resumes when it reports. Last handoff: <...>.
+other-session: Waiting on another session for "<root title>". This session resumes when it replies. Last handoff: <...>.
+reply: Replied to your message about "<root title>". Last handoff: <...>. Say "continue" to keep going, or ask for a handoff.
 ```
 
-Nothing else record-less is accepted and the comparison is exact. A session
-that *ends* on that line is reported at `SessionEnd`, an informational hook
-that fails open. The line is published by `lifecycle inspect` as
-`progress_response`, never in blocking feedback.
+Nothing else record-less is accepted and the comparison is exact. A wait line
+ends any turn; `reply` ends only a turn the user started, else `AHK-STOP-WORK`
+names `failed=reply-host-turn`. `UserPromptSubmit`
+records the turn's origin: a prompt is host-started when, stripped, it begins
+with `<task-notification>`, `Another Claude session sent a message:`, or a
+`<cross-session-message` or `<agent-message` element. State recorded before
+origins existed reads as unknown and accepts `reply`. A host-started prompt is
+never judged as the answer to a pending decision; `AHK-USER-CLARIFY` names the
+replies that resolve one. A session that *ends* on any of these lines is
+reported at `SessionEnd`, an informational hook that fails open. The lines are
+never in blocking feedback.
 
 Executable work remaining is not a decision request. A decision request names
 one bounded question, blocked action, and recognized authority category; it
@@ -139,11 +147,11 @@ that carried a pointer.
 `Command:`, so a newly tracked session has its session key, challenge and
 expected revision without spending a tool call on a denial.
 
-A stored record path is a locator, not identity. The same repository is a
-different worktree elsewhere and `/mnt/d/...` under WSL, so wherever such a
-path is read or compared, the record's basename under this checkout's
-`handoffs/` is used — or the path itself, when it is in another worktree of
-this repository — and its SHA-256 is the evidence. A digest that does not
+A stored record path is a locator, not identity: in another worktree or
+under WSL it names nothing. Wherever such a path is read or compared, the
+record's basename under this checkout's `handoffs/` is used — or the path
+itself, when it is in another worktree of this repository — and its SHA-256 is
+the evidence. A digest that does not
 match is refused with the same code as before, and the path the retry resolved
 to is reported after `candidate=`.
 
@@ -152,10 +160,10 @@ and the renderer's complete response. A final message without a renderer-owned
 link offers no candidate, whatever other links or pointer text it carries. A
 renderer link that does not qualify is a counted policy block,
 `AHK-STOP-POINTER`, with `failed=` `pointer-ambiguous`,
-`pointer-block-mismatch`, `pointer-audit-restart`, `pointer-noncanonical` or
-`pointer-outside-handoffs`; a candidate must be in this checkout's own
-`handoffs/`, which the last names after `root=`. An attempted assistant message may already
-be displayed before `Stop` runs; the hook cannot retract that display, but it
+`pointer-block-mismatch`, `pointer-audit-restart`, `pointer-noncanonical`,
+`pointer-missing` or `pointer-outside-handoffs`; a candidate must be in this
+checkout's own `handoffs/`, which the last names after `root=`. An attempted
+assistant message may already be displayed before `Stop` runs; the hook cannot retract that display, but it
 returns corrective feedback and requires a corrected response or a visibly
 failed policy outcome.
 
@@ -178,14 +186,12 @@ erases the user's message and starts no turn. That event has no policy denial.
 It reports instead, naming the issue on `additionalContext` for the agent and
 one sentence on `systemMessage` for the user.
 
-Its bookkeeping is best effort. Each step is attempted, a step that fails is
-named, and the turn proceeds either way, so a state the toolkit does not
-anticipate costs a skipped step rather than a session nobody can talk to. The
-one dependency that is deliberately not best effort is enrollment: a `Track:`
-or `Continue from handoff:` declaration is registered only when the turn that
+Its bookkeeping is best effort: each step is attempted, a failed step is
+named, and the turn proceeds. Enrollment is the exception: a `Track:` or
+`Continue from handoff:` declaration is registered only when the turn that
 carried it was observed, because authorization binds to the stored turn
-reference and enrolling without it would name the wrong turn. A declaration
-that could not be enrolled says the session is untracked.
+reference. A declaration that could not be enrolled says the session is
+untracked.
 
 A runtime fault is a malfunction, not a decision about the work. Once the
 adapter has loaded, `AHK-HOOK-RUNTIME` blocks only a session whose own state
@@ -193,13 +199,11 @@ was read and shows a declared mode outside `OPEN` and `ONE_OFF`, and never at
 `UserPromptSubmit`; otherwise it is a bare `systemMessage` carrying no
 decision, so the host behaves as it would with no hook installed.
 
-Install corruption is the exception, and it is deliberate. When the package or
+Install corruption is the deliberate exception. When the package or
 the adapter cannot be imported — or its dispatch fails outright — nothing is
 in a position to read what the session declared, so `PreToolUse` is denied and
-`Stop` is blocked regardless of mode. That is the one boundary where a session
-that declared nothing is still gated, because the alternative is running
-unobserved on a runtime known to be broken. `UserPromptSubmit` is delivered
-even there.
+`Stop` is blocked regardless of mode. `UserPromptSubmit` is delivered even
+there.
 
 Every report names its failing stage and exception class after `failed=`; the
 bootstrap boundary distinguishes an import that produced no runtime from a
@@ -221,11 +225,11 @@ gives no single response.
 `lifecycle inspect`, `register-root`, `resume` and `join` require a session key,
 challenge and expected revision, and a session whose hook flow is failing has no
 path to any of them. `lifecycle doctor` is the out-of-band entry point. It takes
-no session binding because it decides nothing and changes nothing, and for the
-same reason it is the one lifecycle subcommand the control interception does not
-intercept. It reports where state resolves, whether it opens, whether its lock is
-reachable, which runner is installed and which one is running, and — given a raw
-host session ID — that session's enforcement mode. The derived session key and
+no session binding and is the one lifecycle subcommand the control interception
+does not intercept, because it decides and changes nothing. It reports where
+state resolves, whether it opens, whether its lock is reachable, which runner
+is installed and which one is running, and — given a raw host session ID —
+that session's enforcement mode. The derived session key and
 the local HMAC secret never appear in its output.
 
 ## Enforcement modes and the write/stop advisories
@@ -354,8 +358,7 @@ A session chooses whether to register a root; no tool is denied to force the
 decision. `register-root` is a control command, so it needs the session key,
 challenge and expected revision bound into it, and the definition it carries
 must be canonicalized and encoded in the fixed form the parser accepts. A
-pre-root session has no shell with which to do that, so it attempts the command
-with the semantic slots as plain text:
+pre-root session attempts the command with the semantic slots as plain text:
 
 ```
 python <runner> lifecycle register-root --scope-id <id> --scope-kind <kind> \
@@ -363,9 +366,9 @@ python <runner> lifecycle register-root --scope-id <id> --scope-kind <kind> \
 ```
 
 The denial validates those slots, encodes the definition, and returns the
-complete bound command after `Command:`. Run that verbatim. Nothing about what
-may execute changes: the returned command is accepted only because it satisfies
-the same fixed-token parser, which the hook verifies before offering it.
+complete bound command after `Command:`. Run that verbatim. The returned command
+still has to satisfy the fixed-token parser, which the hook verifies before
+offering it.
 
 The three semantic slots are the author's. Derive them from the initiating user
 request; the toolkit supplies the encoding, never the meaning. A definition

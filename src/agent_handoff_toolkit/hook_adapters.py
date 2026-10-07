@@ -96,7 +96,7 @@ _ALIASES = {
 _ACTIONS = {
     "AHK-PRE-ROOT": "Register, resume, join, or adopt using the current bootstrap challenge.",
     "AHK-CONTROL-BINDING": "Use the current derived session capability and revision.",
-    "AHK-STOP-WORK": "Perform the authorized action or render a valid successor record.",
+    "AHK-STOP-WORK": "Executable work remains, so keep working. End a turn only on a `Waiting on` line or the reply line from lifecycle inspect, a decision request, a continuation, or an audit.",
     "AHK-STOP-ROOT": "Render the locked root and registered authorization evidence.",
     "AHK-STOP-SCOPE": "Restore the inherited ordered scope definitions.",
     "AHK-STOP-PREDECESSOR": "Render a successor of the live record with its exact source digest.",
@@ -116,6 +116,32 @@ def event_name(event: str) -> EventName:
         return _ALIASES[event.lower().replace("_", "").replace("-", "")]
     except KeyError as error:
         raise ValueError("invalid lifecycle event") from error
+
+
+# The leading forms of a prompt the host submits itself. `UserPromptSubmit`
+# fires for those turns too and no payload field marks them, so the prompt's
+# own opening is the only evidence. Each rule is an exact, case-sensitive
+# prefix of the prompt with leading and trailing whitespace stripped:
+#   - `<task-notification>`: a background task reporting;
+#   - `Another Claude session sent a message:`: a cross-session message;
+#   - `<cross-session-message` or `<agent-message` followed by `>`, `/` or
+#     whitespace: the same, as a leading element (attributes allowed).
+# Anything else is the user's. A user who types one of these forms is read as
+# the host; the cost is a skipped answer check and a refused `reply` ending,
+# never an authorization.
+_HOST_PROMPT_RE = re.compile(
+    r"<task-notification>"
+    r"|Another Claude session sent a message:"
+    r"|<(?:cross-session-message|agent-message)[\s>/]"
+)
+
+
+def prompt_origin(prompt):
+    """Name who started a turn, `"host"` or `"user"`, from its prompt alone."""
+
+    if not isinstance(prompt, str):
+        return "user"
+    return "host" if _HOST_PROMPT_RE.match(prompt.strip()) else "user"
 
 
 def _string(value, limit, *, multiline=False, empty=False, trimmed=True):
@@ -655,6 +681,10 @@ def _candidate(event, snapshot, root):
         or target.name.lower() == "readme.md"
     ):
         raise _PointerRefused("pointer-outside-handoffs")
+    # A pointer to a record this checkout does not hold is the model's to
+    # correct - usually a record rendered in another worktree - not a fault.
+    if not os.path.lexists(target):
+        raise _PointerRefused("pointer-missing")
     text, data, digest = _read_record(path, root)
     predecessor = predecessor_path = predecessor_digest = None
     reference = data.get("predecessor")
@@ -1288,6 +1318,10 @@ def _user_prompt_steps(event, snapshot, storage, raw_id, root, notices):
                     "session is untracked. Tell the user."
                 )
             return HookExecution()
+    # Who started the turn decides one `Stop` ending: the `reply` line is
+    # accepted only after a turn the user started. It is recorded with the
+    # observed turn, in the same write.
+    origin = prompt_origin(event.current_user_message)
     proposal = session.pending_transition_reference
     preceding = None
     if (
@@ -1309,6 +1343,7 @@ def _user_prompt_steps(event, snapshot, storage, raw_id, root, notices):
             if snapshot.chain
             else 0,
             expected_session_revision=session.targeted_revision,
+            turn_origin=origin,
         )
 
     # This step records more than the turn reference: it classifies a
@@ -1318,6 +1353,25 @@ def _user_prompt_steps(event, snapshot, storage, raw_id, root, notices):
     # than merely waited out.
     updated = _attempt("observe-turn", notices, observe, None)
     if updated is None:
+        if session.turn_origin != origin:
+            # Best effort on its own: a stale origin would cost the next
+            # `Stop` its correct ending, and this write needs nothing the
+            # failed observation would have produced.
+            def record_origin(current=snapshot):
+                return _commit(
+                    storage,
+                    raw_id,
+                    current,
+                    LifecycleMutation(
+                        replace(
+                            current.session,
+                            turn_origin=origin,
+                            targeted_revision=current.session.targeted_revision + 1,
+                        )
+                    ),
+                )
+
+            _attempt("turn-origin", notices, record_origin, snapshot)
         # Enrollment is deliberately *not* independent of observation.
         # `register_root` binds the new authorization to whatever turn
         # reference is already stored, so enrolling after a failed
@@ -1356,7 +1410,11 @@ def _user_prompt_steps(event, snapshot, storage, raw_id, root, notices):
         # answer as collateral.
         updated = _attempt("correction-clear", notices, clear, updated)
     request = updated.session.pending_decision_reference
-    if request is not None:
+    # A turn the host started - a task notification, a message from another
+    # session - is not the user answering. Judging it as an answer drew a
+    # clarification notice for every one while the question stayed open.
+    host_turn = origin == "host"
+    if request is not None and not host_turn:
 
         def resolve(current=updated):
             # Classifying the answer belongs inside the step: deciding whether
@@ -1394,7 +1452,7 @@ def _user_prompt_steps(event, snapshot, storage, raw_id, root, notices):
             "untracked. Tell the user."
         )
         return HookExecution()
-    return _pending_clarification(updated)
+    return HookExecution() if host_turn else _pending_clarification(updated)
 
 
 def _enroll(event, updated, service, storage, root):
@@ -1452,18 +1510,59 @@ def _enroll(event, updated, service, storage, root):
     return HookExecution()
 
 
-def _pending_clarification(updated):
-    """Ask for the outstanding answer, whatever else the turn did."""
+# Every plain reply `classify_affirmation` accepts, and nothing else; a test
+# holds these to its tables. Matching ignores case, repeated spaces and trailing `.!?`;
+# nothing else is inferred, so a qualified reply such as "yes, but..." stays
+# ambiguous by design.
+_APPROVAL_FORMS = "yes, yeah, yep, approved, looks right, go ahead, go with <option>"
+_REJECTION_FORMS = "no, nope, reject, rejected"
+_APPROVAL_CATEGORIES = frozenset(
+    {
+        AuthorityCategory.EXTERNAL_EFFECT,
+        AuthorityCategory.DESTRUCTIVE_OPERATION,
+        AuthorityCategory.REPOSITORY_APPROVAL,
+    }
+)
 
+
+def _pending_clarification(updated):
+    """Ask for the outstanding answer, naming the replies that resolve it.
+
+    Fixed English plus one closed identifier, the blocked exact-action field.
+    The user's reply is never echoed.
+    """
+
+    request = updated.session.pending_decision_reference
     remaining_proposal = updated.session.pending_transition_reference
-    if updated.session.pending_decision_reference or (
-        remaining_proposal and remaining_proposal.status == "pending"
-    ):
-        return _context(
-            "UserPromptSubmit",
-            "AHK-USER-CLARIFY: Clarify the pending decision or reissue the exact scope proposal for an adjacent response. No new authorization was granted.",
+    proposal_pending = remaining_proposal and remaining_proposal.status == "pending"
+    if request is None and not proposal_pending:
+        return HookExecution()
+    if request is not None and request.category not in _APPROVAL_CATEGORIES:
+        forms = (
+            f"Accepted reply, alone on the message: {request.blocked_action_field}: "
+            "<value>, where <value> is a single token. The session cannot record "
+            "completion until the user answers in that form."
         )
-    return HookExecution()
+    else:
+        forms = (
+            f"Accepted replies, alone on the message, case-insensitive: approve "
+            f"with {_APPROVAL_FORMS}; reject with {_REJECTION_FORMS}. The session "
+            "cannot record completion until the user answers yes or no."
+        )
+    subject = (
+        "the pending decision"
+        if request is not None
+        else "the pending scope proposal, reissued exactly for an adjacent response"
+    )
+    return _context(
+        "UserPromptSubmit",
+        "AHK-USER-CLARIFY: The reply did not resolve "
+        + subject
+        + ". Re-ask the pending question and tell the user: "
+        + forms
+        + " Do not perform the blocked action on an ambiguous reply. No new "
+        "authorization was granted.",
+    )
 
 
 def _root_scope_id(title):
@@ -1667,11 +1766,7 @@ def _resume_precheck(storage, data, path, digest):
 
 def _decision_resolved(message, request):
     classification = classify_affirmation(message)
-    if request.category in {
-        AuthorityCategory.EXTERNAL_EFFECT,
-        AuthorityCategory.DESTRUCTIVE_OPERATION,
-        AuthorityCategory.REPOSITORY_APPROVAL,
-    }:
+    if request.category in _APPROVAL_CATEGORIES:
         return classification in {AffirmationResult.APPROVE, AffirmationResult.REJECT}
     # Free-form input is only mechanically proven when the response explicitly
     # names the blocked field and supplies a bounded concrete token. Unknown
