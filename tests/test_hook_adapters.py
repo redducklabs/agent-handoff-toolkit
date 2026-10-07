@@ -795,6 +795,53 @@ class EnforcementTests(unittest.TestCase):
         self.assertIn("error:ValueError", details)
         self.assertLessEqual(len(reason.encode()), 1200)
 
+    def test_a_held_lock_is_a_named_runtime_fault_not_a_hang(self):
+        """A hung lock holder used to stall every hook until the host timeout."""
+
+        from agent_handoff_toolkit import lifecycle_storage
+
+        self.register()
+        bounded = LocalLifecycleStorage(
+            self.root, state_root=self.root / "state", lock_timeout=0.3
+        )
+        windows = os.name == "nt"
+        held = lifecycle_storage._open_private(
+            self.root / "state" / "registry.lock", os.O_RDWR | os.O_CREAT
+        )
+        lifecycle_storage._lock_descriptor(held, windows=windows)
+        try:
+            for name in ("Stop", "PreToolUse"):
+                with self.subTest(event=name):
+                    output = run_hook(
+                        "claude",
+                        name,
+                        json.dumps(
+                            payload(
+                                self.root,
+                                name,
+                                tool_name="Write",
+                                tool_input={"file_path": "x"},
+                            )
+                            if name == "PreToolUse"
+                            else payload(self.root, name)
+                        ),
+                        self.root,
+                        bounded,
+                    )
+                    self.assertEqual(output.exit_code, 0)
+                    data = json.loads(output.stdout)
+                    # The lock kept the mode from being read, so nothing is
+                    # decided; the fault is named on the advisory channel.
+                    self.assertNotIn("decision", data)
+                    self.assertNotIn("hookSpecificOutput", data)
+                    self.assertIn(
+                        "failed=stage:load-state,error:LockTimeout",
+                        data["systemMessage"],
+                    )
+        finally:
+            lifecycle_storage._unlock_descriptor(held, windows=windows)
+            os.close(held)
+
     def test_unreadable_state_is_reported_rather_than_enforced(self):
         """The mode is unknown when state cannot be read, so nothing is decided.
 
