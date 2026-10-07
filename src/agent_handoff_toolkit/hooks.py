@@ -86,6 +86,44 @@ def hook_runtime_reason(stage: str, error: BaseException | None = None) -> str:
     )
 
 
+def _git_common_dir(checkout: Path) -> Path | None:
+    """Name the repository a checkout belongs to, without spawning git.
+
+    A main checkout's `.git` is the common directory itself. A linked worktree's
+    `.git` is a file naming its private directory, whose `commondir` file leads
+    back to the shared one. Anything else - a missing or oversized file, no
+    `gitdir:` line, a path that cannot be resolved - names no repository.
+    """
+
+    marker = checkout / ".git"
+    try:
+        if marker.is_dir():
+            return marker.resolve()
+        if not marker.is_file():
+            return None
+        with marker.open("rb") as source:
+            text = source.read(4097)
+        if len(text) > 4096 or not text.startswith(b"gitdir:"):
+            return None
+        private = Path(text[len(b"gitdir:") :].decode("utf-8").strip())
+        if not private.is_absolute():
+            private = checkout / private
+        private = private.resolve()
+        pointer = private / "commondir"
+        if not pointer.is_file():
+            return private
+        with pointer.open("rb") as source:
+            text = source.read(4097)
+        if len(text) > 4096:
+            return None
+        common = Path(text.decode("utf-8").strip())
+        return (common if common.is_absolute() else private / common).resolve()
+    except (OSError, ValueError):
+        # Unreadable or unrepresentable: it names no repository, and a checkout
+        # whose repository cannot be named is never treated as this one.
+        return None
+
+
 def hook_repository_root(payload: object, fallback: Path) -> Path:
     """Name the checkout a hook serves: the one holding the session's cwd.
 
@@ -94,11 +132,13 @@ def hook_repository_root(payload: object, fallback: Path) -> Path:
     variable stays at the original checkout even inside a worktree - while
     desktop worktrees live inside the main checkout, so rooting at the process
     silently served a worktree session from the main checkout's runner and
-    `handoffs/`. The root is the nearest directory at or above an absolute,
-    existing payload `cwd` that holds `.git`, file or directory. Anything
-    else - no `cwd`, a relative or missing one, none of its ancestors a
-    checkout - keeps `fallback`, the process-derived root, and the event's
-    own containment check still applies to whatever was chosen.
+    `handoffs/`. The candidate is the nearest directory at or above an
+    absolute, existing payload `cwd` that holds `.git`, file or directory, and
+    it is the root only when it is a worktree of the same repository as
+    `fallback`, the process-derived root: the same git common directory. A
+    session can stand in any clone on the machine, and rooting at an unrelated
+    one would bind its commands to that clone's runner. Anything else keeps
+    `fallback`, and the event's own containment check still applies.
     """
 
     fallback = Path(fallback).resolve()
@@ -110,14 +150,24 @@ def hook_repository_root(payload: object, fallback: Path) -> Path:
         if not start.is_absolute() or not start.is_dir():
             return fallback
         resolved = start.resolve()
-        for candidate in (resolved, *resolved.parents):
-            if (candidate / ".git").exists():
-                return candidate
+        checkout = next(
+            (
+                candidate
+                for candidate in (resolved, *resolved.parents)
+                if (candidate / ".git").exists()
+            ),
+            None,
+        )
     except (OSError, ValueError):
         # An unreadable or unrepresentable path names no checkout; the
         # process-derived root is the documented answer for that.
         return fallback
-    return fallback
+    if checkout is None or checkout == fallback:
+        return fallback
+    common = _git_common_dir(checkout)
+    if common is None or common != _git_common_dir(fallback):
+        return fallback
+    return checkout
 
 
 @dataclass(frozen=True)

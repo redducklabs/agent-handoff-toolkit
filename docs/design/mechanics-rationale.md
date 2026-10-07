@@ -61,7 +61,11 @@ rooted the session there, and bound its commands to that runner and its
 `handoffs/`. Every host payload carries `cwd`, the session's own directory, so
 that names the checkout: the hook's repository root is the nearest directory at
 or above it holding `.git`, and the located runner hands the invocation, once,
-to the runner of that checkout when it is a different file. The process's
+to the runner of that checkout when it is a different file. Both steps apply
+only to a worktree of the same repository, compared by git common directory
+and read from `.git` without spawning git: a session can stand in any clone on
+the machine, and handing off there would execute a runner this repository
+never pinned. The process's
 directory remains the fallback for a payload that names no checkout, and the
 hand-off falls through to the located runner whenever the other one does not
 answer cleanly, so neither step can turn a fault into a block.

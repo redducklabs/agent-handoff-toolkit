@@ -178,6 +178,47 @@ _MAX_HOOK_INPUT = 128 * 1024 + 1
 _HANDOFF_MARKER = "AHK_RUNNER_HANDOFF"
 
 
+def _checkout(start: Path) -> Path | None:
+    """The nearest directory at or above `start` holding `.git`."""
+
+    for directory in (start, *start.parents):
+        if (directory / ".git").exists():
+            return directory
+    return None
+
+
+def _git_common_dir(checkout: Path) -> Path | None:
+    """Name the repository a checkout belongs to, without spawning git.
+
+    The same reading as the package's: a `.git` directory is the common
+    directory; a `.git` file names a private directory whose `commondir` leads
+    back to it. This runner cannot import the package before deciding which
+    copy of it to load, so the reading is repeated here. Any error raises and
+    the caller hands nothing off.
+    """
+
+    marker = checkout / ".git"
+    if marker.is_dir():
+        return marker.resolve()
+    with marker.open("rb") as source:
+        text = source.read(4097)
+    if len(text) > 4096 or not text.startswith(b"gitdir:"):
+        return None
+    private = Path(text[len(b"gitdir:") :].decode("utf-8").strip())
+    if not private.is_absolute():
+        private = checkout / private
+    private = private.resolve()
+    pointer = private / "commondir"
+    if not pointer.is_file():
+        return private
+    with pointer.open("rb") as source:
+        text = source.read(4097)
+    if len(text) > 4096:
+        return None
+    common = Path(text.decode("utf-8").strip())
+    return (common if common.is_absolute() else private / common).resolve()
+
+
 def _session_runner(data: bytes) -> Path | None:
     """Name the runner pinned by the checkout the payload's `cwd` is in.
 
@@ -185,9 +226,12 @@ def _session_runner(data: bytes) -> Path | None:
     process's directory, and the host does not promise that is the session's.
     A desktop worktree sits inside the main checkout, so the walk can land on
     the main checkout's runner while the session works in the worktree. The
-    payload's `cwd` is the session's directory; the nearest runner at or above
-    it is the one that checkout pins. `None` means there is nothing to hand
-    to: no usable `cwd`, no runner there, or this very runner.
+    payload's `cwd` is the session's directory, and the checkout holding it
+    names the runner: `<that checkout>/.agent-handoff-toolkit/runner.py`, and
+    only when that checkout is a worktree of the same repository as this
+    runner's - the same git common directory. A session can stand in any
+    clone on the machine, and running that clone's runner would execute code
+    this repository never pinned. `None` means there is nothing to hand to.
     """
 
     payload = json.loads(data.decode("utf-8"))
@@ -197,16 +241,17 @@ def _session_runner(data: bytes) -> Path | None:
     start = Path(cwd)
     if not start.is_absolute() or not start.is_dir():
         return None
-    start = start.resolve()
-    for directory in (start, *start.parents):
-        candidate = directory / ".agent-handoff-toolkit" / "runner.py"
-        if candidate.is_file():
-            if candidate.resolve() == Path(__file__).resolve() or os.path.samefile(
-                candidate, __file__
-            ):
-                return None
-            return candidate
-    return None
+    checkout = _checkout(start.resolve())
+    own = _checkout(Path(__file__).resolve().parent)
+    if checkout is None or own is None or checkout == own:
+        return None
+    candidate = checkout / ".agent-handoff-toolkit" / "runner.py"
+    if not candidate.is_file() or os.path.samefile(candidate, __file__):
+        return None
+    common = _git_common_dir(checkout)
+    if common is None or common != _git_common_dir(own):
+        return None
+    return candidate
 
 
 def _hand_off(arguments: list[str]) -> bool:

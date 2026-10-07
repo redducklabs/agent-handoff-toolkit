@@ -1817,10 +1817,32 @@ class DistributionTests(unittest.TestCase):
         python_command = load_manifest()["runtime"]["python_command"]
         command = hook_command(python_command, "claude", "session-start")
         with tempfile.TemporaryDirectory() as directory:
-            main = Path(directory).resolve() / "main"
+            scratch = Path(directory).resolve()
+            main = scratch / "main"
             owned = main / ".agent-handoff-toolkit"
             owned.mkdir(parents=True)
-            (main / ".git").mkdir()
+
+            def git(*arguments, cwd):
+                subprocess.run(
+                    [
+                        "git",
+                        "-c",
+                        "user.name=Synthetic",
+                        "-c",
+                        "user.email=synthetic@example.invalid",
+                        "-c",
+                        "commit.gpgsign=false",
+                        *arguments,
+                    ],
+                    cwd=cwd,
+                    env={**os.environ, "GIT_CEILING_DIRECTORIES": scratch.as_posix()},
+                    capture_output=True,
+                    check=True,
+                )
+
+            git("init", "-q", cwd=main)
+            git("commit", "-q", "--allow-empty", "-m", "synthetic", cwd=main)
+            git("worktree", "add", "-q", ".claude/worktrees/x", cwd=main)
             shutil.copyfile(ROOT / "distribution" / "runner.py", owned / "runner.py")
             shutil.copytree(
                 ROOT / "src" / "agent_handoff_toolkit",
@@ -1830,7 +1852,23 @@ class DistributionTests(unittest.TestCase):
             worktree = main / ".claude" / "worktrees" / "x"
             pinned = worktree / ".agent-handoff-toolkit" / "runner.py"
             pinned.parent.mkdir(parents=True)
-            (worktree / ".git").write_text("gitdir: elsewhere\n", encoding="utf-8")
+            # Two checkouts of other repositories, each pinning a runner that
+            # would leave a marker if it ever ran: a separate clone, and one
+            # nested inside the main checkout, where the walk from its
+            # directory would otherwise pass on to the main checkout's runner.
+            executed = scratch / "executed"
+            hostile = (
+                "import pathlib\n"
+                f"pathlib.Path({str(executed)!r}).write_text('ran')\n"
+                "print('{}')\n"
+            )
+            unrelated = (scratch / "clone", main / "vendor" / "clone")
+            for clone in unrelated:
+                (clone / ".agent-handoff-toolkit").mkdir(parents=True)
+                git("init", "-q", cwd=clone)
+                (clone / ".agent-handoff-toolkit" / "runner.py").write_text(
+                    hostile, encoding="utf-8", newline="\n"
+                )
             echo = (
                 "import json, os, sys\n"
                 "data = sys.stdin.buffer.read()\n"
@@ -1886,6 +1924,11 @@ class DistributionTests(unittest.TestCase):
 
             with self.subTest("the located runner is the session's own"):
                 reminder(run(json.dumps({"session_id": "s", "cwd": str(main)})))
+
+            for clone in unrelated:
+                with self.subTest("never runs another repository's runner", at=clone):
+                    reminder(run(json.dumps({"session_id": "s", "cwd": str(clone)})))
+                    self.assertFalse(executed.exists())
 
             with self.subTest("a handed-off invocation never hands off again"):
                 reminder(run(environment={**os.environ, "AHK_RUNNER_HANDOFF": "1"}))

@@ -45,7 +45,7 @@
     },
     {
       "source": "docs/agent-handoff/mechanics.md",
-      "sha256": "6241f0b0456b79889146d8022f381429a050b2561e32c7bfe48cba72275b6363",
+      "sha256": "81aa8c518501081fd67edcac8d917305043c5fbf25f66a80602e5857dc0d41a7",
       "install": {
         "mode": "copy",
         "transform": "none",
@@ -157,7 +157,7 @@
     },
     {
       "source": "distribution/runner.py",
-      "sha256": "a8473b4ef5b1a5bcc09b68dbf09554bf4e9da356d5be5fcd675bd6193e11ba99",
+      "sha256": "b9a935910938dba9f12d66f6b6fb315ebd08404065fc1f62fbc36af5229f7bc0",
       "install": {
         "mode": "copy",
         "transform": "none",
@@ -212,7 +212,7 @@
     },
     {
       "source": "src/agent_handoff_toolkit/hooks.py",
-      "sha256": "887c0493a84ad76ad41ae3e1a67dca52770f83b8e1ed25459acbda1f7e3af8ba",
+      "sha256": "c4f0f7d702b2d879335fa769d835498d3d0958bf06d781ea7fdbbf33c010d434",
       "install": {
         "mode": "copy",
         "transform": "none",

@@ -23,7 +23,7 @@ from agent_handoff_toolkit.hook_adapters import (  # noqa: E402
     normalize_event,
     render_hook_execution,
 )
-from agent_handoff_toolkit.hooks import run_hook  # noqa: E402
+from agent_handoff_toolkit.hooks import hook_repository_root, run_hook  # noqa: E402
 from agent_handoff_toolkit.lifecycle import (  # noqa: E402
     DecisionKind,
     progress_response,
@@ -563,7 +563,12 @@ class EnforcementTests(unittest.TestCase):
         worktree = self.root / ".claude" / "worktrees" / "x"
         (worktree / "handoffs").mkdir(parents=True)
         (worktree / ".agent-handoff-toolkit").mkdir()
-        (worktree / ".git").write_text("gitdir: elsewhere\n")
+        # The layout `git worktree add` writes: a `.git` file naming a
+        # per-worktree directory whose `commondir` leads back to the shared one.
+        private = self.root / ".git" / "worktrees" / "x"
+        private.mkdir(parents=True)
+        (private / "commondir").write_text("../..\n")
+        (worktree / ".git").write_text(f"gitdir: {private.as_posix()}\n")
         runner = worktree / ".agent-handoff-toolkit" / "runner.py"
         runner.write_text("# owned runner\n")
 
@@ -583,6 +588,31 @@ class EnforcementTests(unittest.TestCase):
         ]["permissionDecisionReason"]
         command = reason.split("Command: ", 1)[1]
         self.assertEqual(command.split()[1], runner.as_posix())
+
+    def test_hook_never_roots_at_an_unrelated_checkout(self):
+        """Only a checkout of the same repository can take the root.
+
+        The payload `cwd` is the session's directory, and a session can stand
+        in any clone on the machine. Rooting there would bind commands to that
+        clone's runner, so a checkout that does not share this repository's
+        git common directory leaves the process-derived root in place.
+        """
+
+        with tempfile.TemporaryDirectory() as directory:
+            unrelated = Path(directory).resolve()
+            (unrelated / ".git").mkdir()
+            nested = unrelated / "src"
+            nested.mkdir()
+            for cwd in (unrelated, nested):
+                with self.subTest(cwd=cwd.name):
+                    self.assertEqual(
+                        hook_repository_root({"cwd": str(cwd)}, self.root), self.root
+                    )
+            (unrelated / ".git").rmdir()
+            (unrelated / ".git").write_text("gitdir: elsewhere\n")
+            self.assertEqual(
+                hook_repository_root({"cwd": str(unrelated)}, self.root), self.root
+            )
 
     def stop_payload(self, drop=(), **changes):
         value = payload(self.root, "Stop", **changes)

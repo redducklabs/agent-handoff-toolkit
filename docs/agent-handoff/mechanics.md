@@ -205,11 +205,12 @@ signals a fault.
 Hook input is read from stdin as UTF-8 bytes, whatever the console code page;
 input that is not UTF-8 is `AHK-HOOK-RUNTIME` at stage `decode-input`.
 
-A hook's repository root is the nearest directory at or above the payload
-`cwd` that holds `.git`; with no such `cwd`, it is the hook process's
-directory. The runner the managed command locates hands a hook, once, to the
-runner of the checkout that `cwd` names when that is another file, and serves
-the hook itself if that runner gives no single response.
+A hook's repository root is the checkout holding the payload `cwd` (its
+nearest ancestor with `.git`) when that is a worktree of the same repository,
+sharing its git common directory; otherwise it is the hook process's
+directory. The located runner hands a hook, once, to that worktree's
+`.agent-handoff-toolkit/runner.py`, and serves the hook itself if that runner
+gives no single response.
 
 ## Recovering a broken hook runtime
 
