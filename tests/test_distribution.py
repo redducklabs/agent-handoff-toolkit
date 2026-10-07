@@ -260,16 +260,16 @@ class DistributionTests(unittest.TestCase):
         manifest = load_manifest()
 
         self.assertEqual(manifest["manifest_version"], 2)
-        self.assertEqual(manifest["toolkit_version"], "1.1.0")
+        self.assertEqual(manifest["toolkit_version"], "1.2.0")
         self.assertEqual(manifest["text_hash"], "utf8-lf-sha256-v1")
         self.assertIn(
-            '__version__ = "1.1.0"',
+            '__version__ = "1.2.0"',
             (ROOT / "src/agent_handoff_toolkit/__init__.py").read_text(
                 encoding="utf-8"
             ),
         )
         self.assertIn(
-            'version = "1.1.0"',
+            'version = "1.2.0"',
             (ROOT / "pyproject.toml").read_text(encoding="utf-8"),
         )
         self.assertEqual(manifest["record_schema_version"], 2)
@@ -1421,18 +1421,18 @@ class DistributionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             consumer = Path(directory)
             result = run_source_cli(
-                "install", "--apply", target=consumer, release="v1.1.0"
+                "install", "--apply", target=consumer, release="v1.2.0"
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            check = run_source_cli("sync", "--check", target=consumer, release="v1.1.0")
+            check = run_source_cli("sync", "--check", target=consumer, release="v1.2.0")
             self.assertEqual(check.returncode, 0, check.stderr)
             state = json.loads(
                 (consumer / ".agent-handoff-toolkit/install-state.json").read_text(
                     encoding="utf-8"
                 )
             )
-            self.assertEqual(state["release"], "v1.1.0")
-            self.assertEqual(state["toolkit_version"], "1.1.0")
+            self.assertEqual(state["release"], "v1.2.0")
+            self.assertEqual(state["toolkit_version"], "1.2.0")
             self.assertEqual(state["state_version"], 1)
             self.assertEqual(state["record_schema_version"], 2)
             self.assertEqual(
@@ -1623,11 +1623,11 @@ class DistributionTests(unittest.TestCase):
             legacy_record.write_bytes(legacy_bytes)
 
             upgraded = run_source_cli(
-                "sync", "--apply", target=consumer, release="v1.1.0"
+                "sync", "--apply", target=consumer, release="v1.2.0"
             )
             self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
             current = run_source_cli(
-                "sync", "--check", target=consumer, release="v1.1.0"
+                "sync", "--check", target=consumer, release="v1.2.0"
             )
 
             self.assertEqual(current.returncode, 0, current.stderr)
@@ -1654,8 +1654,8 @@ class DistributionTests(unittest.TestCase):
                     encoding="utf-8"
                 )
             )
-            self.assertEqual(state["release"], "v1.1.0")
-            self.assertEqual(state["toolkit_version"], "1.1.0")
+            self.assertEqual(state["release"], "v1.2.0")
+            self.assertEqual(state["toolkit_version"], "1.2.0")
             self.assertEqual(state["record_schema_version"], 2)
             installed_source = (
                 consumer / ".agent-handoff-toolkit" / "src" / "agent_handoff_toolkit"
@@ -1698,7 +1698,7 @@ class DistributionTests(unittest.TestCase):
                 json.dumps(modified), encoding="utf-8", newline="\n"
             )
             conflict = run_source_cli(
-                "sync", "--check", target=conflicted, release="v1.1.0"
+                "sync", "--check", target=conflicted, release="v1.2.0"
             )
             self.assertEqual(conflict.returncode, 2)
             self.assertIn("managed-json-modified", conflict.stdout)
@@ -1725,7 +1725,7 @@ class DistributionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             consumer = Path(directory)
             installed = run_source_cli(
-                "install", "--apply", target=consumer, release="v1.1.0"
+                "install", "--apply", target=consumer, release="v1.2.0"
             )
             self.assertEqual(installed.returncode, 0, installed.stderr)
             installed_configs = {
