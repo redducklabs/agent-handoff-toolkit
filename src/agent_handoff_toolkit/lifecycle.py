@@ -345,6 +345,9 @@ class LifecycleIssue:
     # The directory a refused pointer had to name, so the feedback can say
     # where the record belongs. A host adapter echoes it only as a path.
     root_path: str | None = None
+    # The basename of the chain's current record, when a peer advanced the
+    # chain past this session. A host adapter echoes it only as a file name.
+    current_record: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "code", _identifier(self.code, "issue code"))
@@ -368,7 +371,13 @@ class LifecycleIssue:
                 label="issue corrective action",
             ),
         )
-        for field_name in ("expected", "actual", "candidate_path", "root_path"):
+        for field_name in (
+            "expected",
+            "actual",
+            "candidate_path",
+            "root_path",
+            "current_record",
+        ):
             object.__setattr__(
                 self,
                 field_name,

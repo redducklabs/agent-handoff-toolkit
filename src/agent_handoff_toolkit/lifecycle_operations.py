@@ -684,6 +684,21 @@ class LifecycleService:
         turn = event.current_user_reference or event.turn_reference
         if turn == snapshot.session.current_external_user_turn_reference:
             return snapshot
+        if turn_origin == "host":
+            # A turn the host started - a task notification, a message from
+            # another session - is not the user speaking. It records only who
+            # started the turn. It does not become the current user turn, so
+            # a pending proposal stays adjacent to the user's next answer, and
+            # it does not reset the correction circuit, which only a real user
+            # turn may clear.
+            if snapshot.session.turn_origin == "host":
+                return snapshot
+            session = replace(
+                snapshot.session,
+                targeted_revision=expected_session_revision + 1,
+                turn_origin="host",
+            )
+            return self._commit(snapshot, session, None)
         proposal = snapshot.session.pending_transition_reference
         chain = None
         if (

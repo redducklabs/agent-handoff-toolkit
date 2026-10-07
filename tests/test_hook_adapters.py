@@ -2146,6 +2146,53 @@ class EnforcementTests(unittest.TestCase):
             EnforcementMode.TRACKED,
         )
 
+    def test_a_host_prompt_keeps_a_proposal_adjacent_to_the_users_answer(self):
+        """A task notification between a proposal and the user's yes.
+
+        The host's turn used to be observed as the user's: it became the
+        current user turn, so the proposal was no longer adjacent to the
+        answer that followed it, and the approval drew a clarification.
+        """
+
+        self.register()
+        _, _, message = self.record()
+        self.invoke(last_assistant_message=message)
+        self.propose()
+        before = self.storage.load_snapshot("session-1").session
+        self.host_prompt("host-1")
+        after = self.storage.load_snapshot("session-1").session
+        self.assertEqual(after.turn_origin, "host")
+        self.assertEqual(
+            after.current_external_user_turn_reference,
+            before.current_external_user_turn_reference,
+        )
+        self.assertEqual(
+            after.pending_transition_reference, before.pending_transition_reference
+        )
+        self.assertEqual(
+            self.invoke("UserPromptSubmit", prompt="yes", turn_id="user-2"),
+            HookExecution(),
+        )
+        approved = self.storage.load_snapshot("session-1")
+        self.assertEqual(approved.chain.locked_root_id, "issue-2")
+        self.assertEqual(approved.session.turn_origin, "user")
+
+    def test_a_host_prompt_does_not_reset_the_correction_circuit(self):
+        """Only a real user turn clears the circuit; the host is not one."""
+
+        self.register()
+        for _ in range(2):
+            self.assert_block(self.invoke(), "AHK-STOP-WORK")
+        self.host_prompt("host-1")
+        session = self.storage.load_snapshot("session-1").session
+        self.assertEqual(session.correction_cycle_count, 2)
+        self.assertIsNotNone(session.last_issue_signature)
+        self.assertFalse(json.loads(self.invoke().stdout)["continue"])
+        self.invoke("UserPromptSubmit", prompt="Carry on.", turn_id="user-2")
+        self.assertEqual(
+            self.storage.load_snapshot("session-1").session.correction_cycle_count, 0
+        )
+
     def test_clarify_names_the_replies_it_accepts(self):
         self.register()
         self.invoke(last_assistant_message=self.decision())
@@ -2386,6 +2433,107 @@ class EnforcementTests(unittest.TestCase):
         # would report a malfunction on the ordinary path.
         self.assertNotIn("systemMessage", data)
         joined = self.storage.load_snapshot("joined")
+        self.assertEqual(joined.session.chain_revision, joined.chain.targeted_revision)
+
+    def peer_publishes(self):
+        """Join a second session, then let the first publish past it.
+
+        Returns the joined session's wait line from before the publication,
+        when its last handoff was still the first record.
+        """
+
+        self.register()
+        path, text, message = self.record()
+        self.invoke(last_assistant_message=message)
+        self.invoke(
+            "UserPromptSubmit",
+            session_id="joined",
+            prompt=render_resume_prompt(path, path.read_text(encoding="utf-8")),
+        )
+        before = self.progress_line("other-session", session="joined")
+        predecessor = {
+            "record_id": "first",
+            "path": path.as_posix(),
+            "sha256": record_digest(text),
+        }
+        _, _, successor = self.record(name="second", predecessor=predecessor)
+        self.assertEqual(self.invoke(last_assistant_message=successor), HookExecution())
+        return before
+
+    def test_a_stop_after_a_peer_publishes_names_the_new_record_uncounted(self):
+        """A peer's publication is not this session's mistake.
+
+        `Stop` used to count it: one `AHK-STOP-STALE`, then the old wait line
+        drew `AHK-STOP-WORK` because it named the old record, and a third
+        attempt tripped the circuit. The chain is reconciled first, the block
+        names the record that is now current, and nothing is counted.
+        """
+
+        before = self.peer_publishes()
+        result = self.invoke(session_id="joined", last_assistant_message=before)
+        self.assert_block(result, "AHK-STOP-STALE")
+        reason = json.loads(result.stdout)["reason"]
+        self.assertIn("current=second.md", reason)
+        joined = self.storage.load_snapshot("joined")
+        self.assertEqual(joined.session.correction_cycle_count, 0)
+        self.assertEqual(joined.session.chain_revision, joined.chain.targeted_revision)
+        # The accepted lines are the reconciled chain's: they name the new
+        # record, and the next ending on one is accepted.
+        after = self.progress_line("other-session", session="joined")
+        self.assertIn("second.md", after)
+        self.assertNotEqual(after, before)
+        self.assertEqual(
+            self.invoke(session_id="joined", last_assistant_message=after),
+            HookExecution(),
+        )
+
+    def test_a_stop_after_a_peer_publishes_accepts_the_reconciled_line(self):
+        self.peer_publishes()
+        line = self.progress_line("background-work", session="joined")
+        self.assertEqual(
+            self.invoke(session_id="joined", last_assistant_message=line),
+            HookExecution(),
+        )
+        joined = self.storage.load_snapshot("joined")
+        self.assertEqual(joined.session.chain_revision, joined.chain.targeted_revision)
+        self.assertTrue(joined.session.last_stop_was_progress)
+
+    def test_a_peer_publishing_during_a_stop_is_not_counted_either(self):
+        """The commit race: the peer publishes between this Stop's read and write."""
+
+        before = self.peer_publishes()
+        self.invoke(
+            session_id="joined",
+            last_assistant_message=self.progress_line(
+                "other-session", session="joined"
+            ),
+        )
+        joined = self.storage.load_snapshot("joined")
+        predecessor = {
+            "record_id": "second",
+            "path": joined.chain.current_record_reference.path,
+            "sha256": joined.chain.current_record_reference.sha256,
+        }
+        _, _, third = self.record(name="third", predecessor=predecessor)
+        original = self.storage.compare_and_swap
+        raced = False
+
+        def peer_first(raw_id, *args, **kwargs):
+            nonlocal raced
+            if raw_id == "joined" and not raced:
+                raced = True
+                self.assertEqual(
+                    self.invoke(last_assistant_message=third), HookExecution()
+                )
+            return original(raw_id, *args, **kwargs)
+
+        with patch.object(self.storage, "compare_and_swap", peer_first):
+            result = self.invoke(session_id="joined", last_assistant_message=before)
+        self.assertTrue(raced)
+        self.assert_block(result, "AHK-STOP-STALE")
+        self.assertIn("current=third.md", json.loads(result.stdout)["reason"])
+        joined = self.storage.load_snapshot("joined")
+        self.assertEqual(joined.session.correction_cycle_count, 0)
         self.assertEqual(joined.session.chain_revision, joined.chain.targeted_revision)
 
     def test_a_declaration_that_cannot_be_observed_is_never_enrolled_silently(self):
@@ -2808,7 +2956,9 @@ class EnforcementTests(unittest.TestCase):
             self.storage.load_snapshot("session-1").chain.locked_root_id, "issue-1"
         )
 
-    def test_repeated_stale_stops_count_without_changing_chain(self):
+    def test_repeated_peer_advances_never_arm_the_circuit(self):
+        """Only this session's own mistakes count toward the circuit."""
+
         self.register()
         path, text, message = self.record()
         self.invoke(last_assistant_message=message)
@@ -2818,7 +2968,7 @@ class EnforcementTests(unittest.TestCase):
             prompt=render_resume_prompt(path, path.read_text(encoding="utf-8")),
         )
         previous_id = "first"
-        for attempt in (1, 2, 3):
+        for attempt in (1, 2, 3, 4):
             predecessor = {
                 "record_id": previous_id,
                 "path": path.as_posix(),
@@ -2831,13 +2981,13 @@ class EnforcementTests(unittest.TestCase):
             )
             chain = self.storage.load_snapshot("session-1").chain
             result = self.invoke(session_id="joined", last_assistant_message=message)
-            if attempt < 3:
-                self.assert_block(result, "AHK-STOP-STALE")
-            else:
-                self.assertFalse(json.loads(result.stdout)["continue"])
+            self.assert_block(result, "AHK-STOP-STALE")
+            self.assertIn(
+                "current=" + previous_id + ".md", json.loads(result.stdout)["reason"]
+            )
             self.assertEqual(
                 self.storage.load_snapshot("joined").session.correction_cycle_count,
-                attempt,
+                0,
             )
             self.assertEqual(self.storage.load_snapshot("session-1").chain, chain)
 

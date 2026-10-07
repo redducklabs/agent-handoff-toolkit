@@ -353,6 +353,14 @@ def _reason(decision):
             and re.fullmatch(r"(?:[A-Z]:/|/)[A-Za-z0-9._/-]+", handoffs)
         ):
             line += f" root={handoffs}"
+        # The record a peer made current, by basename under the same rule.
+        current = issue.current_record
+        if (
+            current
+            and len(current.encode()) <= 256
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*\.md", current)
+        ):
+            line += f" current={current}"
         # Closed-vocabulary detail: the validator's own codes name which checks
         # failed. Like expected/actual, each is echoed only when it matches the
         # identifier pattern, so no free text can reach the host through here.
@@ -1191,6 +1199,9 @@ def _reconcile_chain(storage, raw_id, snapshot):
     mutations all preserve the stale value and would be refused, while this
     one carries the live value and is accepted.
 
+    `Stop` runs it too, before evaluating, so a turn ending is judged against
+    the chain as it is now rather than counted as this session's mistake.
+
     Releasing a completed lease preserves the previous external turn
     reference, because the reentry that follows requires the new reference to
     differ from the recorded one.
@@ -1227,6 +1238,45 @@ def _reconcile_chain(storage, raw_id, snapshot):
         "AHK-CHAIN-ADVANCED: another session advanced this authorization to "
         f"revision {chain.targeted_revision}. Rebuild any successor in "
         "progress against the current record before ending the turn."
+    )
+
+
+def _peer_advanced(snapshot):
+    """Whether another session moved this tracked session's chain past it.
+
+    Every write a session makes carries the live chain revision, so a session
+    whose recorded revision differs was overtaken by a peer's write.
+    """
+
+    chain, session = snapshot.chain, snapshot.session
+    return (
+        chain is not None
+        and session.mode not in _UNGATED
+        and session.mode is not EnforcementMode.COMPLETE
+        and session.chain_revision != chain.targeted_revision
+    )
+
+
+def _peer_stale(snapshot):
+    """An uncounted `AHK-STOP-STALE` naming the record a peer made current.
+
+    The session revision advances so the block is recorded, and the observed
+    chain revision is refreshed where the decision is published, but the
+    correction count and the last issue signature are left as they were.
+    """
+
+    reference = snapshot.chain.current_record_reference if snapshot.chain else None
+    issue = LifecycleIssue(
+        "AHK-STOP-STALE",
+        "Lifecycle check failed.",
+        _ACTIONS["AHK-STOP-STALE"],
+        current_record=_record_name(reference.path) if reference else None,
+    )
+    session = replace(
+        snapshot.session, targeted_revision=snapshot.session.targeted_revision + 1
+    )
+    return LifecycleDecision(
+        DecisionKind.BLOCK, (issue,), mutation=LifecycleMutation(session)
     )
 
 
@@ -1515,7 +1565,13 @@ def _user_prompt_steps(event, snapshot, storage, raw_id, root, notices):
                     "session is untracked. Tell the user."
                 )
         return HookExecution()
-    if updated.session.pending_correction_hmac is not None:
+    # A turn the host started - a task notification, a message from another
+    # session - is not the user answering. Judging it as an answer drew a
+    # clarification notice for every one while the question stayed open. Nor
+    # does it spend the correction challenge, which only the user's echo of a
+    # block reason may consume.
+    host_turn = origin == "host"
+    if updated.session.pending_correction_hmac is not None and not host_turn:
 
         def clear(current=updated):
             return _commit(
@@ -1536,10 +1592,6 @@ def _user_prompt_steps(event, snapshot, storage, raw_id, root, notices):
         # answer as collateral.
         updated = _attempt("correction-clear", notices, clear, updated)
     request = updated.session.pending_decision_reference
-    # A turn the host started - a task notification, a message from another
-    # session - is not the user answering. Judging it as an answer drew a
-    # clarification notice for every one while the question stayed open.
-    host_turn = origin == "host"
     if request is not None and not host_turn:
 
         def resolve(current=updated):
@@ -1955,12 +2007,25 @@ def run_lifecycle_hook(platform, name, raw, repo_root, storage=None):
         if snapshot.session.correction_cycle_count >= 3:
             decision = _blocked_stop(snapshot, (_issue("AHK-STOP-CIRCUIT"),))
         else:
+            # A peer on the same chain may have published since this session
+            # last looked. That is not this session's mistake: reconcile
+            # first, as the prompt path does, and evaluate against the chain
+            # as it is now - its current record and its progress lines.
+            behind = _peer_advanced(snapshot)
+            if behind:
+                stage = "reconcile-chain"
+                snapshot, _ = _reconcile_chain(storage, raw_id, snapshot)
+                stage = "evaluate"
             candidate = None
             if snapshot.session.mode is EnforcementMode.TRACKED:
                 candidate = _candidate(event, snapshot, root)
             decision = evaluate_stop(
                 event, snapshot, candidate=candidate, decision_secret=storage.secret
             )
+            if behind and decision.kind is DecisionKind.BLOCK:
+                # Whatever was refused was written against a chain that has
+                # since moved, so it is not counted toward the circuit.
+                decision = _peer_stale(snapshot)
     except _PointerRefused as refused:
         # The model offered a record and the pointer does not qualify. That is
         # a policy outcome it can correct, counted toward the circuit like any
@@ -2109,6 +2174,21 @@ def _publish_decision(
             if retry and event_kind is EventName.STOP:
                 try:
                     current = storage.load_snapshot(raw_id)
+                    if _peer_advanced(current):
+                        # A peer published between this Stop's read and its
+                        # write. Not this session's mistake either.
+                        current, _ = _reconcile_chain(storage, raw_id, current)
+                        if current.session.mode is EnforcementMode.COMPLETE:
+                            return HookExecution()
+                        return _publish_decision(
+                            platform,
+                            event_kind,
+                            _peer_stale(current),
+                            storage,
+                            raw_id,
+                            current,
+                            retry=False,
+                        )
                     if current.session.authorization_id is not None:
                         blocked = _blocked_stop(current, (_issue("AHK-STOP-STALE"),))
                         return _publish_decision(
