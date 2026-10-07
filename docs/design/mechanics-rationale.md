@@ -206,6 +206,21 @@ with the failing check after `failed=` — `candidate-outside-handoffs`,
 session stays untracked. Silence is not a permitted outcome for a prompt that
 carried a pointer.
 
+A pointer into another worktree of the same repository resumes. Sessions were
+opened at a repository's main checkout and handed a record from one of its
+worktrees, and each was refused as `candidate-outside-handoffs` — the same
+repository, whose lifecycle state every worktree shares, treated as a
+stranger. Sharing the git common directory is what makes it the same
+repository; an unrelated clone still is not, and its refusal now tells the
+user to open the session in the checkout that holds the record.
+
+A malformed renderer pointer at `Stop` is `AHK-STOP-POINTER`, a counted policy
+block naming the failed check. It used to surface as `AHK-HOOK-RUNTIME` with a
+bare `ValueError`, which told the model nothing it could correct, and any
+`](` in a final message — an ordinary pull-request link — was treated the
+same way, so consumers learned to avoid links altogether. A message with no
+renderer-owned link now offers no candidate at all.
+
 `Stop` verifies the direct candidate, lineage, locked root, open-decision state,
 and the renderer's complete response. An attempted assistant message may already
 be displayed before `Stop` runs. The hook cannot retract that transient

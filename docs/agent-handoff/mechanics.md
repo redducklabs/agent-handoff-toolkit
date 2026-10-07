@@ -5,10 +5,9 @@ It is the reference for tooling, tests, and anyone diagnosing a blocked session.
 An author writing a record needs `contract.md`; the validator enforces
 everything below, so an author does not reproduce it from memory.
 
-It states what the toolkit does, not why. The reasoning behind each rule, and
-the failures each was written against, live in the toolkit repository's
-`docs/design/mechanics-rationale.md` and are deliberately not distributed: a
-session diagnosing a block needs the rule, not its history.
+It states what the toolkit does, not why. The reasoning behind each rule lives
+in the toolkit repository's `docs/design/mechanics-rationale.md` and is
+deliberately not distributed: a session diagnosing a block needs the rule.
 
 ## Metadata block forms
 
@@ -80,9 +79,7 @@ For a continuation, the response tail contains exactly:
 A completion audit's response is three lines and the link: what was completed
 and its outcome, the verification tally (`<p> passed, <f> failed, <n> not
 run`), and `Nothing further is required of you.` A failing entry is still
-counted there; the contract forbids hiding one, and a tally that omitted it
-would report a completion the evidence does not support. A bare link said
-none of this.
+counted there; the contract forbids hiding one.
 
 A decision request's response keeps its four-line structure, which the HMAC
 verification depends on, and reads `Paused: I need one decision from you.`
@@ -127,12 +124,16 @@ reports `AHK-TRACKED` or `AHK-TRACK-FAILED failed=<check>`.
 
 A session resumes a tracked chain when the **first line** of its prompt is
 `Continue from handoff: <absolute path>`; everything after it is the user's
-instruction. The evidence is the record the pointer names: its digest must
-equal the chain's `current_record_reference.sha256`, and its root and scope
-digests must match the chain. A resume reports `AHK-RESUMED` or
-`AHK-RESUME-FAILED failed=<check>` — `candidate-outside-handoffs`,
-`record-invalid`, `chain-inactive`, `record-digest` or `chain-stale`. Silence is
-not a permitted outcome for a prompt that carried a pointer.
+instruction. The pointer names a record in this checkout's `handoffs/`, or
+directly in the `handoffs/` of another worktree sharing this repository's git
+common directory, where it is read under the same guards. The evidence is the
+record: its digest must equal the chain's `current_record_reference.sha256`,
+and its root and scope digests must match the chain. A resume reports
+`AHK-RESUMED` or `AHK-RESUME-FAILED failed=<check>` — `record-invalid`,
+`chain-inactive`, `record-digest`, `chain-stale`, or
+`candidate-outside-handoffs`, which tells the user to open the session in the
+checkout holding the record. Silence is not a permitted outcome for a prompt
+that carried a pointer.
 
 `AHK-RESUMED` and `AHK-TRACKED` both carry the bound `inspect` command after
 `Command:`, so a newly tracked session has its session key, challenge and
@@ -141,12 +142,19 @@ expected revision without spending a tool call on a denial.
 A stored record path is a locator, not identity. The same repository is a
 different worktree elsewhere and `/mnt/d/...` under WSL, so wherever such a
 path is read or compared, the record's basename under this checkout's
-`handoffs/` is used and its SHA-256 is the evidence. A digest that does not
+`handoffs/` is used — or the path itself, when it is in another worktree of
+this repository — and its SHA-256 is the evidence. A digest that does not
 match is refused with the same code as before, and the path the retry resolved
 to is reported after `candidate=`.
 
 `Stop` verifies the direct candidate, lineage, locked root, open-decision state,
-and the renderer's complete response. An attempted assistant message may already
+and the renderer's complete response. A final message without a renderer-owned
+link offers no candidate, whatever other links or pointer text it carries. A
+renderer link that does not qualify is a counted policy block,
+`AHK-STOP-POINTER`, with `failed=` `pointer-ambiguous`,
+`pointer-block-mismatch`, `pointer-audit-restart`, `pointer-noncanonical` or
+`pointer-outside-handoffs`; a candidate must be in this checkout's own
+`handoffs/`, which the last names after `root=`. An attempted assistant message may already
 be displayed before `Stop` runs; the hook cannot retract that display, but it
 returns corrective feedback and requires a corrected response or a visibly
 failed policy outcome.
@@ -165,14 +173,10 @@ checks emit no routine model context.
 
 `UserPromptSubmit` is never a decision point, for any cause. A hook may decide
 only where the party it blocks can still act on the feedback: a denied tool
-call and a refused turn ending both leave the agent running and able to
-correct, while blocking a prompt erases the user's message and starts no turn,
-so nobody remains who could act on the reason — and the state bookkeeping that
-would clear the condition runs only on a decision carrying a mutation, which
-no turn ever begins to produce. Nothing is given up by declining to decide
-there: that event has no policy denial. It reports instead, naming the issue
-on `additionalContext` for the agent and one sentence on `systemMessage` for
-the user.
+call or a refused turn ending leaves the agent running, while a blocked prompt
+erases the user's message and starts no turn. That event has no policy denial.
+It reports instead, naming the issue on `additionalContext` for the agent and
+one sentence on `systemMessage` for the user.
 
 Its bookkeeping is best effort. Each step is attempted, a step that fails is
 named, and the turn proceeds either way, so a state the toolkit does not
@@ -248,10 +252,9 @@ error: any failure in either path produces no message at all.
   `NotebookEdit` on Claude Code, `apply_patch` on Codex. Not `Bash`, not an MCP
   tool. It is delivered as `hookSpecificOutput.additionalContext`, because it
   is addressed to the model: it names both lifecycle commands in their plain
-  form, which the control interception binds. That delivery is observed on
-  Claude Code — an acceptance run reports `advisory_seen=pass`, meaning the
-  scripted session received the notice and repeated its code. It is unverified
-  on Codex. It names no session key,
+  form, which the control interception binds. Its delivery is verified on
+  Claude Code by an acceptance run (`advisory_seen=pass`) and unverified on
+  Codex. It names no session key,
   challenge or absolute path. It never fires for a session that has already
   declared one-off.
 - **`AHK-NO-HANDOFF`** fires at most once per session, at `Stop`, for a session

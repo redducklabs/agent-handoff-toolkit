@@ -332,6 +332,31 @@ class NormalizationTests(unittest.TestCase):
         self.assertIn("AHK-STOP-ROOT", reason)
         self.assertLessEqual(len(reason.encode()), 1200)
 
+    def test_a_refused_pointer_names_its_root_only_as_a_bounded_path(self):
+        def reason(root_path):
+            issue = LifecycleIssue(
+                "AHK-STOP-POINTER",
+                "Summary.",
+                "Corrective action.",
+                detail_codes=("pointer-outside-handoffs",),
+                root_path=root_path,
+            )
+            return json.loads(
+                render_hook_execution(
+                    "codex",
+                    EventName.STOP,
+                    LifecycleDecision(DecisionKind.BLOCK, (issue,)),
+                ).stdout
+            )["reason"]
+
+        named = reason("D:/repo/handoffs")
+        self.assertIn("AHK-STOP-POINTER", named)
+        self.assertIn(" root=D:/repo/handoffs", named)
+        self.assertIn("failed=pointer-outside-handoffs", named)
+        for unsafe in ("D:/my repo/handoffs", "relative/handoffs", "/" + "x" * 300):
+            with self.subTest(unsafe=unsafe[:20]):
+                self.assertNotIn(" root=", reason(unsafe))
+
     def test_real_user_corrective_prefix_does_not_establish_synthetic_provenance(self):
         event = normalize_event(
             "codex",
@@ -1069,6 +1094,82 @@ class EnforcementTests(unittest.TestCase):
             self.storage.load_snapshot("session-1").chain.current_record_reference
         )
 
+    def test_a_final_message_without_a_renderer_pointer_offers_no_candidate(self):
+        """An ordinary Markdown link is not a malfunction.
+
+        A tracked turn that ended on a pull-request link was told the toolkit
+        had failed - `AHK-HOOK-RUNTIME` - and consumers learned to avoid links
+        altogether. With no renderer-owned pointer there is no candidate, and
+        the Stop gets the ordinary keep-working outcome.
+        """
+
+        self.register()
+        for index, message in enumerate(
+            (
+                "Opened [the pull request](https://example.invalid/pull/12).",
+                "The record says\nContinue from handoff: somewhere else.",
+                "See [notes](</tmp/notes.md>) and Continue from handoff: later.",
+            )
+        ):
+            with self.subTest(message=index):
+                result = self.invoke(last_assistant_message=message)
+                self.assert_block(result, "AHK-STOP-WORK")
+                self.assertNotIn("AHK-HOOK-RUNTIME", result.stdout)
+                self.assertNotIn("AHK-STOP-POINTER", result.stdout)
+                self.invoke("UserPromptSubmit", turn_id="reset-link-" + str(index))
+
+    def test_pointer_policy_failures_are_named_counted_policy_blocks(self):
+        """A malformed renderer pointer is the model's to correct, not a fault.
+
+        Each failure is `AHK-STOP-POINTER` with its own closed-vocabulary
+        code, and it counts toward the correction circuit like any other
+        policy block.
+        """
+
+        self.register()
+        path, _, message = self.record()
+        _, _, audit = self.record("completion-audit", "audit")
+        outside = (self.root / "outside.md").as_posix()
+        handoffs = (self.root / "handoffs").as_posix()
+        for value, code in (
+            (message + "\nTrailing", "pointer-ambiguous"),
+            (message + "\n[extra](</other.md>)", "pointer-ambiguous"),
+            (
+                message.replace(
+                    "Continue from handoff: " + path.as_posix(),
+                    "Continue from handoff: " + handoffs + "/other.md",
+                ),
+                "pointer-block-mismatch",
+            ),
+            (
+                "Continue from handoff: " + handoffs + "/audit.md\n" + audit,
+                "pointer-audit-restart",
+            ),
+            (message.replace(path.as_posix(), outside), "pointer-outside-handoffs"),
+            (message.replace("first.md", "first.json"), "pointer-noncanonical"),
+        ):
+            with self.subTest(code=code, length=len(value)):
+                result = self.invoke(last_assistant_message=value)
+                self.assert_block(result, "AHK-STOP-POINTER")
+                reason = json.loads(result.stdout)["reason"]
+                self.assertIn("failed=" + code, reason)
+                self.assertIn("render-tail", reason)
+                self.assertNotIn("AHK-HOOK-RUNTIME", reason)
+                if code == "pointer-outside-handoffs":
+                    self.assertIn(" root=" + handoffs, reason)
+                else:
+                    self.assertNotIn(" root=", reason)
+                self.assertEqual(
+                    self.storage.load_snapshot(
+                        "session-1"
+                    ).session.correction_cycle_count,
+                    1,
+                )
+                self.invoke("UserPromptSubmit", turn_id="reset-" + str(len(value)))
+        self.assertIsNone(
+            self.storage.load_snapshot("session-1").chain.current_record_reference
+        )
+
     def test_a_continuation_reference_resumes_but_a_paraphrase_cannot(self):
         self.register()
         path, _, message = self.record()
@@ -1136,7 +1237,8 @@ class EnforcementTests(unittest.TestCase):
         self.register()
         _, _, message = self.record()
         result = self.invoke(last_assistant_message=message + "\nStill working.")
-        self.assert_block(result, "AHK-HOOK-RUNTIME")
+        self.assert_block(result, "AHK-STOP-POINTER")
+        self.assertIn("failed=pointer-ambiguous", result.stdout)
         self.assertIsNone(
             self.storage.load_snapshot("session-1").chain.current_record_reference
         )
@@ -2814,6 +2916,189 @@ class EnforcementTests(unittest.TestCase):
             self.invoke("PreToolUse", tool_input={"command": command}),
             "AHK-CONTROL-BINDING",
         )
+
+
+class SiblingWorktreeResumeTests(unittest.TestCase):
+    """A record is read from the checkout of this repository that holds it.
+
+    A session opened at a repository's main checkout was handed a pointer into
+    one of its worktrees and refused it as `candidate-outside-handoffs`,
+    leaving the session untracked. Another worktree of the same repository -
+    the same git common directory - is the same repository; an unrelated
+    clone is not.
+    """
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.scratch = Path(temporary.name).resolve()
+        # Every checkout here is a child of the scratch directory, so the
+        # ceiling is a strict ancestor of each and fences `git rev-parse`.
+        fence = patch.dict(
+            os.environ, {"GIT_CEILING_DIRECTORIES": self.scratch.as_posix()}
+        )
+        fence.start()
+        self.addCleanup(fence.stop)
+        self.main = self.scratch / "main"
+        self.main.mkdir()
+        self.git("init", "-q", cwd=self.main)
+        self.git("commit", "-q", "--allow-empty", "-m", "synthetic", cwd=self.main)
+        self.git("worktree", "add", "-q", "--detach", ".worktrees/wt", cwd=self.main)
+        self.worktree = self.main / ".worktrees" / "wt"
+        for checkout in (self.main, self.worktree):
+            (checkout / "handoffs").mkdir()
+        self.storage = LocalLifecycleStorage(
+            self.main, state_root=self.scratch / "state"
+        )
+
+    @staticmethod
+    def git(*arguments, cwd):
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=Synthetic",
+                "-c",
+                "user.email=synthetic@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                *arguments,
+            ],
+            cwd=cwd,
+            capture_output=True,
+            check=True,
+        )
+
+    def invoke(self, checkout, name, session, **changes):
+        return run_hook(
+            "codex",
+            name,
+            json.dumps(payload(checkout, name, session_id=session, **changes)),
+            checkout,
+            self.storage,
+        )
+
+    def publish_in_worktree(self):
+        """Register a root in a worktree session and publish its first record."""
+
+        self.assertEqual(
+            self.invoke(self.worktree, "UserPromptSubmit", "in-worktree"),
+            HookExecution(),
+        )
+        snapshot = self.storage.load_snapshot("in-worktree")
+        scope = make_record("continuation", record_id="first")["active_scopes"][0]
+        encoded = (
+            base64.urlsafe_b64encode(canonical_json_bytes(scope["scope_definition"]))
+            .decode()
+            .rstrip("=")
+        )
+        LifecycleService(self.storage, "in-worktree").register_root(
+            challenge=snapshot.session.bootstrap_challenge,
+            scope_id="issue-1",
+            scope_kind="issue",
+            scope_definition_b64=encoded,
+            expected_session_revision=snapshot.session.targeted_revision,
+        )
+        path, text, message = self.record(self.worktree, "in-worktree", "first")
+        self.assertEqual(
+            self.invoke(
+                self.worktree, "Stop", "in-worktree", last_assistant_message=message
+            ),
+            HookExecution(),
+        )
+        return path, text
+
+    def record(self, checkout, session, name, predecessor=None):
+        chain = self.storage.load_snapshot(session).chain
+        data = make_record("continuation", record_id=name, predecessor=predecessor)
+        data["authorization_id"] = chain.authorization_id
+        data["authorization_evidence"] = {
+            "kind": "initial-user-turn",
+            "user_turn_ref": chain.authorization_user_turn_reference,
+            "proposal_turn_ref": None,
+            "evidence_hmac": chain.authorization_evidence_hmac,
+        }
+        text = render_record(data)
+        path = checkout / "handoffs" / (name + ".md")
+        path.write_bytes(text.encode())
+        return path, text, render_terminal_response(path, text)
+
+    def resume(self, session, path):
+        output = self.invoke(
+            self.main,
+            "UserPromptSubmit",
+            session,
+            prompt="Continue from handoff: " + path.as_posix(),
+        )
+        return json.loads(output.stdout)["hookSpecificOutput"]["additionalContext"]
+
+    def test_a_record_in_another_worktree_of_this_repository_resumes(self):
+        path, text = self.publish_in_worktree()
+        context = self.resume("at-main", path)
+        self.assertIn("AHK-RESUMED", context)
+        resumed = self.storage.load_snapshot("at-main")
+        self.assertIs(resumed.session.mode, EnforcementMode.TRACKED)
+        self.assertEqual(
+            resumed.session.authorization_id,
+            self.storage.load_snapshot("in-worktree").session.authorization_id,
+        )
+        # The successor written here names its predecessor where it really
+        # is, in the other worktree, and Stop reads it from there.
+        _, _, successor = self.record(
+            self.main,
+            "at-main",
+            "second",
+            predecessor={
+                "record_id": "first",
+                "path": path.as_posix(),
+                "sha256": record_digest(text),
+            },
+        )
+        self.assertEqual(
+            self.invoke(self.main, "Stop", "at-main", last_assistant_message=successor),
+            HookExecution(),
+        )
+        self.assertEqual(
+            self.storage.load_snapshot(
+                "at-main"
+            ).chain.current_record_reference.record_id,
+            "second",
+        )
+
+    def test_a_record_outside_this_repository_is_refused_with_directions(self):
+        path, text = self.publish_in_worktree()
+        unrelated = self.scratch / "unrelated"
+        unrelated.mkdir()
+        self.git("init", "-q", cwd=unrelated)
+        plain = self.scratch / "plain"
+        for index, checkout in enumerate((unrelated, plain)):
+            with self.subTest(checkout=checkout.name):
+                (checkout / "handoffs").mkdir(parents=True)
+                copy = checkout / "handoffs" / path.name
+                copy.write_bytes(text.encode())
+                context = self.resume("refused-" + str(index), copy)
+                self.assertIn(
+                    "AHK-RESUME-FAILED failed=candidate-outside-handoffs", context
+                )
+                self.assertIn("open the session in the checkout", context)
+                self.assertIs(
+                    self.storage.load_snapshot("refused-" + str(index)).session.mode,
+                    EnforcementMode.OPEN,
+                )
+
+    def test_a_stop_candidate_in_another_worktree_is_still_refused(self):
+        """Stop publishes only from this checkout's own `handoffs/`."""
+
+        path, _ = self.publish_in_worktree()
+        self.resume("at-main", path)
+        _, _, message = self.record(self.worktree, "at-main", "second")
+        result = self.invoke(
+            self.main, "Stop", "at-main", last_assistant_message=message
+        )
+        reason = json.loads(result.stdout)["reason"]
+        self.assertIn("AHK-STOP-POINTER", reason)
+        self.assertIn("failed=pointer-outside-handoffs", reason)
+        self.assertIn(" root=" + (self.main / "handoffs").as_posix(), reason)
 
 
 if __name__ == "__main__":

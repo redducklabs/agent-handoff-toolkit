@@ -336,6 +336,9 @@ class LifecycleIssue:
     # Validator codes naming which checks failed. A closed vocabulary of
     # identifiers, so a host adapter can surface them without echoing text.
     detail_codes: tuple[str, ...] = ()
+    # The directory a refused pointer had to name, so the feedback can say
+    # where the record belongs. A host adapter echoes it only as a path.
+    root_path: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "code", _identifier(self.code, "issue code"))
@@ -359,7 +362,7 @@ class LifecycleIssue:
                 label="issue corrective action",
             ),
         )
-        for field_name in ("expected", "actual", "candidate_path"):
+        for field_name in ("expected", "actual", "candidate_path", "root_path"):
             object.__setattr__(
                 self,
                 field_name,

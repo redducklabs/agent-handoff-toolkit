@@ -20,7 +20,7 @@ import shlex
 import stat
 import unicodedata
 
-from .hooks import HookExecution, hook_repository_root
+from .hooks import HookExecution, _git_common_dir, hook_repository_root
 from .lifecycle import (
     AffirmationResult,
     AuthorityCategory,
@@ -101,6 +101,7 @@ _ACTIONS = {
     "AHK-STOP-SCOPE": "Restore the inherited ordered scope definitions.",
     "AHK-STOP-PREDECESSOR": "Render a successor of the live record with its exact source digest.",
     "AHK-STOP-RESPONSE": "Emit only render-terminal-response output for the candidate.",
+    "AHK-STOP-POINTER": "Render the response with render-tail for a record in this checkout's handoffs/ and emit it unchanged.",
     "AHK-STOP-DECISION": "Emit exactly the registered decision response.",
     "AHK-STOP-STALE": "Reload lifecycle inspect and rebuild against current revisions.",
     "AHK-HOOK-RUNTIME": "Repair lifecycle runtime or input; inspect state and retry.",
@@ -308,6 +309,14 @@ def _reason(decision):
             and re.fullmatch(r"(?:[A-Z]:/|/)[A-Za-z0-9._/-]+\.md", path)
         ):
             line += f" candidate={path}"
+        # Where a refused pointer had to point, under the same path-only rule.
+        handoffs = issue.root_path
+        if (
+            handoffs
+            and len(handoffs.encode()) <= 256
+            and re.fullmatch(r"(?:[A-Z]:/|/)[A-Za-z0-9._/-]+", handoffs)
+        ):
+            line += f" root={handoffs}"
         # Closed-vocabulary detail: the validator's own codes name which checks
         # failed. Like expected/actual, each is echoed only when it matches the
         # identifier pattern, so no free text can reach the host through here.
@@ -360,6 +369,32 @@ def render_hook_execution(
 
 def _issue(code):
     return LifecycleIssue(code, "Lifecycle check failed.", _ACTIONS[code])
+
+
+class _PointerRefused(Exception):
+    """A renderer pointer the model must correct: a policy block, not a fault.
+
+    `check` is one identifier from a closed vocabulary fixed in source, so the
+    feedback names what failed without echoing any of the message.
+    """
+
+    def __init__(self, check):
+        super().__init__(check)
+        self.check = check
+
+
+def _pointer_issue(check, root):
+    """Name a refused pointer, and where a record has to be when it was elsewhere."""
+
+    return LifecycleIssue(
+        "AHK-STOP-POINTER",
+        "Lifecycle check failed.",
+        _ACTIONS["AHK-STOP-POINTER"],
+        detail_codes=(check,),
+        root_path=(root / "handoffs").as_posix()
+        if check == "pointer-outside-handoffs"
+        else None,
+    )
 
 
 def _runtime_issue(stage, error=None):
@@ -490,7 +525,8 @@ def _read_record(path, root, *, expected_digest=None):
     the caller already knows the digest it expects, a path outside this
     checkout is retried against that basename and accepted only when the file
     there hashes to exactly what was expected. The digest is the evidence; the
-    path is a locator.
+    path is a locator. A path into another worktree of this repository that
+    still holds the record is read there first, under the same guards.
     """
 
     canonical = canonical_record_path(path)
@@ -499,6 +535,12 @@ def _read_record(path, root, *, expected_digest=None):
     target = Path(canonical)
     handoffs = root / "handoffs"
     if expected_digest is not None and not target.is_relative_to(handoffs):
+        sibling = _sibling_checkout(target, root)
+        if sibling is not None and target.is_file():
+            found = _read_record(canonical, sibling)
+            # A copy here of that name may still be the expected record.
+            if found[2] == expected_digest or not (handoffs / target.name).is_file():
+                return found
         # Read the record of that name in this checkout and report its real
         # digest. Whether it is the right record is decided by the digest
         # comparisons the caller already makes, which is where the evidence
@@ -543,6 +585,25 @@ def _read_record(path, root, *, expected_digest=None):
     return text, parse_markdown(text), record_digest(text)
 
 
+def _sibling_checkout(target, root):
+    """Name the other worktree of this repository whose `handoffs/` holds `target`.
+
+    Worktrees of one repository share its git common directory, which is read
+    from each checkout's `.git` without spawning git. Only a record directly
+    in that checkout's `handoffs/` qualifies; an unrelated clone, a directory
+    that is not a checkout, and this root itself name none.
+    """
+
+    parent = target.parent
+    if parent.name != "handoffs" or parent.parent == root:
+        return None
+    checkout = parent.parent
+    common = _git_common_dir(checkout)
+    if common is None or common != _git_common_dir(root):
+        return None
+    return checkout
+
+
 def _candidate(event, snapshot, root):
     message = event.latest_assistant_message
     if message is None:
@@ -557,30 +618,43 @@ def _candidate(event, snapshot, root):
         )
     )
     if not matches:
-        if "Continue from handoff:" in message or "](" in message:
-            raise ValueError("invalid candidate pointer")
+        # A pull-request link or a quoted pointer is prose. With no renderer
+        # link there is no candidate, and the Stop gets its ordinary outcome.
         return None
-    # Trailing whitespace does not make a pointer ambiguous. Raising here
-    # reports a malfunction, and a response that differs from the renderer by
-    # whitespace is a formatting mismatch the model can correct - which is
-    # what AHK-STOP-RESPONSE tells it, once the candidate is discovered.
+    # From here the model offered a record, so every refusal is a policy block
+    # it can correct, never a malfunction. Trailing whitespace does not make a
+    # pointer ambiguous: a response that differs from the renderer by
+    # whitespace is what AHK-STOP-RESPONSE reports once the record is read.
     if (
         len(matches) != 1
         or matches[0].end() != len(message.rstrip())
         or len(re.findall(r"\]\(", message)) != 1
     ):
-        raise ValueError("ambiguous candidate pointer")
+        raise _PointerRefused("pointer-ambiguous")
     path = matches[0].group(2)
-    canonical_record_path(path)
+    try:
+        canonical = canonical_record_path(path)
+    except ValueError:
+        raise _PointerRefused("pointer-noncanonical") from None
+    if canonical != path:
+        raise _PointerRefused("pointer-noncanonical")
     references = re.findall(r"^Continue from handoff: (.+)$", message, re.MULTILINE)
     if matches[0].group(1) == "Continuation handoff":
         if (
             references != [path]
             or "```text\nContinue from handoff: " + path + "\n" not in message
         ):
-            raise ValueError("candidate block differs from final link")
+            raise _PointerRefused("pointer-block-mismatch")
     elif references:
-        raise ValueError("audit cannot contain restart pointer")
+        raise _PointerRefused("pointer-audit-restart")
+    # A record is published only from this checkout's own `handoffs/`; the
+    # feedback names that directory after `root=`.
+    target = Path(path)
+    if (
+        not target.is_relative_to(root / "handoffs")
+        or target.name.lower() == "readme.md"
+    ):
+        raise _PointerRefused("pointer-outside-handoffs")
     text, data, digest = _read_record(path, root)
     predecessor = predecessor_path = predecessor_digest = None
     reference = data.get("predecessor")
@@ -1333,10 +1407,18 @@ def _enroll(event, updated, service, storage, root):
             service, storage, updated, match.group(1), root
         )
         if failure is not None:
+            advice = (
+                " to open the session in the checkout that holds the record: it "
+                "is in neither this checkout's handoffs/ nor another worktree of "
+                "this repository"
+                if failure == "candidate-outside-handoffs"
+                else ""
+            )
             return _context(
                 "UserPromptSubmit",
                 f"AHK-RESUME-FAILED failed={failure}: the pasted handoff did not "
-                "resume a tracked chain; this session is untracked. Tell the user.",
+                "resume a tracked chain; this session is untracked. Tell the "
+                f"user{advice}.",
             )
         updated = resumed
         return _context(
@@ -1507,15 +1589,23 @@ def _resume_chain(service, storage, snapshot, pointer, root):
     already supply, or any part of the prompt.
     """
 
+    # A record in another worktree of this repository resumes from here: the
+    # chain's state is shared by every worktree, and the digest is the
+    # evidence. It is read in that checkout, under the same guards.
     try:
         canonical = canonical_record_path(pointer)
-        contained = Path(canonical).is_relative_to(root / "handoffs")
+        target = Path(canonical)
+        checkout = (
+            root
+            if target.is_relative_to(root / "handoffs")
+            else _sibling_checkout(target, root)
+        )
     except Exception:
         return snapshot, "candidate-outside-handoffs"
-    if not contained:
+    if checkout is None:
         return snapshot, "candidate-outside-handoffs"
     try:
-        text, data, digest = _read_record(pointer, root)
+        text, data, digest = _read_record(pointer, checkout)
     except Exception:
         return snapshot, "record-invalid"
     failure = _resume_precheck(storage, data, canonical, digest)
@@ -1653,6 +1743,15 @@ def run_lifecycle_hook(platform, name, raw, repo_root, storage=None):
             decision = evaluate_stop(
                 event, snapshot, candidate=candidate, decision_secret=storage.secret
             )
+    except _PointerRefused as refused:
+        # The model offered a record and the pointer does not qualify. That is
+        # a policy outcome it can correct, counted toward the circuit like any
+        # other blocked Stop - never a malfunction of the toolkit.
+        issue = _pointer_issue(refused.check, root)
+        try:
+            decision = _blocked_stop(snapshot, (issue,), allow_session_identity=True)
+        except Exception:
+            decision = LifecycleDecision(DecisionKind.BLOCK, (issue,))
     except StaleLifecycleState:
         decision = LifecycleDecision(DecisionKind.BLOCK, (_issue("AHK-STOP-STALE"),))
     except Exception as error:
