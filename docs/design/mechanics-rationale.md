@@ -38,6 +38,13 @@ knowing the mode is a runtime that cannot be imported at all: the module that
 would report the mode is the one failing, and a missing owned runtime file is
 install corruption rather than a transient fault.
 
+The registry lock is awaited for at most 15 seconds on both platforms. Every
+worktree of a repository shares one state root, so a holder that hung used to
+stall every hook of every session until the host killed it. Past the deadline
+the acquisition raises `LockTimeout`, a storage error reported through this
+same path. It is raised before anything is read or written, so the outcome is
+never in doubt: nothing was published.
+
 ## Locating the runner
 
 Each managed hook command finds `.agent-handoff-toolkit/runner.py` by walking
@@ -192,6 +199,36 @@ when it fails. The toolkit supplies the encoding and never the meaning: here the
 user supplied the meaning in their own turn, which is also the strongest
 authorization evidence the design has — the root is bound to the turn that asked
 for it.
+
+### Peers on one chain
+
+Every worktree shares one state root, so a session joined to a chain falls a
+revision behind whenever a peer publishes. `Stop` used to count that against
+it: `AHK-STOP-STALE`, then `AHK-STOP-WORK` for a wait line naming the old
+record, then the circuit. `Stop` now reconciles first, as the prompt path does,
+and judges the turn ending against the live chain. Anything it still refuses
+was written against a chain that has since moved, so it is reported as an
+uncounted `AHK-STOP-STALE` naming the current record after `current=`; only a
+session's own mistakes arm the circuit. The same holds when the peer
+publishes between this `Stop`'s read and its write.
+
+A turn the host started - a task notification, a message from another session
+- is not the user speaking. It records only its origin: it does not become
+the current user turn, so a task notification arriving between a transition
+proposal and the user's yes leaves the two adjacent, and it does not reset the
+correction circuit.
+
+Approving a transition moves the peers of the superseded chain to its
+successor. It used to rewrite them in the approver's image, forcing `TRACKED`,
+dropping the decision a peer was waiting on and copying in the approver's
+pending transition. A peer now keeps its mode and its pending decision, re-bound
+to the successor; only its own proposal goes, because it re-roots the chain
+that was superseded.
+
+Two sessions in one folder can choose the same `handoffs/` file name.
+`render --output` therefore refuses to overwrite a file whose digest is any
+chain's current record. The guard is best effort and fails open: a file the
+state does not name, or state that cannot be read, renders as before.
 
 ### Record paths are locators, not identity
 

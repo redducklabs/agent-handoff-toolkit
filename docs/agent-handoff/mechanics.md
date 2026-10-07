@@ -17,10 +17,9 @@ The block stays visible so a reviewer reading rendered Markdown still sees
 verification, the exact next action, and the scope list. A rendered metadata
 object never contains a bare fence line, because JSON escapes every newline.
 
-A record that carries a metadata comment rather than the visible block is not
-a record this toolkit wrote. Records that predate the current schema are
-historical by policy and are never opened, validated or migrated, so nothing
-reads that older form.
+Records that predate the current schema, including any carrying a metadata
+comment instead of the visible block, are historical: never opened, validated
+or migrated.
 
 The visible block is recognized only at a record's fixed metadata position: the
 start of a continuation, or directly after a completion audit's sentinel and its
@@ -57,7 +56,8 @@ definition, kind, parent, or digest without an approved transition.
 `transition` is `null` in every record of an ordinary chain. A transition
 exists only to re-root a live chain under explicit, adjacent user approval,
 established as `docs/design/mechanics-rationale.md` states. A changed goal is
-plainer to declare anew.
+plainer to declare anew. Peers on the superseded chain move to its successor
+keeping their own mode and pending decision.
 
 ## Final response
 
@@ -113,8 +113,9 @@ records the turn's origin: a prompt is host-started when, stripped, it begins
 with `<task-notification>`, `Another Claude session sent a message:`, or a
 `<cross-session-message` or `<agent-message` element. State recorded before
 origins existed reads as unknown and accepts `reply`. A host-started prompt is
-never judged as the answer to a pending decision; `AHK-USER-CLARIFY` names the
-replies that resolve one. A session that *ends* on any of these lines is
+not a user turn: it never answers a pending decision, breaks a proposal's
+adjacency, or resets the correction circuit. `AHK-USER-CLARIFY` names the
+replies that resolve a decision. A session that *ends* on any of these lines is
 reported at `SessionEnd`, an informational hook that fails open. The lines are
 never in blocking feedback.
 
@@ -147,13 +148,15 @@ that carried a pointer.
 `Command:`, so a newly tracked session has its session key, challenge and
 expected revision without spending a tool call on a denial.
 
-A stored record path is a locator, not identity: in another worktree or
-under WSL it names nothing. Wherever such a path is read or compared, the
-record's basename under this checkout's `handoffs/` is used — or the path
-itself, when it is in another worktree of this repository — and its SHA-256 is
-the evidence. A digest that does not
-match is refused with the same code as before, and the path the retry resolved
-to is reported after `candidate=`.
+A stored record path is a locator, not identity. Where one is read, the
+record's basename under this checkout's `handoffs/` is used, or the path itself
+when it is in another worktree of this repository; its SHA-256 is the evidence.
+A mismatched digest is refused with the same code, naming the resolved path
+after `candidate=`.
+
+`Stop` first reconciles a session whose chain a peer advanced, so the accepted
+lines name the chain's current record. A block on such a session is an
+uncounted `AHK-STOP-STALE` naming that record's basename after `current=`.
 
 `Stop` verifies the direct candidate, lineage, locked root, open-decision state,
 and the renderer's complete response. A final message without a renderer-owned
@@ -163,7 +166,7 @@ renderer link that does not qualify is a counted policy block,
 `pointer-block-mismatch`, `pointer-audit-restart`, `pointer-noncanonical`,
 `pointer-missing` or `pointer-outside-handoffs`; a candidate must be in this
 checkout's own `handoffs/`, which the last names after `root=`. An attempted
-assistant message may already be displayed before `Stop` runs; the hook cannot retract that display, but it
+assistant message may already be displayed before `Stop` runs; the hook
 returns corrective feedback and requires a corrected response or a visibly
 failed policy outcome.
 
@@ -179,12 +182,10 @@ A session in `OPEN` or `ONE_OFF` fails open by construction: it has registered
 no root and so has no lifecycle state to fail closed on. Successful lifecycle
 checks emit no routine model context.
 
-`UserPromptSubmit` is never a decision point, for any cause. A hook may decide
-only where the party it blocks can still act on the feedback: a denied tool
-call or a refused turn ending leaves the agent running, while a blocked prompt
-erases the user's message and starts no turn. That event has no policy denial.
-It reports instead, naming the issue on `additionalContext` for the agent and
-one sentence on `systemMessage` for the user.
+`UserPromptSubmit` is never a decision point, for any cause: a blocked prompt
+erases the user's message and starts no turn. It reports instead, naming the
+issue on `additionalContext` for the agent and one sentence on `systemMessage`
+for the user.
 
 Its bookkeeping is best effort: each step is attempted, a failed step is
 named, and the turn proceeds. Enrollment is the exception: a `Track:` or
@@ -199,16 +200,16 @@ was read and shows a declared mode outside `OPEN` and `ONE_OFF`, and never at
 `UserPromptSubmit`; otherwise it is a bare `systemMessage` carrying no
 decision, so the host behaves as it would with no hook installed.
 
-Install corruption is the deliberate exception. When the package or
-the adapter cannot be imported — or its dispatch fails outright — nothing is
-in a position to read what the session declared, so `PreToolUse` is denied and
-`Stop` is blocked regardless of mode. `UserPromptSubmit` is delivered even
+Install corruption is the exception: when the package or adapter cannot be
+imported, or dispatch fails outright, nothing can read the declared mode, so
+`PreToolUse` is denied and `Stop` blocked regardless of mode. `UserPromptSubmit` is delivered even
 there.
 
 Every report names its failing stage and exception class after `failed=`; the
 bootstrap boundary distinguishes an import that produced no runtime from a
 dispatch that failed after one loaded. A hook command's exit status never
-signals a fault.
+signals a fault. The state lock is awaited for at most 15 seconds, then fails
+as `LockTimeout` before anything is read or written.
 
 Hook input is read from stdin as UTF-8 bytes, whatever the console code page;
 input that is not UTF-8 is `AHK-HOOK-RUNTIME` at stage `decode-input`.
@@ -293,7 +294,8 @@ validation fails visibly and returns a non-zero status for invalid input.
 record's metadata fields at the top level plus a sibling `sections` map from
 section heading to body text. `sections` is not part of the emitted metadata
 block, and the renderer emits the sections in canonical order regardless of the
-order supplied.
+order supplied. `--output` refuses, as `AHK-INPUT`, to overwrite a file whose
+digest is any chain's current record; without readable state it is unguarded.
 
 ```json
 {

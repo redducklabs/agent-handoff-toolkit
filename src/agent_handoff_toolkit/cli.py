@@ -289,8 +289,9 @@ def _doctor_report(session_id=None):
     report["storage"] = "ok"
     report["registry_present"] = storage.registry_path.is_file()
     try:
-        # Probed, never acquired: the waiting acquisition has no deadline, and
-        # a diagnosis that hangs behind another session is no diagnosis.
+        # Probed, never acquired: the waiting acquisition can wait out its
+        # whole deadline, and a diagnosis stalled behind another session is
+        # no diagnosis.
         report["lock"] = probe_lock(storage.state_root / "registry.lock")
     except Exception as error:
         report["lock"] = type(error).__name__
