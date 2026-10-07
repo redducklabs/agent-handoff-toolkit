@@ -55,7 +55,9 @@ _LOCK_CONTENTION_ERRNOS = frozenset(
     if number is not None
 )
 _LOCK_POLL_SECONDS = 0.05
-# How long one acquisition waits for the registry lock before giving up.
+# How long one acquisition waits for the registry lock before giving up. A
+# hook run instead shares one deadline this far from its start across every
+# acquisition it makes.
 LOCK_TIMEOUT_SECONDS = 15
 
 
@@ -480,7 +482,7 @@ def _open_private(path, flags, *, mode=0o600):
         raise
 
 
-def _lock_descriptor(descriptor, *, windows, timeout=None):
+def _lock_descriptor(descriptor, *, windows, timeout=None, deadline=None):
     """Wait for the exclusive region on both platforms, up to a deadline.
 
     `fcntl.flock(LOCK_EX)` waits for as long as the holder keeps the lock.
@@ -494,10 +496,14 @@ def _lock_descriptor(descriptor, *, windows, timeout=None):
     The wait is bounded. A holder that hangs used to stall every hook in every
     worktree of the repository until the host killed it. Past the deadline the
     acquisition raises `LockTimeout` before anything was read or written, so
-    the outcome is known: nothing was published.
+    the outcome is known: nothing was published. `deadline`, an absolute
+    monotonic time, caps the wait further: a hook run shares one across all
+    its acquisitions, so their waits together stay within one budget.
     """
 
-    deadline = time.monotonic() + (LOCK_TIMEOUT_SECONDS if timeout is None else timeout)
+    limit = time.monotonic() + (LOCK_TIMEOUT_SECONDS if timeout is None else timeout)
+    if deadline is not None:
+        limit = min(limit, deadline)
     if windows:
         import msvcrt
 
@@ -518,7 +524,7 @@ def _lock_descriptor(descriptor, *, windows, timeout=None):
         except OSError as error:
             if error.errno not in _LOCK_CONTENTION_ERRNOS:
                 raise
-        if time.monotonic() >= deadline:
+        if time.monotonic() >= limit:
             raise LockTimeout("lifecycle state lock wait exceeded its deadline")
         time.sleep(_LOCK_POLL_SECONDS)
 
@@ -572,10 +578,12 @@ def _unlock_descriptor(descriptor, *, windows):
 
 
 @contextmanager
-def _exclusive_lock(path, timeout=None):
+def _exclusive_lock(path, timeout=None, deadline=None):
     descriptor = _open_private(path, os.O_RDWR | os.O_CREAT)
     try:
-        _lock_descriptor(descriptor, windows=os.name == "nt", timeout=timeout)
+        _lock_descriptor(
+            descriptor, windows=os.name == "nt", timeout=timeout, deadline=deadline
+        )
         try:
             yield
         finally:
@@ -688,8 +696,11 @@ class LocalLifecycleStorage:
         *,
         state_root: Path | None = None,
         lock_timeout: float | None = None,
+        lock_deadline: float | None = None,
     ):
         self.lock_timeout = lock_timeout
+        # An absolute `time.monotonic()` value every acquisition waits within.
+        self.lock_deadline = lock_deadline
         try:
             self.state_root = _mkdir_private(
                 state_root
@@ -725,7 +736,11 @@ class LocalLifecycleStorage:
     def _locked(self):
         with (
             self._guard(),
-            _exclusive_lock(self.state_root / "registry.lock", self.lock_timeout),
+            _exclusive_lock(
+                self.state_root / "registry.lock",
+                self.lock_timeout,
+                self.lock_deadline,
+            ),
         ):
             # POSIX flock pins the lock file, not its pathname or parent.
             # Reconcile the directory identity after waiting for that lock and

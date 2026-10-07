@@ -86,6 +86,19 @@ def hook_runtime_reason(stage: str, error: BaseException | None = None) -> str:
     )
 
 
+def _read_path(pointer: Path, base: Path) -> Path | None:
+    """The resolved path a git metadata file names, relative to `base`."""
+
+    if not pointer.is_file():
+        return None
+    with pointer.open("rb") as source:
+        text = source.read(4097)
+    if len(text) > 4096:
+        return None
+    named = Path(text.decode("utf-8").strip())
+    return (named if named.is_absolute() else base / named).resolve()
+
+
 def _git_common_dir(checkout: Path) -> Path | None:
     """Name the repository a checkout belongs to, without spawning git.
 
@@ -93,6 +106,12 @@ def _git_common_dir(checkout: Path) -> Path | None:
     `.git` is a file naming its private directory, whose `commondir` file leads
     back to the shared one. Anything else - a missing or oversized file, no
     `gitdir:` line, a path that cannot be resolved - names no repository.
+
+    A `.git` file is anyone's to write, and `gitdir: ../../.git` would name
+    the common directory from an arbitrary directory. So a file counts only as
+    `git worktree add` registers it: its private directory sits directly
+    under `<common>/worktrees/`, and that directory's `gitdir` file leads back
+    to this checkout's `.git`.
     """
 
     marker = checkout / ".git"
@@ -109,15 +128,11 @@ def _git_common_dir(checkout: Path) -> Path | None:
         if not private.is_absolute():
             private = checkout / private
         private = private.resolve()
-        pointer = private / "commondir"
-        if not pointer.is_file():
-            return private
-        with pointer.open("rb") as source:
-            text = source.read(4097)
-        if len(text) > 4096:
+        common = _read_path(private / "commondir", private)
+        back = _read_path(private / "gitdir", private)
+        if common is None or back is None or private.parent != common / "worktrees":
             return None
-        common = Path(text.decode("utf-8").strip())
-        return (common if common.is_absolute() else private / common).resolve()
+        return common if back == marker.resolve() else None
     except (OSError, ValueError):
         # Unreadable or unrepresentable: it names no repository, and a checkout
         # whose repository cannot be named is never treated as this one.
@@ -319,17 +334,21 @@ def _session_end_notice(
 
     try:
         import os
+        import time
 
         from .lifecycle import EnforcementMode
-        from .lifecycle_storage import LocalLifecycleStorage
+        from .lifecycle_storage import LOCK_TIMEOUT_SECONDS, LocalLifecycleStorage
 
+        started = time.monotonic()
         session_id = payload.get("session_id")
         if not isinstance(session_id, str) or not session_id:
             return ""
         if storage is None:
             state_root = os.environ.get("AHK_STATE_ROOT")
             storage = LocalLifecycleStorage(
-                Path(repo_root), state_root=Path(state_root) if state_root else None
+                Path(repo_root),
+                state_root=Path(state_root) if state_root else None,
+                lock_deadline=started + LOCK_TIMEOUT_SECONDS,
             )
         snapshot = storage.load_snapshot(session_id)
         session, chain = snapshot.session, snapshot.chain

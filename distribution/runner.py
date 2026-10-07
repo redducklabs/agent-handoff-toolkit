@@ -192,9 +192,11 @@ def _git_common_dir(checkout: Path) -> Path | None:
 
     The same reading as the package's: a `.git` directory is the common
     directory; a `.git` file names a private directory whose `commondir` leads
-    back to it. This runner cannot import the package before deciding which
-    copy of it to load, so the reading is repeated here. Any error raises and
-    the caller hands nothing off.
+    back to it, and counts only when that directory sits directly under
+    `<common>/worktrees/` and its `gitdir` leads back to this checkout's
+    `.git` - a hand-written file is not a worktree. This runner cannot import
+    the package before deciding which copy of it to load, so the reading is
+    repeated here. Any error raises and the caller hands nothing off.
     """
 
     marker = checkout / ".git"
@@ -208,15 +210,24 @@ def _git_common_dir(checkout: Path) -> Path | None:
     if not private.is_absolute():
         private = checkout / private
     private = private.resolve()
-    pointer = private / "commondir"
+    common = _read_path(private / "commondir", private)
+    back = _read_path(private / "gitdir", private)
+    if common is None or back is None or private.parent != common / "worktrees":
+        return None
+    return common if back == marker.resolve() else None
+
+
+def _read_path(pointer: Path, base: Path) -> Path | None:
+    """The resolved path a git metadata file names, relative to `base`."""
+
     if not pointer.is_file():
-        return private
+        return None
     with pointer.open("rb") as source:
         text = source.read(4097)
     if len(text) > 4096:
         return None
-    common = Path(text.decode("utf-8").strip())
-    return (common if common.is_absolute() else private / common).resolve()
+    named = Path(text.decode("utf-8").strip())
+    return (named if named.is_absolute() else base / named).resolve()
 
 
 def _session_runner(data: bytes) -> Path | None:

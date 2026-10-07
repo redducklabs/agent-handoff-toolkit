@@ -1930,6 +1930,18 @@ class DistributionTests(unittest.TestCase):
                     reminder(run(json.dumps({"session_id": "s", "cwd": str(clone)})))
                     self.assertFalse(executed.exists())
 
+            # A hand-written `.git` file naming the main checkout's common
+            # directory is not a worktree of it: git never registered it.
+            spoof = main / "spoof"
+            (spoof / ".agent-handoff-toolkit").mkdir(parents=True)
+            (spoof / ".git").write_text("gitdir: ../.git\n", encoding="utf-8")
+            (spoof / ".agent-handoff-toolkit" / "runner.py").write_text(
+                hostile, encoding="utf-8", newline="\n"
+            )
+            with self.subTest("never runs a spoofed worktree's runner"):
+                reminder(run(json.dumps({"session_id": "s", "cwd": str(spoof)})))
+                self.assertFalse(executed.exists())
+
             with self.subTest("a handed-off invocation never hands off again"):
                 reminder(run(environment={**os.environ, "AHK_RUNNER_HANDOFF": "1"}))
 

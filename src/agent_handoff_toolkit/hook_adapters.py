@@ -18,6 +18,7 @@ import re
 import secrets
 import shlex
 import stat
+import time
 import unicodedata
 
 from .hooks import HookExecution, _git_common_dir, hook_repository_root
@@ -48,6 +49,7 @@ from .lifecycle_operations import (
     parse_bootstrap_command,
 )
 from .lifecycle_storage import (
+    LOCK_TIMEOUT_SECONDS,
     LocalLifecycleStorage,
     StaleLifecycleState,
     _check_path,
@@ -83,11 +85,27 @@ _SHELL = {"claude": frozenset({"Bash", "PowerShell"}), "codex": frozenset({"Bash
 _UNBOUND_CONTROL = frozenset({"doctor"})
 # Help decides nothing and needs no binding either.
 _HELP_FLAGS = frozenset({"--help", "-h"})
-# A lifecycle invocation anywhere in a shell command: at its start or after
-# whitespace or a separator. It is matched against the command with quoted
-# text masked, so a quoted mention - a commit message, a grep pattern - is
+# A lifecycle invocation at a command start: the start of the command or of a
+# line, or after `;`, `&`, `|`, `(` or a backtick - so `&&`, `||`, `$(` too.
+# Never after other whitespace, which is inside an argument. It is matched
+# against the command with quoted text, escaped characters and heredoc bodies
+# masked, so a mention - a commit message, a grep pattern, a notes file - is
 # not an invocation.
-_INVOCATION = re.compile(r"(?:^|(?<=[\s;&|(]))python \S+ lifecycle(?=$|[\s;&|)])")
+_INVOCATION = re.compile(
+    r"(?:^|(?<=[;&|(`]))[ \t]*(python \S+ lifecycle)(?=$|[\s;&|)`])", re.MULTILINE
+)
+# A heredoc operator and its delimiter word, quoted or bare. `<<<` is a
+# here-string and has no body.
+_HEREDOC = re.compile(
+    r"<<(-?)[ \t]*(?:'([^'\n]*)'|\"([^\"\n]*)\"|\\?([A-Za-z_][A-Za-z0-9_.-]*))"
+)
+# What may follow a sole invocation without making it compound: stdout or
+# stderr redirected to the other or discarded, then at most one pipe into
+# `head` or `tail` with a plain numeric count.
+_TRAILER = re.compile(
+    r"(?:[ \t]*[12]?>(?:&[12]|[ \t]*/dev/null))*"
+    r"(?:[ \t]*\|[ \t]*(?:head|tail)(?:[ \t]+-(?:n[ \t]*)?[0-9]+)?)?[ \t]*"
+)
 # Where an invocation ends: the first unquoted separator or redirection.
 _SEGMENT_END = re.compile(r"[;&|<>()`\n\r]")
 # Tools that write repository files. Shell is deliberately absent: classifying
@@ -738,48 +756,99 @@ def _candidate(event, snapshot, root):
     )
 
 
-def _mask_quotes(command):
-    """The command with quoted text replaced, character for character."""
+def _mask_shell(command):
+    """The command with inert text replaced, character for character.
+
+    Quoted text, a character escaped by a backslash outside single quotes, and
+    every heredoc body line through its terminator are masked; the quote
+    characters, operators and line breaks stay. An unterminated heredoc masks
+    the rest of the command, as the shell would read it.
+    """
 
     masked = []
     quote = None
-    for char in command:
-        if quote is None:
-            quote = char if char in "'\"" else None
+    pending = []
+    index = 0
+    length = len(command)
+    while index < length:
+        char = command[index]
+        if quote == "'":
+            quote = None if char == "'" else quote
+            masked.append(char if quote is None else "_")
+        elif char == "\\" and index + 1 < length:
+            masked.append("\\_" if quote is None else "__")
+            index += 2
+            continue
+        elif quote == '"':
+            quote = None if char == '"' else quote
+            masked.append(char if quote is None else "_")
+        elif char in "'\"":
+            quote = char
             masked.append(char)
-        elif char == quote:
-            quote = None
+        elif command.startswith("<<", index) and not command.startswith("<<<", index):
+            match = _HEREDOC.match(command, index)
+            if match is None:
+                masked.append("<<")
+                index += 2
+                continue
+            word = next(value for value in match.group(2, 3, 4) if value is not None)
+            pending.append((word, match.group(1) == "-"))
+            masked.append(command[index : match.end()])
+            index = match.end()
+            continue
+        elif char == "\n" and pending:
             masked.append(char)
+            index += 1
+            while pending and index < length:
+                word, tabs = pending[0]
+                end = command.find("\n", index)
+                stop = length if end < 0 else end
+                line = command[index:stop]
+                masked.append("_" * len(line) + ("" if end < 0 else "\n"))
+                index = stop + 1
+                if (line.lstrip("\t") if tabs else line).rstrip("\r") == word:
+                    pending.pop(0)
+            continue
         else:
-            masked.append("_")
-    return "".join(masked)
+            masked.append(char)
+        index += 1
+    return "".join(masked)[:length]
 
 
-def _control_segment(command):
-    """The first lifecycle invocation in a shell command that needs a binding.
+def _control_span(command):
+    """Where the first lifecycle invocation that needs a binding lies.
 
-    Returns None when the command invokes no lifecycle command, or only
-    `doctor` or help, which take no session binding. The match is a regular
-    expression over the command alone, so an ordinary command costs no state.
+    Returns `(start, stop)` into the command, or None when it invokes no
+    lifecycle command, or only `doctor` or help, which take no session
+    binding. The match is a regular expression over the command alone, so an
+    ordinary command costs no state.
     """
 
     if not isinstance(command, str) or "lifecycle" not in command:
         return None
-    masked = _mask_quotes(command)
+    masked = _mask_shell(command)
     for match in _INVOCATION.finditer(masked):
+        start = match.start(1)
         end = _SEGMENT_END.search(masked, match.end())
         stop = end.start() if end else len(masked)
-        text = masked[match.start() : stop].rstrip()
-        if end and masked[stop] in "<>" and re.search(r" [0-9]$", text):
+        if end and masked[stop] in "<>" and re.search(r"\s[0-9]$", masked[:stop]):
             # `2>&1`: the descriptor belongs to the redirection.
-            text = text[:-1].rstrip()
-        stop = match.start() + len(text)
+            stop -= 1
+        text = masked[start:stop].rstrip()
+        stop = start + len(text)
         words = text.split()
         operation = words[3] if len(words) > 3 else None
         if operation in _UNBOUND_CONTROL or _HELP_FLAGS.intersection(words[3:]):
             continue
-        return command[match.start() : stop].rstrip()
+        return start, stop
     return None
+
+
+def _control_segment(command):
+    """The first lifecycle invocation in a shell command that needs a binding."""
+
+    span = _control_span(command)
+    return None if span is None else command[span[0] : span[1]]
 
 
 def _admits(command, runner, session, capability):
@@ -1251,7 +1320,7 @@ def _context_advisory(event, snapshot, storage, raw_id):
         return None
 
 
-def _context_only(platform, name, payload, repo_root, storage):
+def _context_only(platform, name, payload, repo_root, storage, started):
     """Serve a call that reached state only for the context advisory.
 
     Before the advisory existed such a call returned without opening state, so
@@ -1264,7 +1333,9 @@ def _context_only(platform, name, payload, repo_root, storage):
         if storage is None:
             state_root = os.environ.get("AHK_STATE_ROOT")
             storage = LocalLifecycleStorage(
-                root, state_root=Path(state_root) if state_root else None
+                root,
+                state_root=Path(state_root) if state_root else None,
+                lock_deadline=started + LOCK_TIMEOUT_SECONDS,
             )
         snapshot = storage.load_snapshot(raw_id)
         if snapshot.session.mode not in _CONTEXT_STATE_MODES:
@@ -1287,13 +1358,20 @@ def _pre_tool(event, snapshot, root, storage, raw_id):
     # there is nothing for the interception to carry into it. It is read only,
     # and denying it would reproduce the deadlock it exists to break: the only
     # path to a challenge runs through the hook flow that is failing.
-    segment = _control_segment(command)
-    control = segment is not None
-    # An invocation inside a compound command is never run and never
-    # rewritten: the denial hands back the bound command, to be run alone.
-    compound = control and segment != command.strip()
-    if compound:
-        command = segment
+    span = _control_span(command)
+    control = span is not None
+    compound = trailer = False
+    if control:
+        # An invocation inside a compound command is never run and never
+        # rewritten: the denial hands back the bound command, to be run alone.
+        # A whitelisted output trailer is not compound: the invocation alone
+        # is checked, and the command is still never rewritten in place.
+        rest = command[span[1] :].rstrip()
+        compound = bool(command[: span[0]].strip()) or (
+            _TRAILER.fullmatch(rest) is None
+        )
+        trailer = not compound and bool(rest)
+        command = command[span[0] : span[1]]
     # Work is never gated. The toolkit intercepts only its own control
     # commands, which is how a session discovers its session key, challenge and
     # revision: UserPromptSubmit returns silently, so this denial is the sole
@@ -1337,6 +1415,7 @@ def _pre_tool(event, snapshot, root, storage, raw_id):
         if (
             event.host == "claude"
             and not compound
+            and not trailer
             and _stale_inspect(command, runner, root, session)
             and _admits(corrected, runner, session, capability)
         ):
@@ -2245,10 +2324,13 @@ def _decision_resolved(message, request):
 
 
 def run_lifecycle_hook(platform, name, raw, repo_root, storage=None):
+    # Every lock acquisition in this run waits against one deadline.
+    started = time.monotonic()
     event_kind = event_name(name)
     snapshot = None
     raw_id = None
     stage = "decode-input"
+    behind = False
     try:
         payload = decode_payload(raw)
         # Nothing is gated at PreToolUse but the toolkit's own control
@@ -2269,7 +2351,9 @@ def run_lifecycle_hook(platform, name, raw, repo_root, storage=None):
                 # 80%. Otherwise the call returns before any state is opened.
                 if not _context_crossing(platform, payload):
                     return HookExecution()
-                return _context_only(platform, name, payload, repo_root, storage)
+                return _context_only(
+                    platform, name, payload, repo_root, storage, started
+                )
         stage = "resolve-root"
         root = hook_repository_root(payload, repo_root)
         raw_id = _string(payload.get("session_id"), 4096)
@@ -2277,7 +2361,9 @@ def run_lifecycle_hook(platform, name, raw, repo_root, storage=None):
             stage = "open-state"
             state_root = os.environ.get("AHK_STATE_ROOT")
             storage = LocalLifecycleStorage(
-                root, state_root=Path(state_root) if state_root else None
+                root,
+                state_root=Path(state_root) if state_root else None,
+                lock_deadline=started + LOCK_TIMEOUT_SECONDS,
             )
         stage = "load-state"
         snapshot = storage.load_snapshot(raw_id)
@@ -2314,10 +2400,15 @@ def run_lifecycle_hook(platform, name, raw, repo_root, storage=None):
     except _PointerRefused as refused:
         # The model offered a record and the pointer does not qualify. That is
         # a policy outcome it can correct, counted toward the circuit like any
-        # other blocked Stop - never a malfunction of the toolkit.
+        # other blocked Stop - never a malfunction of the toolkit. Against a
+        # chain a peer has moved, it is uncounted like every other block there.
         issue = _pointer_issue(refused.check, root)
         try:
-            decision = _blocked_stop(snapshot, (issue,), allow_session_identity=True)
+            decision = (
+                _peer_stale(snapshot)
+                if behind
+                else _blocked_stop(snapshot, (issue,), allow_session_identity=True)
+            )
         except Exception:
             decision = LifecycleDecision(DecisionKind.BLOCK, (issue,))
     except StaleLifecycleState:

@@ -1267,6 +1267,37 @@ class LockContentionTests(unittest.TestCase):
             release()
         self.assertEqual(storage.load_snapshot("session").session.targeted_revision, 0)
 
+    def test_one_absolute_lock_deadline_is_shared_by_every_acquisition(self):
+        """A hook run takes the lock several times; each used to wait 15 s.
+
+        A storage given an absolute monotonic deadline spends one budget
+        across all its acquisitions: once it is exhausted, a contended
+        acquisition fails at once instead of waiting its own full timeout.
+        An uncontended one still succeeds, because the deadline bounds
+        waiting, not work.
+        """
+
+        from agent_handoff_toolkit.lifecycle_storage import LockTimeout
+
+        state = self.root / "state"
+        storage = LocalLifecycleStorage(
+            self.root, state_root=state, lock_deadline=time.monotonic() + 0.4
+        )
+        self.assertIsNone(storage.lock_timeout)
+        release = self.hold(state)
+        try:
+            started = time.monotonic()
+            with self.assertRaises(LockTimeout):
+                storage.load_snapshot("session")
+            self.assertLess(time.monotonic() - started, 5)
+            started = time.monotonic()
+            with self.assertRaises(LockTimeout):
+                storage.load_snapshot("session")
+            self.assertLess(time.monotonic() - started, 0.3)
+        finally:
+            release()
+        self.assertEqual(storage.load_snapshot("session").session.targeted_revision, 0)
+
     @unittest.skipUnless(os.name == "nt", "the give-up window is Windows-only")
     def test_real_contention_beyond_the_give_up_window_still_completes(self):
         """The reproduction: hold the lock past the window a hook must survive.

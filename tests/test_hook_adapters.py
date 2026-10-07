@@ -11,6 +11,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -632,6 +633,7 @@ class EnforcementTests(unittest.TestCase):
         private = self.root / ".git" / "worktrees" / "x"
         private.mkdir(parents=True)
         (private / "commondir").write_text("../..\n")
+        (private / "gitdir").write_text(f"{(worktree / '.git').as_posix()}\n")
         (worktree / ".git").write_text(f"gitdir: {private.as_posix()}\n")
         runner = worktree / ".agent-handoff-toolkit" / "runner.py"
         runner.write_text("# owned runner\n")
@@ -677,6 +679,68 @@ class EnforcementTests(unittest.TestCase):
             self.assertEqual(
                 hook_repository_root({"cwd": str(unrelated)}, self.root), self.root
             )
+
+    def test_a_hand_written_git_file_is_not_a_worktree_of_this_repository(self):
+        """`gitdir: ../../.git` names the common directory without being a worktree.
+
+        Any directory can carry such a file. A `.git` file counts only when
+        its private directory sits directly under `<common>/worktrees/` and
+        that directory's `gitdir` leads back to this checkout's `.git`.
+        """
+
+        spoof = self.root / "a" / "b"
+        spoof.mkdir(parents=True)
+        (spoof / ".git").write_text("gitdir: ../../.git\n")
+        self.assertEqual(
+            hook_repository_root({"cwd": str(spoof)}, self.root), self.root
+        )
+        # A private directory in the right place whose `gitdir` names another
+        # checkout is not this one's either.
+        private = self.root / ".git" / "worktrees" / "other"
+        private.mkdir(parents=True)
+        (private / "commondir").write_text("../..\n")
+        elsewhere = (self.root / "elsewhere" / ".git").as_posix()
+        (private / "gitdir").write_text(elsewhere + "\n")
+        (spoof / ".git").write_text(f"gitdir: {private.as_posix()}\n")
+        self.assertEqual(
+            hook_repository_root({"cwd": str(spoof)}, self.root), self.root
+        )
+
+    def test_a_genuine_git_worktree_takes_the_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            scratch = Path(directory).resolve()
+            main = scratch / "main"
+            main.mkdir()
+            environment = {**os.environ, "GIT_CEILING_DIRECTORIES": scratch.as_posix()}
+            for arguments in (
+                ("init", "-q"),
+                ("commit", "-q", "--allow-empty", "-m", "synthetic"),
+                ("worktree", "add", "-q", ".claude/worktrees/x"),
+            ):
+                subprocess.run(
+                    [
+                        "git",
+                        "-c",
+                        "user.name=Synthetic",
+                        "-c",
+                        "user.email=synthetic@example.invalid",
+                        "-c",
+                        "commit.gpgsign=false",
+                        *arguments,
+                    ],
+                    cwd=main,
+                    env=environment,
+                    capture_output=True,
+                    check=True,
+                )
+            worktree = main / ".claude" / "worktrees" / "x"
+            nested = worktree / "src"
+            nested.mkdir()
+            for cwd in (worktree, nested):
+                with self.subTest(cwd=cwd.name):
+                    self.assertEqual(
+                        hook_repository_root({"cwd": str(cwd)}, main), worktree
+                    )
 
     def stop_payload(self, drop=(), **changes):
         value = payload(self.root, "Stop", **changes)
@@ -841,6 +905,49 @@ class EnforcementTests(unittest.TestCase):
         finally:
             lifecycle_storage._unlock_descriptor(held, windows=windows)
             os.close(held)
+
+    def test_one_hook_run_shares_one_lock_deadline(self):
+        """A Stop took the lock up to four times, each waiting up to 15 s.
+
+        Every acquisition in one hook invocation now waits against the same
+        absolute deadline, 15 s from the start of the run.
+        """
+
+        from agent_handoff_toolkit import lifecycle_storage
+
+        self.register()
+        original = lifecycle_storage._exclusive_lock
+        deadlines = []
+
+        def recording(path, timeout=None, deadline=None):
+            deadlines.append((timeout, deadline))
+            return original(path, timeout, deadline)
+
+        started = time.monotonic()
+        with (
+            patch.dict(os.environ, {"AHK_STATE_ROOT": str(self.root / "state")}),
+            patch.object(lifecycle_storage, "_exclusive_lock", recording),
+        ):
+            for name in ("Stop", "UserPromptSubmit"):
+                with self.subTest(event=name):
+                    deadlines.clear()
+                    run_hook(
+                        "codex",
+                        name,
+                        json.dumps(payload(self.root, name, turn_id="t-" + name)),
+                        self.root,
+                    )
+                    self.assertGreater(len(deadlines), 1)
+                    self.assertEqual(len(set(deadlines)), 1)
+                    timeout, deadline = deadlines[0]
+                    self.assertIsNone(timeout)
+                    self.assertLessEqual(
+                        deadline,
+                        time.monotonic() + lifecycle_storage.LOCK_TIMEOUT_SECONDS,
+                    )
+                    self.assertGreaterEqual(
+                        deadline, started + lifecycle_storage.LOCK_TIMEOUT_SECONDS
+                    )
 
     def test_unreadable_state_is_reported_rather_than_enforced(self):
         """The mode is unknown when state cannot be read, so nothing is decided.
@@ -2536,6 +2643,26 @@ class EnforcementTests(unittest.TestCase):
         self.assertEqual(joined.session.correction_cycle_count, 0)
         self.assertEqual(joined.session.chain_revision, joined.chain.targeted_revision)
 
+    def test_a_refused_pointer_after_a_peer_publishes_is_not_counted(self):
+        """A pointer refused against a chain a peer moved is the peer's doing.
+
+        Like every other block in that situation it is the uncounted
+        `AHK-STOP-STALE` naming the current record, not `AHK-STOP-POINTER`.
+        """
+
+        self.peer_publishes()
+        _, _, message = self.record(name="third")
+        result = self.invoke(
+            session_id="joined", last_assistant_message=message + "\nTrailing"
+        )
+        self.assert_block(result, "AHK-STOP-STALE")
+        reason = json.loads(result.stdout)["reason"]
+        self.assertIn("current=second.md", reason)
+        self.assertNotIn("AHK-STOP-POINTER", reason)
+        joined = self.storage.load_snapshot("joined")
+        self.assertEqual(joined.session.correction_cycle_count, 0)
+        self.assertEqual(joined.session.chain_revision, joined.chain.targeted_revision)
+
     def test_a_declaration_that_cannot_be_observed_is_never_enrolled_silently(self):
         """Enrollment is not independent of observation, and must not be.
 
@@ -3396,10 +3523,12 @@ class EnforcementTests(unittest.TestCase):
         for host in ("claude", "codex"):
             for command in (
                 f'cd "{self.root.as_posix()}" && python {runner} lifecycle one-off',
-                f"python {runner} lifecycle one-off 2>&1 | tail -3",
+                f"python {runner} lifecycle one-off | grep x",
                 "echo x >> notes.txt; python .agent-handoff-toolkit/runner.py"
                 " lifecycle one-off",
                 bound + " && echo done",
+                bound + " > out.txt",
+                bound + " | head -n 5; rm x",
             ):
                 with self.subTest(host=host, command=command):
                     output = self.invoke(
@@ -3448,6 +3577,153 @@ class EnforcementTests(unittest.TestCase):
         ):
             with self.subTest(command=command):
                 self.assertIn("AHK-HOOK-RUNTIME", run(command).stdout)
+
+    def test_an_invocation_counts_only_at_a_command_start(self):
+        """A mention of the runner inside an argument or a heredoc is not a call.
+
+        Matching after any whitespace denied ordinary commands in every mode,
+        `OPEN` included - a commit message or a notes file written through a
+        heredoc that quoted the lifecycle command - and opened state for them.
+        An invocation starts the command string or a line, or follows `;`,
+        `&&`, `||`, `|`, `(`, `$(` or a backtick.
+        """
+
+        class Unopenable:
+            def __getattr__(self, name):
+                raise RuntimeError("state unavailable")
+
+        def run(command):
+            return run_hook(
+                "claude",
+                "PreToolUse",
+                json.dumps(
+                    payload(self.root, "PreToolUse", tool_input={"command": command})
+                ),
+                self.root,
+                Unopenable(),
+            )
+
+        for command in (
+            "git commit -F - <<'EOF'\nfix: bind inspect\n\n"
+            "python .agent-handoff-toolkit/runner.py lifecycle inspect is now bound\n"
+            "EOF",
+            "cat > notes.md <<'EOF'\nRun python X/runner.py lifecycle inspect first.\n"
+            "EOF\n",
+            'cat <<-"END" > notes.md\n\tpython r lifecycle inspect\n\tEND',
+            "cat <<END\npython r lifecycle inspect\nEND",
+            'git commit -m "fix: python r lifecycle inspect is bound"',
+            "echo python r lifecycle inspect",
+            "grep -n python r lifecycle inspect notes.md",
+            "echo a\\;python r lifecycle inspect",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(run(command), HookExecution())
+        for command in (
+            "echo `python r lifecycle inspect`",
+            "echo $(python r lifecycle inspect)",
+            "echo it\\'s; python r lifecycle inspect",
+            "cd x\npython r lifecycle inspect",
+            "cd x ||  python r lifecycle inspect",
+            "cat <<'EOF' > notes.md\nbody\nEOF\npython r lifecycle inspect",
+        ):
+            with self.subTest(command=command):
+                self.assertIn("AHK-HOOK-RUNTIME", run(command).stdout)
+
+    def test_a_heredoc_mention_passes_an_open_session(self):
+        self.invoke("UserPromptSubmit")
+        command = (
+            "git commit -F - <<'EOF'\nfix: bind inspect\n\n"
+            "python .agent-handoff-toolkit/runner.py lifecycle inspect is now bound\n"
+            "EOF"
+        )
+        for host in ("claude", "codex"):
+            with self.subTest(host=host):
+                self.assertEqual(
+                    self.invoke(
+                        "PreToolUse", host=host, tool_input={"command": command}
+                    ),
+                    HookExecution(),
+                )
+
+    def test_a_bound_invocation_with_an_output_trailer_is_admitted(self):
+        """`2>&1`, `2>/dev/null` and a pipe into `head` or `tail` change nothing.
+
+        They were classified compound and denied. The invocation alone is
+        checked; any other trailer stays compound, and a trailer is never
+        rewritten in place.
+        """
+
+        trailers = (
+            " 2>&1",
+            " 2>/dev/null",
+            " | head -n 5",
+            " | tail -5",
+            " 2>&1 | tail -3",
+            " | head -n5",
+        )
+        self.invoke("UserPromptSubmit")
+        session = self.storage.load_snapshot("session-1").session
+        capability = self.storage.control_capability(session)
+        runner = (self.root / ".agent-handoff-toolkit" / "runner.py").as_posix()
+        one_off = (
+            f"python {runner} lifecycle one-off --session-key {session.session_key}"
+            f" --challenge {capability}"
+            f" --expected-session-revision {session.targeted_revision}"
+        )
+        for trailer in trailers:
+            with self.subTest(mode="pre-root", trailer=trailer):
+                self.assertEqual(
+                    self.invoke(
+                        "PreToolUse", tool_input={"command": one_off + trailer}
+                    ),
+                    HookExecution(),
+                )
+        self.register()
+        session = self.storage.load_snapshot("session-1").session
+        capability = self.storage.control_capability(session)
+        bound = (
+            f"python {runner} lifecycle inspect --session-key {session.session_key}"
+            f" --challenge {capability}"
+            f" --expected-session-revision {session.targeted_revision}"
+        )
+        for host in ("claude", "codex"):
+            for trailer in trailers:
+                with self.subTest(mode="tracked", host=host, trailer=trailer):
+                    self.assertEqual(
+                        self.invoke(
+                            "PreToolUse",
+                            host=host,
+                            tool_input={"command": bound + trailer},
+                        ),
+                        HookExecution(),
+                    )
+            for trailer in (" | grep x", " > out.txt", " 2>&1 | tail -3 | sort"):
+                with self.subTest(mode="tracked", host=host, other=trailer):
+                    reason = self.reason_of(
+                        self.invoke(
+                            "PreToolUse",
+                            host=host,
+                            tool_input={"command": bound + trailer},
+                        )
+                    )
+                    self.assertIn("alone", reason)
+        stale = (
+            f"python {runner} lifecycle inspect --session-key {session.session_key}"
+            " --challenge spent-challenge --expected-session-revision 0"
+        )
+        for trailer in trailers:
+            with self.subTest(stale=trailer):
+                output = self.invoke(
+                    "PreToolUse", host="claude", tool_input={"command": stale + trailer}
+                )
+                self.assertNotIn("updatedInput", output.stdout)
+                reason = self.reason_of(output)
+                self.assertIn("AHK-CONTROL-BINDING", reason)
+                self.assertNotIn("alone", reason)
+                self.assertEqual(
+                    reason.split("Command: ", 1)[1].split()[:4],
+                    ["python", runner, "lifecycle", "inspect"],
+                )
 
     def test_a_stale_tracked_inspect_is_rebound_in_place_on_claude_only(self):
         """A spent challenge cost a denial and a retry on every tracked pause.

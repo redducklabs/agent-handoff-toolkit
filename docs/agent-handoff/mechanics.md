@@ -176,21 +176,20 @@ no prompt, reply, or transcript content can reach the host through it.
 Informational hooks fail open. Tracked lifecycle hooks fail closed on
 `PreToolUse` and `Stop`, including corrupt tracked state, unreadable
 candidates, missing owned runtime files, and lifecycle validation exceptions.
-A session in `OPEN` or `ONE_OFF` fails open by construction: it has registered
-no root and so has no lifecycle state to fail closed on. Successful lifecycle
-checks emit no routine model context.
+A session in `OPEN` or `ONE_OFF` fails open by construction: it has no
+lifecycle state to fail closed on. Successful lifecycle checks emit no routine
+model context.
 
 `UserPromptSubmit` is never a decision point, for any cause: a blocked prompt
 erases the user's message and starts no turn. It reports instead, naming the
 issue on `additionalContext` for the agent and one sentence on `systemMessage`
 for the user.
 
-Its bookkeeping is best effort: each step is attempted, a failed step is
-named, and the turn proceeds. Enrollment is the exception: a `Track:` or
-`Continue from handoff:` declaration is registered only when the turn that
-carried it was observed, because authorization binds to the stored turn
-reference. A declaration that could not be enrolled says the session is
-untracked.
+Its bookkeeping is best effort: a failed step is named and the turn proceeds.
+Enrollment is the exception: a `Track:` or `Continue from handoff:` declaration
+is registered only when the turn that carried it was observed, because
+authorization binds to the stored turn reference. A declaration that could not
+be enrolled says the session is untracked.
 
 A runtime fault is a malfunction, not a decision about the work. Once the
 adapter has loaded, `AHK-HOOK-RUNTIME` blocks only a session whose own state
@@ -206,18 +205,18 @@ there.
 Every report names its failing stage and exception class after `failed=`; the
 bootstrap boundary distinguishes an import that produced no runtime from a
 dispatch that failed after one loaded. A hook command's exit status never
-signals a fault. The state lock is awaited for at most 15 seconds, then fails
-as `LockTimeout` before anything is read or written.
+signals a fault. A hook run awaits the state lock for at most 15 seconds in
+all, a CLI command 15 per acquisition, then fails as `LockTimeout` before
+anything is read or written.
 
 Hook input is read from stdin as UTF-8 bytes, whatever the console code page;
 input that is not UTF-8 is `AHK-HOOK-RUNTIME` at stage `decode-input`.
 
-A hook's repository root is the checkout holding the payload `cwd` (its
-nearest ancestor with `.git`) when that is a worktree of the same repository,
-sharing its git common directory; otherwise it is the hook process's
-directory. The located runner hands a hook, once, to that worktree's
-`.agent-handoff-toolkit/runner.py`, and serves the hook itself if that runner
-gives no single response.
+A hook's repository root is the checkout holding the payload `cwd` (its nearest
+ancestor with `.git`) when that is a worktree git registered for the same
+repository; otherwise it is the hook process's directory. The located runner
+hands a hook, once, to that worktree's `.agent-handoff-toolkit/runner.py`, and
+serves the hook itself if that runner gives no single response.
 
 ## Recovering a broken hook runtime
 
@@ -251,19 +250,17 @@ can error: any failure produces no message.
   first call to a known file-writing tool — `Write`, `Edit`, `MultiEdit` and
   `NotebookEdit` on Claude Code, `apply_patch` on Codex. Not `Bash`, not an MCP
   tool. It is sent on `hookSpecificOutput.additionalContext`, naming both
-  lifecycle commands in plain form, which the control interception binds. Its
-  delivery is verified on
-  Claude Code by an acceptance run (`advisory_seen=pass`) and unverified on
-  Codex. It names no session key,
+  lifecycle commands in plain form, which the control interception binds.
+  Delivery is verified on Claude Code (`advisory_seen=pass`), not on Codex. It
+  names no session key,
   challenge or absolute path. It never fires for a session that has already
   declared one-off.
 - **`AHK-NO-HANDOFF`** fires at most once per session, at `Stop`, for a session
   still in `OPEN` or `ONE_OFF`, when both hold: `git status --porcelain` is
   non-empty, and its digest differs from the digest recorded at the session's
-  first `UserPromptSubmit`. Both come from one `git status`, and mean the
-  repository changed while the session was open, not that the session changed
-  it. It asks the user, on `systemMessage`, to request a handoff. A declared
-  one-off still receives it.
+  first `UserPromptSubmit`: the repository changed while the session was open,
+  not necessarily by the session. It asks the user, on `systemMessage`, to
+  request a handoff. A declared one-off still receives it.
 - **`AHK-CONTEXT-HIGH`** serves a `TRACKED` or `AWAITING_DECISION` session on
   Claude Code. `PreToolUse` reads numbers only from the last 512 KiB of
   `transcript_path`: the newest main-thread usage (`input_tokens`
@@ -351,13 +348,14 @@ approved transition. `validate_successor` still runs at `Stop`.
 ## Lifecycle commands and untracked authoring
 
 Control commands need the credentials the interception binds into them. It
-finds `python <runner> lifecycle` anywhere in a shell command outside quotes;
-only `doctor` and `--help`/`-h` pass. A compound command is denied with the
-bound command, to run alone. On Claude Code, the session's own `inspect`, wrong
-only in its challenge or revision, is replaced by the bound form through
-`updatedInput`, permission unchanged; Codex is denied with it. A CLI
-`AHK-INPUT` or `AHK-STATE-STALE` says to run the command alone and lists the
-scope kinds.
+finds `python <runner> lifecycle` at a command start, outside quotes, escapes
+and heredoc bodies; only `doctor` and `--help`/`-h` pass. A compound command is
+denied with the bound command, to run alone. A trailing `2>&1`, `2>/dev/null`
+or numeric `| head`/`| tail` is not compound, nor rewritten. On Claude Code,
+the session's own `inspect`, wrong only in its challenge or revision, is
+replaced by the bound form through `updatedInput`, permission unchanged; Codex
+is denied with it. A CLI `AHK-INPUT` or `AHK-STATE-STALE` says to run the
+command alone and lists the scope kinds.
 
 Authoring a record outside a tracked session uses `render`, `validate`, and
 `render-tail` only; lifecycle credentials are never fabricated.
