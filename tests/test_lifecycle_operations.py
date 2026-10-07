@@ -972,6 +972,37 @@ class OperationsTests(unittest.TestCase):
         self.assertEqual(status, 2)
         self.assertNotIn("private-marker", output + errors)
 
+    def test_cli_input_and_stale_errors_say_how_to_recover(self):
+        """A bare `{"issue_codes":["AHK-INPUT"]}` left agents guessing.
+
+        The advice is fixed text: it never echoes an argument.
+        """
+
+        marker = "private-marker-" + secrets.token_hex(4)
+        advice = (
+            "Run the lifecycle command alone, starting with python <runner>"
+            " lifecycle, so the hook binds it. Valid scope kinds: unit, issue,"
+            " phase, epic, rollout, standalone."
+        )
+        status, output, errors = self.call_cli(["inspect", "--" + marker, marker])
+        self.assertEqual(status, 1)
+        self.assertEqual(
+            json.loads(errors),
+            {"issue_codes": ["AHK-INPUT"], "corrective_action": advice},
+        )
+        self.assertNotIn(marker, output + errors)
+        with patch(
+            "agent_handoff_toolkit.lifecycle_operations.LifecycleService.inspect",
+            side_effect=StaleLifecycleState(marker),
+        ):
+            status, output, errors = self.call_cli(["inspect"])
+        self.assertEqual(status, 1)
+        self.assertEqual(
+            json.loads(errors),
+            {"issue_codes": ["AHK-STATE-STALE"], "corrective_action": advice},
+        )
+        self.assertNotIn(marker, output + errors)
+
     def test_cli_duplicate_equal_form_revision_is_rejected(self):
         args = command("register-root").split(" lifecycle ")[1].split()
         args[-1] = "1"

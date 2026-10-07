@@ -40,7 +40,9 @@ from .lifecycle_storage import LocalLifecycleStorage, StaleLifecycleState
 from .records import parse_markdown, validate_markdown
 
 
-SCOPE_KINDS = {"unit", "issue", "phase", "epic", "rollout", "standalone"}
+# The closed set, in the order feedback names it.
+SCOPE_KIND_ORDER = ("unit", "issue", "phase", "epic", "rollout", "standalone")
+SCOPE_KINDS = set(SCOPE_KIND_ORDER)
 _FLAGS = {
     "register-root": (
         "session-key",

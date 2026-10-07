@@ -39,6 +39,7 @@ from .lifecycle import (
     evaluate_user_prompt,
 )
 from .lifecycle_operations import (
+    SCOPE_KIND_ORDER,
     SCOPE_KINDS,
     LifecycleService,
     _charset_code,
@@ -80,6 +81,15 @@ _SHELL = {"claude": frozenset({"Bash", "PowerShell"}), "codex": frozenset({"Bash
 # Lifecycle subcommands that carry no session key, challenge or revision, and
 # so have nothing the control interception could bind into them.
 _UNBOUND_CONTROL = frozenset({"doctor"})
+# Help decides nothing and needs no binding either.
+_HELP_FLAGS = frozenset({"--help", "-h"})
+# A lifecycle invocation anywhere in a shell command: at its start or after
+# whitespace or a separator. It is matched against the command with quoted
+# text masked, so a quoted mention - a commit message, a grep pattern - is
+# not an invocation.
+_INVOCATION = re.compile(r"(?:^|(?<=[\s;&|(]))python \S+ lifecycle(?=$|[\s;&|)])")
+# Where an invocation ends: the first unquoted separator or redirection.
+_SEGMENT_END = re.compile(r"[;&|<>()`\n\r]")
 # Tools that write repository files. Shell is deliberately absent: classifying
 # a command as read-only or not is fragile, and making `git status` an advisory
 # trigger would defeat the purpose. A missed trigger costs an advisory, not a
@@ -720,6 +730,110 @@ def _candidate(event, snapshot, root):
     )
 
 
+def _mask_quotes(command):
+    """The command with quoted text replaced, character for character."""
+
+    masked = []
+    quote = None
+    for char in command:
+        if quote is None:
+            quote = char if char in "'\"" else None
+            masked.append(char)
+        elif char == quote:
+            quote = None
+            masked.append(char)
+        else:
+            masked.append("_")
+    return "".join(masked)
+
+
+def _control_segment(command):
+    """The first lifecycle invocation in a shell command that needs a binding.
+
+    Returns None when the command invokes no lifecycle command, or only
+    `doctor` or help, which take no session binding. The match is a regular
+    expression over the command alone, so an ordinary command costs no state.
+    """
+
+    if not isinstance(command, str) or "lifecycle" not in command:
+        return None
+    masked = _mask_quotes(command)
+    for match in _INVOCATION.finditer(masked):
+        end = _SEGMENT_END.search(masked, match.end())
+        stop = end.start() if end else len(masked)
+        text = masked[match.start() : stop].rstrip()
+        if end and masked[stop] in "<>" and re.search(r" [0-9]$", text):
+            # `2>&1`: the descriptor belongs to the redirection.
+            text = text[:-1].rstrip()
+        stop = match.start() + len(text)
+        words = text.split()
+        operation = words[3] if len(words) > 3 else None
+        if operation in _UNBOUND_CONTROL or _HELP_FLAGS.intersection(words[3:]):
+            continue
+        return command[match.start() : stop].rstrip()
+    return None
+
+
+def _admits(command, runner, session, capability):
+    """Whether a tracked session's control command carries its live binding."""
+
+    tokens = command.split(" ")
+    return (
+        len(tokens) > 3
+        and tokens[1] == runner.as_posix()
+        and all(
+            tokens.count(flag) == 1
+            and tokens.index(flag) + 1 < len(tokens)
+            and tokens[tokens.index(flag) + 1] == value
+            for flag, value in (
+                ("--session-key", session.session_key),
+                ("--challenge", capability),
+                ("--expected-session-revision", str(session.targeted_revision)),
+            )
+        )
+    )
+
+
+def _stale_inspect(command, runner, root, session):
+    """This session's own `inspect`, wrong only in its challenge or revision."""
+
+    tokens = command.split(" ")
+    return (
+        re.fullmatch(r"[A-Za-z0-9._:/ -]+", command) is not None
+        and len(tokens) == 10
+        and tokens[0] == "python"
+        and tokens[1] in {runner.as_posix(), _advisory_runner(root).as_posix()}
+        and tokens[2:6]
+        == ["lifecycle", "inspect", "--session-key", session.session_key]
+        and tokens[6] == "--challenge"
+        and tokens[8] == "--expected-session-revision"
+    )
+
+
+def _rebind(event, command):
+    """Run the bound command in place of the stale one, deciding nothing.
+
+    Claude Code only. `updatedInput` replaces the tool input, so every other
+    field is carried over unchanged. No `permissionDecision` is set: the
+    user's own permission flow applies to the substitute as it would have to
+    the original.
+    """
+
+    inputs = dict(event.tool_input)
+    inputs["command"] = command
+    return HookExecution(
+        stdout=json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "updatedInput": inputs,
+                }
+            },
+            separators=(",", ":"),
+        )
+    )
+
+
 def _control_command(runner, session, capability, operation, fields=()):
     prefix = f"python {runner.as_posix()} lifecycle {operation} --session-key {session.session_key} --challenge {capability}"
     return (
@@ -745,8 +859,15 @@ def _repair_bootstrap(command, runner, session, capability, reasons=None):
     if len(tokens) < 4 or tokens[0] != "python" or tokens[2] != "lifecycle":
         return reject("command-shape")
     tokens[1] = runner.as_posix()
+    # A plain attempt - `lifecycle one-off` - carries no binding at all. Each
+    # missing credential goes where the fixed flag order puts it.
     if "--session-key" not in tokens:
         tokens[4:4] = ["--session-key", session.session_key]
+    if "--challenge" not in tokens:
+        at = tokens.index("--session-key") + 2
+        tokens[at:at] = ["--challenge", capability]
+    if "--expected-session-revision" not in tokens:
+        tokens += ["--expected-session-revision", str(session.targeted_revision)]
     for flag, value in (
         ("--session-key", session.session_key),
         ("--challenge", capability),
@@ -898,16 +1019,17 @@ def _pre_tool(event, snapshot, root, storage, raw_id):
         if event.tool_name in _SHELL[event.host]
         else None
     )
-    invocation = (
-        re.match(r"^python \S+ lifecycle(?: (\S+))?(?: |$)", command)
-        if isinstance(command, str)
-        else None
-    )
     # `doctor` is the one lifecycle command that takes no session binding, so
     # there is nothing for the interception to carry into it. It is read only,
     # and denying it would reproduce the deadlock it exists to break: the only
     # path to a challenge runs through the hook flow that is failing.
-    control = invocation is not None and invocation.group(1) not in _UNBOUND_CONTROL
+    segment = _control_segment(command)
+    control = segment is not None
+    # An invocation inside a compound command is never run and never
+    # rewritten: the denial hands back the bound command, to be run alone.
+    compound = control and segment != command.strip()
+    if compound:
+        command = segment
     # Work is never gated. The toolkit intercepts only its own control
     # commands, which is how a session discovers its session key, challenge and
     # revision: UserPromptSubmit returns silently, so this denial is the sole
@@ -941,24 +1063,19 @@ def _pre_tool(event, snapshot, root, storage, raw_id):
     note = "Use the current bound control command."
     if session.mode not in _UNGATED:
         code = "AHK-CONTROL-BINDING"
-        tokens = command.split(" ")
-        flags = {
-            "--session-key": session.session_key,
-            "--challenge": capability,
-            "--expected-session-revision": str(session.targeted_revision),
-        }
-        if (
-            len(tokens) > 3
-            and tokens[1] == runner.as_posix()
-            and all(
-                tokens.count(flag) == 1
-                and tokens.index(flag) + 1 < len(tokens)
-                and tokens[tokens.index(flag) + 1] == value
-                for flag, value in flags.items()
-            )
-        ):
+        if not compound and _admits(command, runner, session, capability):
             return HookExecution()
         corrected = _control_command(runner, session, capability, "inspect")
+        # The one denial whose command differs from the attempt only in its
+        # credentials. Claude Code can run the bound form in its place; the
+        # substitute must pass the same check that admits it when typed.
+        if (
+            event.host == "claude"
+            and not compound
+            and _stale_inspect(command, runner, root, session)
+            and _admits(corrected, runner, session, capability)
+        ):
+            return _rebind(event, corrected)
     elif repaired is not None:
         corrected, parsed = repaired
         if parsed.operation == "register-root":
@@ -994,10 +1111,15 @@ def _pre_tool(event, snapshot, root, storage, raw_id):
                         ("expected-chain-revision", duplicate.targeted_revision),
                     ),
                 )
-        if corrected == command:
+        if corrected == command and not compound:
             return HookExecution()
     else:
+        strict = len(reasons)
         formed = _form_register_root(command, runner, session, capability, reasons)
+        if len(reasons) > strict:
+            # A plain-slot attempt failed its own check. The strict parse of
+            # that form failed by design and names nothing the author wrote.
+            del reasons[:strict]
         if formed is not None:
             corrected = formed
             note = "Semantic slots accepted and encoded; run this command."
@@ -1018,6 +1140,10 @@ def _pre_tool(event, snapshot, root, storage, raw_id):
                 ),
             )
             note = 'Derive the three semantic slots from the initiating user request; tooling does not supply them. Plain --scope-id --scope-kind --scope-title "..." --scope-outcome "..." is encoded for you.'
+    if "scope-kind" in reasons:
+        note += " Valid scope kinds: " + ", ".join(SCOPE_KIND_ORDER) + "."
+    if compound:
+        note = "Run the lifecycle command alone, not inside a compound command. " + note
     reason = f"{code}: {note}"
     # Detail is additive: naming the failed check never costs the code, the
     # corrective action, or the command the author is being handed. It is
@@ -1804,10 +1930,7 @@ def run_lifecycle_hook(platform, name, raw, repo_root, storage=None):
             tool = payload.get("tool_name")
             inputs = payload.get("tool_input")
             command = inputs.get("command") if isinstance(inputs, Mapping) else None
-            control = (
-                isinstance(command, str)
-                and re.match(r"^python \S+ lifecycle(?: |$)", command) is not None
-            )
+            control = _control_segment(command) is not None
             if not control and tool not in _WRITE_TOOLS[platform]:
                 return HookExecution()
         stage = "resolve-root"

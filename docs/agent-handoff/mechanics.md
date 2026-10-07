@@ -222,13 +222,11 @@ gives no single response.
 
 ## Recovering a broken hook runtime
 
-`lifecycle inspect`, `register-root`, `resume` and `join` require a session key,
-challenge and expected revision, and a session whose hook flow is failing has no
-path to any of them. `lifecycle doctor` is the out-of-band entry point. It takes
-no session binding and is the one lifecycle subcommand the control interception
-does not intercept, because it decides and changes nothing. It reports where
-state resolves, whether it opens, whether its lock is reachable, which runner
-is installed and which one is running, and — given a raw host session ID —
+Every lifecycle command but `doctor` needs session credentials, and a session
+whose hook flow is failing has no path to them. `lifecycle doctor` is the
+out-of-band entry point: it takes no session binding and decides and changes
+nothing. It reports where state resolves, whether it opens, whether its lock is
+reachable, which runner is installed and which one is running, and — given a raw host session ID —
 that session's enforcement mode. The derived session key and
 the local HMAC secret never appear in its output.
 
@@ -345,12 +343,17 @@ approved transition. `validate_successor` still runs at `Stop`.
 
 ## Lifecycle commands and untracked authoring
 
-`lifecycle inspect`, `register-root`, `resume`, and `join` act on a host-tracked
-session and require the session key, challenge, and expected revision that a
-tracked `UserPromptSubmit` supplies. They are the entry point whenever the
-session is tracked. Authoring a record outside a tracked session — no session key
-or challenge is available — uses `render`, `validate`, and `render-tail` only;
-lifecycle credentials are never fabricated to satisfy a command.
+Control commands need the credentials the interception binds into them. It
+finds `python <runner> lifecycle` anywhere in a shell command outside quotes;
+only `doctor` and `--help`/`-h` pass. A compound command is denied with the
+bound command, to run alone. On Claude Code, the session's own `inspect`, wrong
+only in its challenge or revision, is replaced by the bound form through
+`updatedInput`, permission unchanged; Codex is denied with it. A CLI
+`AHK-INPUT` or `AHK-STATE-STALE` says to run the command alone and lists the
+scope kinds.
+
+Authoring a record outside a tracked session uses `render`, `validate`, and
+`render-tail` only; lifecycle credentials are never fabricated.
 
 ## Registering the first root
 
@@ -366,9 +369,8 @@ python <runner> lifecycle register-root --scope-id <id> --scope-kind <kind> \
 ```
 
 The denial validates those slots, encodes the definition, and returns the
-complete bound command after `Command:`. Run that verbatim. The returned command
-still has to satisfy the fixed-token parser, which the hook verifies before
-offering it.
+complete bound command after `Command:`, verified against the fixed-token
+parser; run it verbatim. A plain `lifecycle one-off` is returned bound.
 
 The three semantic slots are the author's. Derive them from the initiating user
 request; the toolkit supplies the encoding, never the meaning. A definition
@@ -376,5 +378,6 @@ whose encoding will not fit the bounded feedback channel is rejected as
 `definition-too-long`. A pre-root denial names the check that rejected the
 attempt after `failed=`, using the same closed vocabulary as blocking `Stop`
 feedback — `definition-b64-alphabet`, `definition-json-noncanonical`,
-`scope-kind` and the rest. A cause the hook can repair on its own, such as a
-stale challenge, is corrected in the returned command instead of being named.
+`scope-kind` and the rest; a `scope-kind` denial lists the valid kinds. A cause
+the hook can repair on its own, such as a stale challenge, is corrected in the
+returned command instead of being named.

@@ -265,9 +265,30 @@ def _doctor_report(session_id=None):
     return report
 
 
+def _print_recovery(code, scope_kinds):
+    """Name the way back from an input or stale-state error, in fixed text.
+
+    The usual cause is a command the hook never saw: run inside a compound
+    command, so no current credentials were bound into it. The advice never
+    echoes an argument.
+    """
+
+    advice = (
+        "Run the lifecycle command alone, starting with python <runner> "
+        "lifecycle, so the hook binds it. Valid scope kinds: "
+        + ", ".join(scope_kinds)
+        + "."
+    )
+    print(
+        json.dumps({"issue_codes": [code], "corrective_action": advice}),
+        file=sys.stderr,
+    )
+
+
 def _lifecycle_main(argv):
     # Imports remain local so legacy informational hooks retain their behavior.
     from .lifecycle_operations import (
+        SCOPE_KIND_ORDER,
         LifecycleOperationError,
         LifecycleService,
         canonical_record_path,
@@ -406,13 +427,13 @@ def _lifecycle_main(argv):
         )
         return 1
     except StaleLifecycleState:
-        print('{"issue_codes":["AHK-STATE-STALE"]}', file=sys.stderr)
+        _print_recovery("AHK-STATE-STALE", SCOPE_KIND_ORDER)
         return 1
     except (LifecycleStorageError, OSError):
         print('{"issue_codes":["AHK-RUNTIME"]}', file=sys.stderr)
         return 2
     except (ValueError, TypeError, KeyError, UnicodeError):
-        print('{"issue_codes":["AHK-INPUT"]}', file=sys.stderr)
+        _print_recovery("AHK-INPUT", SCOPE_KIND_ORDER)
         return 1
     except Exception:
         print('{"issue_codes":["AHK-RUNTIME"]}', file=sys.stderr)

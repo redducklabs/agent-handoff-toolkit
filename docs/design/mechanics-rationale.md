@@ -348,8 +348,8 @@ to a challenge, no path to registering a root, and no path to any lifecycle
 command — the toolkit is unavailable exactly when a session needs it.
 
 `lifecycle doctor` is the out-of-band entry point. It takes no session binding
-because it decides nothing and changes nothing, and for the same reason it is
-the one lifecycle subcommand the control interception does not intercept. It
+because it decides nothing and changes nothing, and for the same reason the
+control interception lets it through, as it does `--help` and `-h`. It
 reports where state resolves, whether it opens, whether its lock is reachable,
 which runner is installed and which one is running, and — given a raw host
 session ID — that session's enforcement mode. The derived session key and the

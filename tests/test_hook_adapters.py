@@ -3146,6 +3146,195 @@ class EnforcementTests(unittest.TestCase):
             "AHK-CONTROL-BINDING",
         )
 
+    def reason_of(self, execution):
+        return json.loads(execution.stdout)["hookSpecificOutput"][
+            "permissionDecisionReason"
+        ]
+
+    def test_a_lifecycle_invocation_inside_a_compound_command_is_intercepted(self):
+        """`cd X && python ... lifecycle ...` used to reach the CLI unbound.
+
+        The CLI then printed a bare `AHK-INPUT` and the agent flailed. A
+        compound command is never run or rewritten; it is denied with the
+        bound command for the invocation it contained, to be run alone.
+        """
+
+        self.invoke("UserPromptSubmit")
+        session = self.storage.load_snapshot("session-1").session
+        capability = self.storage.control_capability(session)
+        runner = (self.root / ".agent-handoff-toolkit" / "runner.py").as_posix()
+        bound = (
+            f"python {runner} lifecycle one-off --session-key {session.session_key}"
+            f" --challenge {capability}"
+            f" --expected-session-revision {session.targeted_revision}"
+        )
+        for host in ("claude", "codex"):
+            for command in (
+                f'cd "{self.root.as_posix()}" && python {runner} lifecycle one-off',
+                f"python {runner} lifecycle one-off 2>&1 | tail -3",
+                "echo x >> notes.txt; python .agent-handoff-toolkit/runner.py"
+                " lifecycle one-off",
+                bound + " && echo done",
+            ):
+                with self.subTest(host=host, command=command):
+                    output = self.invoke(
+                        "PreToolUse", host=host, tool_input={"command": command}
+                    )
+                    reason = self.reason_of(output)
+                    self.assertIn("AHK-PRE-ROOT", reason)
+                    self.assertIn("alone", reason)
+                    self.assertEqual(reason.split("Command: ", 1)[1], bound)
+                    self.assertNotIn("updatedInput", output.stdout)
+        self.assertEqual(
+            self.invoke("PreToolUse", tool_input={"command": bound}), HookExecution()
+        )
+
+    def test_only_the_diagnosis_and_help_escape_the_broadened_interception(self):
+        class Unopenable:
+            def __getattr__(self, name):
+                raise RuntimeError("state unavailable")
+
+        runner = (self.root / ".agent-handoff-toolkit" / "runner.py").as_posix()
+
+        def run(command):
+            return run_hook(
+                "claude",
+                "PreToolUse",
+                json.dumps(
+                    payload(self.root, "PreToolUse", tool_input={"command": command})
+                ),
+                self.root,
+                Unopenable(),
+            )
+
+        for command in (
+            f"python {runner} lifecycle --help",
+            f"python {runner} lifecycle -h",
+            f"python {runner} lifecycle register-root --help",
+            f"cd {self.root.as_posix()} && python {runner} lifecycle doctor",
+            'git commit -m "python .agent-handoff-toolkit/runner.py lifecycle inspect"',
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(run(command), HookExecution())
+        for command in (
+            f"cd {self.root.as_posix()} && python {runner} lifecycle inspect",
+            f"python {runner} lifecycle inspect 2>&1 | tail -3",
+            f"echo x; python {runner} lifecycle one-off",
+        ):
+            with self.subTest(command=command):
+                self.assertIn("AHK-HOOK-RUNTIME", run(command).stdout)
+
+    def test_a_stale_tracked_inspect_is_rebound_in_place_on_claude_only(self):
+        """A spent challenge cost a denial and a retry on every tracked pause.
+
+        On Claude the hook substitutes the bound command through
+        `updatedInput`, deciding nothing about permission. It does so only
+        where it would otherwise deny and offer that very command.
+        """
+
+        self.register()
+        session = self.storage.load_snapshot("session-1").session
+        runner = (self.root / ".agent-handoff-toolkit" / "runner.py").as_posix()
+        stale = (
+            f"python {runner} lifecycle inspect --session-key {session.session_key}"
+            " --challenge spent-challenge --expected-session-revision 0"
+        )
+        tool_input = {"command": stale, "description": "Inspect lifecycle state"}
+        output = self.invoke("PreToolUse", host="claude", tool_input=tool_input)
+        specific = json.loads(output.stdout)["hookSpecificOutput"]
+        self.assertEqual(specific["hookEventName"], "PreToolUse")
+        self.assertNotIn("permissionDecision", specific)
+        self.assertNotIn("permissionDecisionReason", specific)
+        updated = specific["updatedInput"]
+        self.assertEqual(updated["description"], "Inspect lifecycle state")
+        self.assertEqual(set(updated), {"command", "description"})
+        self.assertNotEqual(updated["command"], stale)
+        self.assertTrue(
+            updated["command"].startswith(
+                f"python {runner} lifecycle inspect --session-key {session.session_key}"
+                " --challenge "
+            )
+        )
+        # The substitute is exactly what the interception admits.
+        self.assertEqual(
+            self.invoke(
+                "PreToolUse",
+                host="claude",
+                tool_input={"command": updated["command"]},
+            ),
+            HookExecution(),
+        )
+        # Codex keeps deny-with-command.
+        codex = self.invoke("PreToolUse", host="codex", tool_input=tool_input)
+        self.assertIn("AHK-CONTROL-BINDING", self.reason_of(codex))
+        self.assertNotIn("updatedInput", codex.stdout)
+        # Anything beyond stale credentials is still denied, never rewritten.
+        for command in (
+            stale + " && echo done",
+            f"cd {self.root.as_posix()} && " + stale,
+            stale.replace(session.session_key, "b" * 64),
+            stale.replace(runner, "/elsewhere/runner.py"),
+            stale + " --extra value",
+            f"python {runner} lifecycle inspect",
+            stale.replace(" inspect ", " one-off "),
+        ):
+            with self.subTest(command=command):
+                output = self.invoke(
+                    "PreToolUse", host="claude", tool_input={"command": command}
+                )
+                self.assertNotIn("updatedInput", output.stdout)
+                self.assertIn("AHK-CONTROL-BINDING", self.reason_of(output))
+
+    def test_a_plain_pre_root_one_off_is_bound_as_itself(self):
+        self.invoke("UserPromptSubmit")
+        session = self.storage.load_snapshot("session-1").session
+        capability = self.storage.control_capability(session)
+        runner = (self.root / ".agent-handoff-toolkit" / "runner.py").as_posix()
+        for host in ("claude", "codex"):
+            with self.subTest(host=host):
+                reason = self.reason_of(
+                    self.invoke(
+                        "PreToolUse",
+                        host=host,
+                        tool_input={"command": f"python {runner} lifecycle one-off"},
+                    )
+                )
+                self.assertIn("AHK-PRE-ROOT", reason)
+                self.assertNotIn("register-root", reason)
+                self.assertNotIn("failed=", reason)
+                command = reason.split("Command: ", 1)[1]
+                self.assertEqual(
+                    command,
+                    f"python {runner} lifecycle one-off --session-key"
+                    f" {session.session_key} --challenge {capability}"
+                    f" --expected-session-revision {session.targeted_revision}",
+                )
+                self.assertEqual(
+                    self.invoke(
+                        "PreToolUse", host=host, tool_input={"command": command}
+                    ),
+                    HookExecution(),
+                )
+
+    def test_a_scope_kind_rejection_lists_the_valid_kinds(self):
+        self.invoke("UserPromptSubmit")
+        runner = (self.root / ".agent-handoff-toolkit" / "runner.py").as_posix()
+        for kind in ("task", "ticket", "workstream"):
+            with self.subTest(kind=kind):
+                reason = self.reason_of(
+                    self.invoke(
+                        "PreToolUse",
+                        tool_input={
+                            "command": f"python {runner} lifecycle register-root"
+                            f" --scope-id issue-1 --scope-kind {kind}"
+                            ' --scope-title "A title" --scope-outcome "An outcome"'
+                        },
+                    )
+                )
+                self.assertIn("failed=scope-kind", reason)
+                self.assertIn("unit, issue, phase, epic, rollout, standalone", reason)
+                self.assertNotIn(kind, reason)
+
 
 class SiblingWorktreeResumeTests(unittest.TestCase):
     """A record is read from the checkout of this repository that holds it.
