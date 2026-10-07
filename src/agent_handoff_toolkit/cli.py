@@ -88,6 +88,48 @@ def _repository_root(start: Path) -> Path:
     return resolved
 
 
+def _published_record(path: Path) -> bool:
+    """Whether `path` holds a record the lifecycle state names.
+
+    Two sessions in one folder can pick the same `handoffs/` file name, and
+    the second render overwrote the first one's published record. A file is
+    protected when its digest is the current record of any chain - active,
+    superseded or complete - in the repository's lifecycle state. The guard is
+    best effort: no file, no state or state that cannot be read leaves
+    `render` exactly as it was.
+    """
+
+    try:
+        if not path.is_file():
+            return False
+        from .lifecycle_storage import (
+            LocalLifecycleStorage,
+            resolve_lifecycle_state_root,
+        )
+        from .lineage import record_digest
+
+        digest = record_digest(path.read_text(encoding="utf-8"))
+        configured = os.environ.get("AHK_STATE_ROOT")
+        repository = _repository_root(path.resolve().parent)
+        state_root = (
+            Path(configured) if configured else resolve_lifecycle_state_root(repository)
+        )
+        if not (state_root / "registry.json").is_file():
+            return False
+        registry = LocalLifecycleStorage(
+            repository, state_root=state_root
+        ).load_registry()
+        return any(
+            chain.current_record_reference is not None
+            and chain.current_record_reference.sha256 == digest
+            for chain in registry.chains.values()
+        )
+    except Exception:
+        # Fail open: the guard protects published records when it can, and
+        # never stands between an author and rendering when it cannot.
+        return False
+
+
 def _source_root() -> Path:
     """Infer the checkout or installed toolkit root from this module's path."""
 
@@ -567,6 +609,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.output is None:
                 sys.stdout.write(text)
             else:
+                if _published_record(args.output):
+                    print(
+                        "error: AHK-INPUT: the output file is a published "
+                        "handoff record and is not overwritten; render to a "
+                        "new file name.",
+                        file=sys.stderr,
+                    )
+                    return 1
                 args.output.write_text(text, encoding="utf-8", newline="\n")
                 print(f"rendered: {args.output}")
             return 0

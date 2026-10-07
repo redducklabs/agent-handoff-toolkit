@@ -190,7 +190,7 @@
     },
     {
       "source": "src/agent_handoff_toolkit/cli.py",
-      "sha256": "f5d188c991c668ab342fd9752573dff3f09dce8852872d2e88a2328d79fe913b",
+      "sha256": "ce0d672a433bfdb4099952f5381c33d7a7b9c3442b5ebdb37467f26d02a35a20",
       "install": {
         "mode": "copy",
         "transform": "none",

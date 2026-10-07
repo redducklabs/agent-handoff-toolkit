@@ -1745,6 +1745,120 @@ class SuccessorScaffoldTests(unittest.TestCase):
         self.assertEqual(validate_markdown(output.read_text(encoding="utf-8")), [])
 
 
+class RenderOverwriteGuardTests(unittest.TestCase):
+    """`render --output` must not overwrite a record the lifecycle published.
+
+    Two sessions in one folder can choose the same `handoffs/` file name. The
+    second render overwrote the first session's published record, and its
+    digest then failed every later check against the chain.
+    """
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        (self.root / "handoffs").mkdir()
+        self.state = self.root / "state"
+        fence = unittest.mock.patch.dict(
+            os.environ,
+            {
+                "GIT_CEILING_DIRECTORIES": self.root.parent.as_posix(),
+                "AHK_STATE_ROOT": str(self.state),
+            },
+        )
+        fence.start()
+        self.addCleanup(fence.stop)
+        self.published = self.root / "handoffs" / "record-001.md"
+        self.published.write_text("published record\n", encoding="utf-8")
+        self.publish(record_digest("published record\n"))
+
+    def publish(self, digest):
+        from dataclasses import replace
+
+        from agent_handoff_toolkit.lifecycle import (
+            ChainState,
+            EnforcementMode,
+            LifecycleMutation,
+            RecordReference,
+        )
+        from agent_handoff_toolkit.lifecycle_storage import LocalLifecycleStorage
+
+        storage = LocalLifecycleStorage(self.root, state_root=self.state)
+        snapshot = storage.load_snapshot("publisher")
+        chain = ChainState(
+            "auth-a",
+            "root-a",
+            ("a" * 64,),
+            1,
+            "active",
+            RecordReference("record-001", "D:/elsewhere/record-001.md", digest),
+        )
+        storage.compare_and_swap(
+            "publisher",
+            0,
+            0,
+            LifecycleMutation(
+                replace(
+                    snapshot.session,
+                    targeted_revision=1,
+                    mode=EnforcementMode.TRACKED,
+                    authorization_id="auth-a",
+                    chain_revision=1,
+                ),
+                chain,
+            ),
+        )
+
+    def render(self, output):
+        with (
+            unittest.mock.patch("sys.stdout"),
+            unittest.mock.patch("sys.stderr") as stderr,
+        ):
+            status = main(
+                [
+                    "render",
+                    str(FIXTURES / "continuation.json"),
+                    "--output",
+                    str(output),
+                ]
+            )
+        written = "".join(call.args[0] for call in stderr.write.call_args_list)
+        return status, written
+
+    def test_a_published_record_is_never_overwritten(self):
+        status, error = self.render(self.published)
+        self.assertEqual(status, 1)
+        self.assertIn("AHK-INPUT", error)
+        self.assertIn("published", error)
+        self.assertNotIn(str(self.published), error)
+        self.assertEqual(
+            self.published.read_text(encoding="utf-8"), "published record\n"
+        )
+
+    def test_a_crlf_copy_of_a_published_record_is_still_protected(self):
+        self.published.write_bytes(b"published record\r\n")
+        self.assertEqual(self.render(self.published)[0], 1)
+
+    def test_a_new_or_unpublished_file_renders_as_before(self):
+        fresh = self.root / "handoffs" / "record-002.md"
+        self.assertEqual(self.render(fresh)[0], 0)
+        self.assertTrue(fresh.read_text(encoding="utf-8").startswith("```json"))
+        draft = self.root / "handoffs" / "draft.md"
+        draft.write_text("an unpublished draft\n", encoding="utf-8")
+        self.assertEqual(self.render(draft)[0], 0)
+        self.assertNotEqual(draft.read_text(encoding="utf-8"), "an unpublished draft\n")
+
+    def test_state_that_cannot_be_opened_leaves_render_unguarded(self):
+        broken = self.root / "not-a-directory"
+        broken.write_text("x", encoding="utf-8")
+        with unittest.mock.patch.dict(os.environ, {"AHK_STATE_ROOT": str(broken)}):
+            status, error = self.render(self.published)
+        self.assertEqual(status, 0, error)
+        self.assertNotEqual(
+            self.published.read_text(encoding="utf-8"), "published record\n"
+        )
+
+
 class ProgressResponseTests(unittest.TestCase):
     """A record-less turn ending names why the turn ended."""
 
