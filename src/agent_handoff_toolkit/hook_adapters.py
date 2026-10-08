@@ -105,9 +105,11 @@ _HEREDOC = re.compile(
 _TRAILER = re.compile(
     r"(?:[ \t]*[12]?>(?:&[12]|[ \t]*/dev/null))*"
     r"(?:[ \t]*\|[ \t]*(?:head|tail)(?:[ \t]+-(?:n[ \t]*)?[0-9]+)?)?[ \t]*"
+    r"(?:#[^\n]*)?"
 )
-# Where an invocation ends: the first unquoted separator or redirection.
-_SEGMENT_END = re.compile(r"[;&|<>()`\n\r]")
+# Where an invocation ends: the first unquoted separator, redirection or
+# comment.
+_SEGMENT_END = re.compile(r"[;&|<>()`\n\r]|(?<=[ \t])#")
 # Tools that write repository files. Shell is deliberately absent: classifying
 # a command as read-only or not is fragile, and making `git status` an advisory
 # trigger would defeat the purpose. A missed trigger costs an advisory, not a
@@ -759,8 +761,9 @@ def _candidate(event, snapshot, root):
 def _mask_shell(command):
     """The command with inert text replaced, character for character.
 
-    Quoted text, a character escaped by a backslash outside single quotes, and
-    every heredoc body line through its terminator are masked; the quote
+    Quoted text, a character escaped by a backslash outside single quotes, a
+    comment from a word-initial `#` to the end of its line, and every heredoc
+    body line through its terminator are masked; the quote
     characters, operators and line breaks stay. An unterminated heredoc masks
     the rest of the command, as the shell would read it.
     """
@@ -795,6 +798,14 @@ def _mask_shell(command):
             pending.append((word, match.group(1) == "-"))
             masked.append(command[index : match.end()])
             index = match.end()
+            continue
+        elif char == "#" and (index == 0 or command[index - 1] in " \t\n;&|()`"):
+            # A word-initial `#` comments out the rest of its line, so nothing
+            # after it - a separator or a mention of the runner - is a command.
+            end = command.find("\n", index)
+            stop = length if end < 0 else end
+            masked.append("#" + "_" * (stop - index - 1))
+            index = stop
             continue
         elif char == "\n" and pending:
             masked.append(char)

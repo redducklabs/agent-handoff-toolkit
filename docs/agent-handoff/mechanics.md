@@ -347,11 +347,11 @@ approved transition. `validate_successor` still runs at `Stop`.
 
 ## Lifecycle commands and untracked authoring
 
-Control commands need the credentials the interception binds into them. It
-finds `python <runner> lifecycle` at a command start, outside quotes, escapes
-and heredoc bodies; only `doctor` and `--help`/`-h` pass. A compound command is
-denied with the bound command, to run alone. A trailing `2>&1`, `2>/dev/null`
-or numeric `| head`/`| tail` is not compound, nor rewritten. On Claude Code,
+Control commands need credentials the interception binds into them. It
+finds `python <runner> lifecycle` at a command start, outside quotes, escapes,
+comments and heredoc bodies; only `doctor` and `--help`/`-h` pass. A compound command is
+denied with the bound command, to run alone. A trailing `2>&1`, `2>/dev/null`,
+numeric `| head`/`| tail` or comment is not compound, nor rewritten. On Claude Code,
 the session's own `inspect`, wrong only in its challenge or revision, is
 replaced by the bound form through `updatedInput`, permission unchanged; Codex
 is denied with it. A CLI `AHK-INPUT` or `AHK-STATE-STALE` says to run the

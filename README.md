@@ -6,7 +6,14 @@ This repository provides a shared contract, deterministic validation and renderi
 
 ## Status
 
-Version 1.2.0 fixes faults found running the toolkit in consumer repositories.
+Version 1.2.1 fixes a false positive in the control-command interception
+that 1.2.0 introduced. A shell comment was not treated as inert, so an
+ordinary command such as `git status # then; python <runner> lifecycle
+inspect` was denied in every mode, `OPEN` included. A word-initial `#` now
+masks the rest of its line, and a bound invocation followed by a trailing
+comment is admitted like one followed by `2>&1`.
+
+Version 1.2.0 fixed faults found running the toolkit in consumer repositories.
 Hook stdin is now read as UTF-8: on Windows it was decoded with the console
 code page, so a payload carrying a character cp1252 leaves undefined crashed as
 `AHK-HOOK-RUNTIME stage:decode-input`, and every other non-ASCII payload
@@ -286,16 +293,16 @@ disposable consumer can be installed from a verified local release source.
 
 ## Consumer installation
 
-Check out the public v1.2.0 release, inspect the proposed changes, then apply
+Check out the public v1.2.1 release, inspect the proposed changes, then apply
 them from that checkout:
 
 ```powershell
-git clone --branch v1.2.0 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
+git clone --branch v1.2.1 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
 Set-Location agent-handoff-toolkit
-python distribution/runner.py install --target <consumer-repository> --release v1.2.0 --dry-run
-python distribution/runner.py install --target <consumer-repository> --release v1.2.0 --apply
-python distribution/runner.py sync --target <consumer-repository> --release v1.2.0 --check
-python distribution/runner.py sync --target <consumer-repository> --release v1.2.0 --apply
+python distribution/runner.py install --target <consumer-repository> --release v1.2.1 --dry-run
+python distribution/runner.py install --target <consumer-repository> --release v1.2.1 --apply
+python distribution/runner.py sync --target <consumer-repository> --release v1.2.1 --check
+python distribution/runner.py sync --target <consumer-repository> --release v1.2.1 --apply
 ```
 
 Run install and sync only in an isolated, clean Git worktree with no concurrent

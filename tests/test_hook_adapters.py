@@ -3615,6 +3615,9 @@ class EnforcementTests(unittest.TestCase):
             "echo python r lifecycle inspect",
             "grep -n python r lifecycle inspect notes.md",
             "echo a\\;python r lifecycle inspect",
+            "git status # then; python r lifecycle inspect",
+            "# python r lifecycle inspect",
+            "ls\n  # && python r lifecycle inspect\n",
         ):
             with self.subTest(command=command):
                 self.assertEqual(run(command), HookExecution())
@@ -3625,6 +3628,9 @@ class EnforcementTests(unittest.TestCase):
             "cd x\npython r lifecycle inspect",
             "cd x ||  python r lifecycle inspect",
             "cat <<'EOF' > notes.md\nbody\nEOF\npython r lifecycle inspect",
+            "git status # note\npython r lifecycle inspect",
+            "echo a#b; python r lifecycle inspect",
+            "echo ${#x}; python r lifecycle inspect",
         ):
             with self.subTest(command=command):
                 self.assertIn("AHK-HOOK-RUNTIME", run(command).stdout)
@@ -3660,6 +3666,8 @@ class EnforcementTests(unittest.TestCase):
             " | tail -5",
             " 2>&1 | tail -3",
             " | head -n5",
+            " # record the decision",
+            " 2>&1 # note; then continue",
         )
         self.invoke("UserPromptSubmit")
         session = self.storage.load_snapshot("session-1").session
