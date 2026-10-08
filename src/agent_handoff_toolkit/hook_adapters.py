@@ -799,9 +799,13 @@ def _mask_shell(command):
             masked.append(command[index : match.end()])
             index = match.end()
             continue
-        elif char == "#" and (index == 0 or command[index - 1] in " \t\n;&|()`"):
+        elif char == "#" and (not masked or masked[-1][-1] in " \t\n;&|("):
             # A word-initial `#` comments out the rest of its line, so nothing
             # after it - a separator or a mention of the runner - is a command.
+            # The preceding character is read as masked: an escaped blank or
+            # operator is part of the word, so a `#` after it is not a comment.
+            # A closing `)` or backtick may end a substitution inside a word,
+            # so a `#` after one is read as part of the word too.
             end = command.find("\n", index)
             stop = length if end < 0 else end
             masked.append("#" + "_" * (stop - index - 1))

@@ -85,8 +85,8 @@ The complete generated tail, including its fence and link, is limited to 300 wor
 A schema-v2 terminal response is entirely generated: the renderer is the only
 source, there is no handwritten preamble, and the normalized terminal message
 must have byte-exact equality with the rendered response. For a continuation, the
-response is the canonical generated continuation response; for an audit it is only
-the canonical audit link. A no-action statement such as `None`, `Nothing to do`,
+response is the canonical generated continuation response; for an audit it is the
+canonical audit response above. A no-action statement such as `None`, `Nothing to do`,
 or `No action required` is valid only when the highest authorized scope is complete
 and the response links an audit rather than a continuation.
 

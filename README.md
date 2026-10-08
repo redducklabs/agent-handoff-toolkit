@@ -6,7 +6,18 @@ This repository provides a shared contract, deterministic validation and renderi
 
 ## Status
 
-Version 1.2.1 fixes a false positive in the control-command interception
+Version 1.2.2 closes a gap in the 1.2.1 comment rule. A `#` counted as the
+start of a comment whenever the raw character before it was a blank or an
+operator, even when that character was escaped, so a command such as
+`echo x\ #; python <runner> lifecycle inspect` hid an invocation the shell
+runs. The character before `#` is now read after masking, so an escaped
+blank or operator keeps the `#` inside its word, and a `#` after a closing
+`)` or backtick, which may end a substitution inside a word, is not a
+comment either. `mechanics.md` no longer
+says a completion audit's response is only its link; it is the three-line
+audit response the same document specifies.
+
+Version 1.2.1 fixed a false positive in the control-command interception
 that 1.2.0 introduced. A shell comment was not treated as inert, so an
 ordinary command such as `git status # then; python <runner> lifecycle
 inspect` was denied in every mode, `OPEN` included. A word-initial `#` now
@@ -293,16 +304,16 @@ disposable consumer can be installed from a verified local release source.
 
 ## Consumer installation
 
-Check out the public v1.2.1 release, inspect the proposed changes, then apply
+Check out the public v1.2.2 release, inspect the proposed changes, then apply
 them from that checkout:
 
 ```powershell
-git clone --branch v1.2.1 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
+git clone --branch v1.2.2 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
 Set-Location agent-handoff-toolkit
-python distribution/runner.py install --target <consumer-repository> --release v1.2.1 --dry-run
-python distribution/runner.py install --target <consumer-repository> --release v1.2.1 --apply
-python distribution/runner.py sync --target <consumer-repository> --release v1.2.1 --check
-python distribution/runner.py sync --target <consumer-repository> --release v1.2.1 --apply
+python distribution/runner.py install --target <consumer-repository> --release v1.2.2 --dry-run
+python distribution/runner.py install --target <consumer-repository> --release v1.2.2 --apply
+python distribution/runner.py sync --target <consumer-repository> --release v1.2.2 --check
+python distribution/runner.py sync --target <consumer-repository> --release v1.2.2 --apply
 ```
 
 Run install and sync only in an isolated, clean Git worktree with no concurrent
