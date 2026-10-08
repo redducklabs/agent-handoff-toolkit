@@ -801,8 +801,8 @@ class LifecycleStorageTests(unittest.TestCase):
         moved = self.root / "state-moved-after-lock"
         lock = lifecycle_storage._lock_descriptor
 
-        def substitute(descriptor, *, windows):
-            lock(descriptor, windows=windows)
+        def substitute(descriptor, *, windows, **deadlines):
+            lock(descriptor, windows=windows, **deadlines)
             self.state.rename(moved)
             self.state.mkdir(mode=0o700)
 
