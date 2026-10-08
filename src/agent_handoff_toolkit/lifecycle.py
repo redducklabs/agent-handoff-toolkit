@@ -25,7 +25,7 @@ from .lineage import (
 from .records import (
     ValidationIssue,
     parse_markdown,
-    render_progress_response,
+    render_progress_responses,
     render_terminal_response,
     validate_markdown,
     validate_successor,
@@ -79,6 +79,12 @@ class AffirmationResult(str, Enum):
 
 _ACTION_FIELDS = {"action", "target", "constraints", "completion_condition"}
 _CHAIN_STATUSES = {"active", "superseded", "complete"}
+# Who started the current turn: the user, or the host itself (a task
+# notification, a message from another session). None is unknown - state
+# written before the origin was recorded, or a turn whose origin could not be
+# recorded - and is treated as the user, so an existing session keeps the
+# ending it already had.
+TURN_ORIGINS = frozenset({"user", "host"})
 _TOOL_CAPABILITIES = {
     "intrinsic-read-only",
     "tool-free",
@@ -336,6 +342,12 @@ class LifecycleIssue:
     # Validator codes naming which checks failed. A closed vocabulary of
     # identifiers, so a host adapter can surface them without echoing text.
     detail_codes: tuple[str, ...] = ()
+    # The directory a refused pointer had to name, so the feedback can say
+    # where the record belongs. A host adapter echoes it only as a path.
+    root_path: str | None = None
+    # The basename of the chain's current record, when a peer advanced the
+    # chain past this session. A host adapter echoes it only as a file name.
+    current_record: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "code", _identifier(self.code, "issue code"))
@@ -359,7 +371,13 @@ class LifecycleIssue:
                 label="issue corrective action",
             ),
         )
-        for field_name in ("expected", "actual", "candidate_path"):
+        for field_name in (
+            "expected",
+            "actual",
+            "candidate_path",
+            "root_path",
+            "current_record",
+        ):
             object.__setattr__(
                 self,
                 field_name,
@@ -589,8 +607,22 @@ class SessionState:
     worktree_baseline: str | None = None
     no_handoff_note_emitted: bool = False
     last_stop_was_progress: bool = False
+    turn_origin: str | None = None
+    # The transcript size at which `AHK-CONTEXT-HIGH` was last shown, or None
+    # while it is armed. A size, never content.
+    context_advisory_offset: int | None = None
 
     def __post_init__(self) -> None:
+        if self.context_advisory_offset is not None and (
+            type(self.context_advisory_offset) is not int
+            or self.context_advisory_offset < 0
+        ):
+            raise ValueError("context_advisory_offset must be a non-negative int")
+        if self.turn_origin is not None and (
+            not isinstance(self.turn_origin, str)
+            or self.turn_origin not in TURN_ORIGINS
+        ):
+            raise ValueError("turn_origin is not recognized")
         if self.pending_correction_hmac is not None:
             _digest(self.pending_correction_hmac, "pending_correction_hmac")
         for flag in (
@@ -1181,11 +1213,11 @@ def _mapped_successor_issues(
     )
 
 
-def progress_response(chain: ChainState) -> str:
-    """The one record-less message a tracked stop accepts."""
+def progress_responses(chain: ChainState) -> dict[str, str]:
+    """The record-less messages a tracked stop accepts, keyed by reason."""
 
     reference = chain.current_record_reference
-    return render_progress_response(
+    return render_progress_responses(
         chain.root_title, reference.path if reference is not None else None
     )
 
@@ -1269,20 +1301,32 @@ def evaluate_stop(
         )
 
     if candidate is None:
-        # One message may end a turn without a record: the canonical progress
-        # line. The guarantee becomes "every turn end is a record, an audit, a
-        # decision request, or the progress line, and a session that ends on
-        # the progress line is reported at SessionEnd". The stronger rule cost
-        # a full record for every turn end, which is what the evidence shows
-        # being paid: nine records for one task in one day.
-        if event.latest_assistant_message == progress_response(chain):
+        # A few exact lines may end a turn without a record. The guarantee is
+        # "every turn end is a record, an audit, a decision request, or one of
+        # these lines, and a session that ends on one is reported at
+        # SessionEnd". The stronger rule cost a full record for every turn
+        # end, which is what the evidence shows being paid: nine records for
+        # one task in one day. Each line names why the turn ended. A wait
+        # line is accepted after any turn; the reply line only after a turn
+        # the user started, because a task notification or a peer's message
+        # is nobody to reply to. An unknown origin is treated as the user's.
+        lines = progress_responses(chain)
+        message = event.latest_assistant_message
+        reply = message == lines["reply"]
+        host_turn = session.turn_origin == "host"
+        if (reply and not host_turn) or message in {
+            line for reason, line in lines.items() if reason != "reply"
+        }:
             return _allow_stop(
                 snapshot, chain=chain, mode=EnforcementMode.TRACKED, progress=True
             )
         issue = _stop_issue(
             "AHK-STOP-WORK",
             "Authorized executable work remains without a valid terminal record.",
-            "perform the existing authorized exact action or render its valid successor record.",
+            "keep working on the existing authorized exact action: executable "
+            "work remains. End a turn only on a line from lifecycle inspect, a "
+            "decision request, or a valid record.",
+            detail_codes=("reply-host-turn",) if reply else (),
         )
         return _blocked_stop(snapshot, (issue,))
 

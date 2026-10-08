@@ -18,9 +18,10 @@ import re
 import secrets
 import shlex
 import stat
+import time
 import unicodedata
 
-from .hooks import HookExecution
+from .hooks import HookExecution, _git_common_dir, hook_repository_root
 from .lifecycle import (
     AffirmationResult,
     AuthorityCategory,
@@ -39,6 +40,7 @@ from .lifecycle import (
     evaluate_user_prompt,
 )
 from .lifecycle_operations import (
+    SCOPE_KIND_ORDER,
     SCOPE_KINDS,
     LifecycleService,
     _charset_code,
@@ -47,6 +49,7 @@ from .lifecycle_operations import (
     parse_bootstrap_command,
 )
 from .lifecycle_storage import (
+    LOCK_TIMEOUT_SECONDS,
     LocalLifecycleStorage,
     StaleLifecycleState,
     _check_path,
@@ -80,6 +83,31 @@ _SHELL = {"claude": frozenset({"Bash", "PowerShell"}), "codex": frozenset({"Bash
 # Lifecycle subcommands that carry no session key, challenge or revision, and
 # so have nothing the control interception could bind into them.
 _UNBOUND_CONTROL = frozenset({"doctor"})
+# Help decides nothing and needs no binding either.
+_HELP_FLAGS = frozenset({"--help", "-h"})
+# A lifecycle invocation at a command start: the start of the command or of a
+# line, or after `;`, `&`, `|`, `(` or a backtick - so `&&`, `||`, `$(` too.
+# Never after other whitespace, which is inside an argument. It is matched
+# against the command with quoted text, escaped characters and heredoc bodies
+# masked, so a mention - a commit message, a grep pattern, a notes file - is
+# not an invocation.
+_INVOCATION = re.compile(
+    r"(?:^|(?<=[;&|(`]))[ \t]*(python \S+ lifecycle)(?=$|[\s;&|)`])", re.MULTILINE
+)
+# A heredoc operator and its delimiter word, quoted or bare. `<<<` is a
+# here-string and has no body.
+_HEREDOC = re.compile(
+    r"<<(-?)[ \t]*(?:'([^'\n]*)'|\"([^\"\n]*)\"|\\?([A-Za-z_][A-Za-z0-9_.-]*))"
+)
+# What may follow a sole invocation without making it compound: stdout or
+# stderr redirected to the other or discarded, then at most one pipe into
+# `head` or `tail` with a plain numeric count.
+_TRAILER = re.compile(
+    r"(?:[ \t]*[12]?>(?:&[12]|[ \t]*/dev/null))*"
+    r"(?:[ \t]*\|[ \t]*(?:head|tail)(?:[ \t]+-(?:n[ \t]*)?[0-9]+)?)?[ \t]*"
+)
+# Where an invocation ends: the first unquoted separator or redirection.
+_SEGMENT_END = re.compile(r"[;&|<>()`\n\r]")
 # Tools that write repository files. Shell is deliberately absent: classifying
 # a command as read-only or not is fragile, and making `git status` an advisory
 # trigger would defeat the purpose. A missed trigger costs an advisory, not a
@@ -96,11 +124,12 @@ _ALIASES = {
 _ACTIONS = {
     "AHK-PRE-ROOT": "Register, resume, join, or adopt using the current bootstrap challenge.",
     "AHK-CONTROL-BINDING": "Use the current derived session capability and revision.",
-    "AHK-STOP-WORK": "Perform the authorized action or render a valid successor record.",
+    "AHK-STOP-WORK": "Executable work remains, so keep working. End a turn only on a `Waiting on` line or the reply line from lifecycle inspect, a decision request, a continuation, or an audit.",
     "AHK-STOP-ROOT": "Render the locked root and registered authorization evidence.",
     "AHK-STOP-SCOPE": "Restore the inherited ordered scope definitions.",
     "AHK-STOP-PREDECESSOR": "Render a successor of the live record with its exact source digest.",
     "AHK-STOP-RESPONSE": "Emit only render-terminal-response output for the candidate.",
+    "AHK-STOP-POINTER": "Render the response with render-tail for a record in this checkout's handoffs/ and emit it unchanged.",
     "AHK-STOP-DECISION": "Emit exactly the registered decision response.",
     "AHK-STOP-STALE": "Reload lifecycle inspect and rebuild against current revisions.",
     "AHK-HOOK-RUNTIME": "Repair lifecycle runtime or input; inspect state and retry.",
@@ -115,6 +144,32 @@ def event_name(event: str) -> EventName:
         return _ALIASES[event.lower().replace("_", "").replace("-", "")]
     except KeyError as error:
         raise ValueError("invalid lifecycle event") from error
+
+
+# The leading forms of a prompt the host submits itself. `UserPromptSubmit`
+# fires for those turns too and no payload field marks them, so the prompt's
+# own opening is the only evidence. Each rule is an exact, case-sensitive
+# prefix of the prompt with leading and trailing whitespace stripped:
+#   - `<task-notification>`: a background task reporting;
+#   - `Another Claude session sent a message:`: a cross-session message;
+#   - `<cross-session-message` or `<agent-message` followed by `>`, `/` or
+#     whitespace: the same, as a leading element (attributes allowed).
+# Anything else is the user's. A user who types one of these forms is read as
+# the host; the cost is a skipped answer check and a refused `reply` ending,
+# never an authorization.
+_HOST_PROMPT_RE = re.compile(
+    r"<task-notification>"
+    r"|Another Claude session sent a message:"
+    r"|<(?:cross-session-message|agent-message)[\s>/]"
+)
+
+
+def prompt_origin(prompt):
+    """Name who started a turn, `"host"` or `"user"`, from its prompt alone."""
+
+    if not isinstance(prompt, str):
+        return "user"
+    return "host" if _HOST_PROMPT_RE.match(prompt.strip()) else "user"
 
 
 def _string(value, limit, *, multiline=False, empty=False, trimmed=True):
@@ -308,6 +363,22 @@ def _reason(decision):
             and re.fullmatch(r"(?:[A-Z]:/|/)[A-Za-z0-9._/-]+\.md", path)
         ):
             line += f" candidate={path}"
+        # Where a refused pointer had to point, under the same path-only rule.
+        handoffs = issue.root_path
+        if (
+            handoffs
+            and len(handoffs.encode()) <= 256
+            and re.fullmatch(r"(?:[A-Z]:/|/)[A-Za-z0-9._/-]+", handoffs)
+        ):
+            line += f" root={handoffs}"
+        # The record a peer made current, by basename under the same rule.
+        current = issue.current_record
+        if (
+            current
+            and len(current.encode()) <= 256
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*\.md", current)
+        ):
+            line += f" current={current}"
         # Closed-vocabulary detail: the validator's own codes name which checks
         # failed. Like expected/actual, each is echoed only when it matches the
         # identifier pattern, so no free text can reach the host through here.
@@ -360,6 +431,32 @@ def render_hook_execution(
 
 def _issue(code):
     return LifecycleIssue(code, "Lifecycle check failed.", _ACTIONS[code])
+
+
+class _PointerRefused(Exception):
+    """A renderer pointer the model must correct: a policy block, not a fault.
+
+    `check` is one identifier from a closed vocabulary fixed in source, so the
+    feedback names what failed without echoing any of the message.
+    """
+
+    def __init__(self, check):
+        super().__init__(check)
+        self.check = check
+
+
+def _pointer_issue(check, root):
+    """Name a refused pointer, and where a record has to be when it was elsewhere."""
+
+    return LifecycleIssue(
+        "AHK-STOP-POINTER",
+        "Lifecycle check failed.",
+        _ACTIONS["AHK-STOP-POINTER"],
+        detail_codes=(check,),
+        root_path=(root / "handoffs").as_posix()
+        if check == "pointer-outside-handoffs"
+        else None,
+    )
 
 
 def _runtime_issue(stage, error=None):
@@ -490,7 +587,8 @@ def _read_record(path, root, *, expected_digest=None):
     the caller already knows the digest it expects, a path outside this
     checkout is retried against that basename and accepted only when the file
     there hashes to exactly what was expected. The digest is the evidence; the
-    path is a locator.
+    path is a locator. A path into another worktree of this repository that
+    still holds the record is read there first, under the same guards.
     """
 
     canonical = canonical_record_path(path)
@@ -499,6 +597,12 @@ def _read_record(path, root, *, expected_digest=None):
     target = Path(canonical)
     handoffs = root / "handoffs"
     if expected_digest is not None and not target.is_relative_to(handoffs):
+        sibling = _sibling_checkout(target, root)
+        if sibling is not None and target.is_file():
+            found = _read_record(canonical, sibling)
+            # A copy here of that name may still be the expected record.
+            if found[2] == expected_digest or not (handoffs / target.name).is_file():
+                return found
         # Read the record of that name in this checkout and report its real
         # digest. Whether it is the right record is decided by the digest
         # comparisons the caller already makes, which is where the evidence
@@ -543,6 +647,25 @@ def _read_record(path, root, *, expected_digest=None):
     return text, parse_markdown(text), record_digest(text)
 
 
+def _sibling_checkout(target, root):
+    """Name the other worktree of this repository whose `handoffs/` holds `target`.
+
+    Worktrees of one repository share its git common directory, which is read
+    from each checkout's `.git` without spawning git. Only a record directly
+    in that checkout's `handoffs/` qualifies; an unrelated clone, a directory
+    that is not a checkout, and this root itself name none.
+    """
+
+    parent = target.parent
+    if parent.name != "handoffs" or parent.parent == root:
+        return None
+    checkout = parent.parent
+    common = _git_common_dir(checkout)
+    if common is None or common != _git_common_dir(root):
+        return None
+    return checkout
+
+
 def _candidate(event, snapshot, root):
     message = event.latest_assistant_message
     if message is None:
@@ -557,30 +680,47 @@ def _candidate(event, snapshot, root):
         )
     )
     if not matches:
-        if "Continue from handoff:" in message or "](" in message:
-            raise ValueError("invalid candidate pointer")
+        # A pull-request link or a quoted pointer is prose. With no renderer
+        # link there is no candidate, and the Stop gets its ordinary outcome.
         return None
-    # Trailing whitespace does not make a pointer ambiguous. Raising here
-    # reports a malfunction, and a response that differs from the renderer by
-    # whitespace is a formatting mismatch the model can correct - which is
-    # what AHK-STOP-RESPONSE tells it, once the candidate is discovered.
+    # From here the model offered a record, so every refusal is a policy block
+    # it can correct, never a malfunction. Trailing whitespace does not make a
+    # pointer ambiguous: a response that differs from the renderer by
+    # whitespace is what AHK-STOP-RESPONSE reports once the record is read.
     if (
         len(matches) != 1
         or matches[0].end() != len(message.rstrip())
         or len(re.findall(r"\]\(", message)) != 1
     ):
-        raise ValueError("ambiguous candidate pointer")
+        raise _PointerRefused("pointer-ambiguous")
     path = matches[0].group(2)
-    canonical_record_path(path)
+    try:
+        canonical = canonical_record_path(path)
+    except ValueError:
+        raise _PointerRefused("pointer-noncanonical") from None
+    if canonical != path:
+        raise _PointerRefused("pointer-noncanonical")
     references = re.findall(r"^Continue from handoff: (.+)$", message, re.MULTILINE)
     if matches[0].group(1) == "Continuation handoff":
         if (
             references != [path]
             or "```text\nContinue from handoff: " + path + "\n" not in message
         ):
-            raise ValueError("candidate block differs from final link")
+            raise _PointerRefused("pointer-block-mismatch")
     elif references:
-        raise ValueError("audit cannot contain restart pointer")
+        raise _PointerRefused("pointer-audit-restart")
+    # A record is published only from this checkout's own `handoffs/`; the
+    # feedback names that directory after `root=`.
+    target = Path(path)
+    if (
+        not target.is_relative_to(root / "handoffs")
+        or target.name.lower() == "readme.md"
+    ):
+        raise _PointerRefused("pointer-outside-handoffs")
+    # A pointer to a record this checkout does not hold is the model's to
+    # correct - usually a record rendered in another worktree - not a fault.
+    if not os.path.lexists(target):
+        raise _PointerRefused("pointer-missing")
     text, data, digest = _read_record(path, root)
     predecessor = predecessor_path = predecessor_digest = None
     reference = data.get("predecessor")
@@ -616,6 +756,161 @@ def _candidate(event, snapshot, root):
     )
 
 
+def _mask_shell(command):
+    """The command with inert text replaced, character for character.
+
+    Quoted text, a character escaped by a backslash outside single quotes, and
+    every heredoc body line through its terminator are masked; the quote
+    characters, operators and line breaks stay. An unterminated heredoc masks
+    the rest of the command, as the shell would read it.
+    """
+
+    masked = []
+    quote = None
+    pending = []
+    index = 0
+    length = len(command)
+    while index < length:
+        char = command[index]
+        if quote == "'":
+            quote = None if char == "'" else quote
+            masked.append(char if quote is None else "_")
+        elif char == "\\" and index + 1 < length:
+            masked.append("\\_" if quote is None else "__")
+            index += 2
+            continue
+        elif quote == '"':
+            quote = None if char == '"' else quote
+            masked.append(char if quote is None else "_")
+        elif char in "'\"":
+            quote = char
+            masked.append(char)
+        elif command.startswith("<<", index) and not command.startswith("<<<", index):
+            match = _HEREDOC.match(command, index)
+            if match is None:
+                masked.append("<<")
+                index += 2
+                continue
+            word = next(value for value in match.group(2, 3, 4) if value is not None)
+            pending.append((word, match.group(1) == "-"))
+            masked.append(command[index : match.end()])
+            index = match.end()
+            continue
+        elif char == "\n" and pending:
+            masked.append(char)
+            index += 1
+            while pending and index < length:
+                word, tabs = pending[0]
+                end = command.find("\n", index)
+                stop = length if end < 0 else end
+                line = command[index:stop]
+                masked.append("_" * len(line) + ("" if end < 0 else "\n"))
+                index = stop + 1
+                if (line.lstrip("\t") if tabs else line).rstrip("\r") == word:
+                    pending.pop(0)
+            continue
+        else:
+            masked.append(char)
+        index += 1
+    return "".join(masked)[:length]
+
+
+def _control_span(command):
+    """Where the first lifecycle invocation that needs a binding lies.
+
+    Returns `(start, stop)` into the command, or None when it invokes no
+    lifecycle command, or only `doctor` or help, which take no session
+    binding. The match is a regular expression over the command alone, so an
+    ordinary command costs no state.
+    """
+
+    if not isinstance(command, str) or "lifecycle" not in command:
+        return None
+    masked = _mask_shell(command)
+    for match in _INVOCATION.finditer(masked):
+        start = match.start(1)
+        end = _SEGMENT_END.search(masked, match.end())
+        stop = end.start() if end else len(masked)
+        if end and masked[stop] in "<>" and re.search(r"\s[0-9]$", masked[:stop]):
+            # `2>&1`: the descriptor belongs to the redirection.
+            stop -= 1
+        text = masked[start:stop].rstrip()
+        stop = start + len(text)
+        words = text.split()
+        operation = words[3] if len(words) > 3 else None
+        if operation in _UNBOUND_CONTROL or _HELP_FLAGS.intersection(words[3:]):
+            continue
+        return start, stop
+    return None
+
+
+def _control_segment(command):
+    """The first lifecycle invocation in a shell command that needs a binding."""
+
+    span = _control_span(command)
+    return None if span is None else command[span[0] : span[1]]
+
+
+def _admits(command, runner, session, capability):
+    """Whether a tracked session's control command carries its live binding."""
+
+    tokens = command.split(" ")
+    return (
+        len(tokens) > 3
+        and tokens[1] == runner.as_posix()
+        and all(
+            tokens.count(flag) == 1
+            and tokens.index(flag) + 1 < len(tokens)
+            and tokens[tokens.index(flag) + 1] == value
+            for flag, value in (
+                ("--session-key", session.session_key),
+                ("--challenge", capability),
+                ("--expected-session-revision", str(session.targeted_revision)),
+            )
+        )
+    )
+
+
+def _stale_inspect(command, runner, root, session):
+    """This session's own `inspect`, wrong only in its challenge or revision."""
+
+    tokens = command.split(" ")
+    return (
+        re.fullmatch(r"[A-Za-z0-9._:/ -]+", command) is not None
+        and len(tokens) == 10
+        and tokens[0] == "python"
+        and tokens[1] in {runner.as_posix(), _advisory_runner(root).as_posix()}
+        and tokens[2:6]
+        == ["lifecycle", "inspect", "--session-key", session.session_key]
+        and tokens[6] == "--challenge"
+        and tokens[8] == "--expected-session-revision"
+    )
+
+
+def _rebind(event, command):
+    """Run the bound command in place of the stale one, deciding nothing.
+
+    Claude Code only. `updatedInput` replaces the tool input, so every other
+    field is carried over unchanged. No `permissionDecision` is set: the
+    user's own permission flow applies to the substitute as it would have to
+    the original.
+    """
+
+    inputs = dict(event.tool_input)
+    inputs["command"] = command
+    return HookExecution(
+        stdout=json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "updatedInput": inputs,
+                }
+            },
+            separators=(",", ":"),
+        )
+    )
+
+
 def _control_command(runner, session, capability, operation, fields=()):
     prefix = f"python {runner.as_posix()} lifecycle {operation} --session-key {session.session_key} --challenge {capability}"
     return (
@@ -641,8 +936,15 @@ def _repair_bootstrap(command, runner, session, capability, reasons=None):
     if len(tokens) < 4 or tokens[0] != "python" or tokens[2] != "lifecycle":
         return reject("command-shape")
     tokens[1] = runner.as_posix()
+    # A plain attempt - `lifecycle one-off` - carries no binding at all. Each
+    # missing credential goes where the fixed flag order puts it.
     if "--session-key" not in tokens:
         tokens[4:4] = ["--session-key", session.session_key]
+    if "--challenge" not in tokens:
+        at = tokens.index("--session-key") + 2
+        tokens[at:at] = ["--challenge", capability]
+    if "--expected-session-revision" not in tokens:
+        tokens += ["--expected-session-revision", str(session.targeted_revision)]
     for flag, value in (
         ("--session-key", session.session_key),
         ("--challenge", capability),
@@ -787,6 +1089,264 @@ def _write_advisory(event, snapshot, root, storage, raw_id):
         return HookExecution()
 
 
+# Context pressure. Claude Code writes its transcript as JSON lines; a
+# main-thread assistant entry carries the token usage of the context it was
+# answered from. Only numbers are read: the usage counts, a compaction's
+# `preTokens`, and whether the model id carries the 1M marker. Nothing else
+# in an entry is retained, stored or emitted.
+_TRANSCRIPT_TAIL_BYTES = 512 * 1024
+_CONTEXT_WINDOW = 200_000
+_CONTEXT_WINDOW_LARGE = 1_000_000
+_CONTEXT_HIGH = 0.8
+_CONTEXT_REARM = 0.5
+# Main-thread readings an ordinary tool call looks back over. Opening state
+# costs a git subprocess and a lock, so a call that is not otherwise opening
+# it does so only while one of these readings was below the threshold: the
+# few calls around the crossing, not every call for the rest of the fill.
+_CONTEXT_CROSSING_READINGS = 5
+_CONTEXT_STATE_MODES = frozenset(
+    {EnforcementMode.TRACKED, EnforcementMode.AWAITING_DECISION}
+)
+
+
+def _count(value):
+    return value if type(value) is int and value >= 0 else None
+
+
+def _context_entry(line):
+    """Read one transcript line as `(kind, tokens, large_model)`, or None."""
+
+    if b'"assistant"' not in line and b"compact_boundary" not in line:
+        return None
+    try:
+        entry = json.loads(line)
+    except ValueError:
+        return None
+    if not isinstance(entry, dict):
+        return None
+    if entry.get("type") == "system" and entry.get("subtype") == "compact_boundary":
+        metadata = entry.get("compactMetadata")
+        tokens = (
+            _count(metadata.get("preTokens")) if isinstance(metadata, dict) else None
+        )
+        return None if tokens is None else ("compact", tokens, False)
+    if entry.get("type") != "assistant" or entry.get("isSidechain") is not False:
+        return None
+    message = entry.get("message")
+    if not isinstance(message, dict):
+        return None
+    model = message.get("model")
+    usage = message.get("usage")
+    if not isinstance(model, str) or model == "<synthetic>":
+        return None
+    if not isinstance(usage, dict):
+        return None
+    parts = [
+        _count(usage.get(name, 0))
+        for name in (
+            "input_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+        )
+    ]
+    if "input_tokens" not in usage or None in parts:
+        return None
+    return ("usage", sum(parts), "[1m]" in model)
+
+
+def _transcript_lines(path, start=0):
+    """Return the transcript size and its complete lines from `start` on.
+
+    At most the last `_TRANSCRIPT_TAIL_BYTES` are read. A read that does not
+    begin at `start` begins mid-line, so its first partial line is dropped.
+    """
+
+    with open(path, "rb") as handle:
+        size = os.fstat(handle.fileno()).st_size
+        if start > size:
+            return size, []
+        begin = max(start, size - _TRANSCRIPT_TAIL_BYTES, 0)
+        handle.seek(begin)
+        data = handle.read(size - begin)
+    lines = data.split(b"\n")
+    if begin != start:
+        lines = lines[1:]
+    return size, lines
+
+
+def _context_window():
+    value = os.environ.get("AHK_CONTEXT_WINDOW_TOKENS", "")
+    if value.isascii() and value.isdigit() and 0 < int(value) <= 10**9:
+        return int(value)
+    return None
+
+
+def _context_reading(path):
+    """Return `(tokens, window, size, recent)` for the latest main-thread usage.
+
+    `recent` holds the token counts of up to `_CONTEXT_CROSSING_READINGS`
+    latest main-thread readings, newest first. None when there is no
+    transcript, no readable usage, or anything fails.
+    """
+
+    try:
+        size, lines = _transcript_lines(path)
+        readings = []
+        for line in reversed(lines):
+            entry = _context_entry(line)
+            if entry is not None and entry[0] == "usage":
+                readings.append(entry)
+                if len(readings) == _CONTEXT_CROSSING_READINGS:
+                    break
+        if not readings:
+            return None
+        _, tokens, large = readings[0]
+        window = _context_window()
+        if window is None:
+            if large or tokens > _CONTEXT_WINDOW:
+                window = _CONTEXT_WINDOW_LARGE
+            elif tokens < _CONTEXT_WINDOW * _CONTEXT_HIGH:
+                # Below the threshold under either window: no need to look
+                # for evidence of the larger one.
+                window = _CONTEXT_WINDOW
+            else:
+                entries = (_context_entry(line) for line in lines)
+                window = (
+                    _CONTEXT_WINDOW_LARGE
+                    if any(
+                        entry is not None and (entry[2] or entry[1] > _CONTEXT_WINDOW)
+                        for entry in entries
+                    )
+                    else _CONTEXT_WINDOW
+                )
+        return tokens, window, size, tuple(entry[1] for entry in readings)
+    except Exception:
+        return None
+
+
+def _context_crossing(platform, payload):
+    """Report, before any state is opened, whether context just reached 80%.
+
+    True when the latest main-thread reading is at the threshold and the
+    readings before it in the tail are fewer than the look-back or not all at
+    it. A call that opens state anyway, a writing tool, checks regardless.
+    """
+
+    try:
+        path = payload.get("transcript_path")
+        if platform != "claude" or not isinstance(path, str) or not path.strip():
+            return False
+        if not Path(path).is_absolute():
+            return False
+        reading = _context_reading(path)
+        if reading is None:
+            return False
+        tokens, window, _, recent = reading
+        threshold = window * _CONTEXT_HIGH
+        return tokens >= threshold and (
+            len(recent) < _CONTEXT_CROSSING_READINGS
+            or any(count < threshold for count in recent)
+        )
+    except Exception:
+        return False
+
+
+def _context_rearmed(path, offset, window):
+    """Report whether context fell below half since the advisory was shown.
+
+    Only what the transcript gained since then is read, within the same bound.
+    A compaction or a main-thread reading below half re-arms it; so does a
+    transcript smaller than the one the advisory was shown for.
+    """
+
+    size, lines = _transcript_lines(path, offset)
+    if size < offset:
+        return True
+    for line in lines:
+        entry = _context_entry(line)
+        if entry is None:
+            continue
+        if entry[0] == "compact" or entry[1] < window * _CONTEXT_REARM:
+            return True
+    return False
+
+
+def _context_advisory(event, snapshot, storage, raw_id):
+    """Say, once per fill, that context is high, and decide nothing.
+
+    Advisory only: it never blocks, carries no `permissionDecision`, and any
+    failure yields None, leaving the tool call exactly as it would have been.
+    It reaches the model on `additionalContext`. `Stop` has no channel the
+    model reads that does not block, so it is not repeated there.
+    """
+
+    try:
+        session = snapshot.session
+        path = event.transcript_reference
+        if (
+            event.host != "claude"
+            or path is None
+            or session.mode not in _CONTEXT_STATE_MODES
+        ):
+            return None
+        reading = _context_reading(path)
+        if reading is None:
+            return None
+        tokens, window, size, _ = reading
+        if tokens < window * _CONTEXT_HIGH:
+            return None
+        offset = session.context_advisory_offset
+        if offset is not None and not _context_rearmed(path, offset, window):
+            return None
+        _commit(
+            storage,
+            raw_id,
+            snapshot,
+            LifecycleMutation(
+                replace(
+                    session,
+                    context_advisory_offset=size,
+                    targeted_revision=session.targeted_revision + 1,
+                )
+            ),
+        )
+        return _context(
+            "PreToolUse",
+            "AHK-CONTEXT-HIGH: Context is at least 80% full. Write the "
+            "continuation handoff now, while there is room, then continue. "
+            "Shown again only after context falls below half.",
+        )
+    except Exception:
+        return None
+
+
+def _context_only(platform, name, payload, repo_root, storage, started):
+    """Serve a call that reached state only for the context advisory.
+
+    Before the advisory existed such a call returned without opening state, so
+    any failure here returns exactly that: no message and no decision.
+    """
+
+    try:
+        root = hook_repository_root(payload, repo_root)
+        raw_id = _string(payload.get("session_id"), 4096)
+        if storage is None:
+            state_root = os.environ.get("AHK_STATE_ROOT")
+            storage = LocalLifecycleStorage(
+                root,
+                state_root=Path(state_root) if state_root else None,
+                lock_deadline=started + LOCK_TIMEOUT_SECONDS,
+            )
+        snapshot = storage.load_snapshot(raw_id)
+        if snapshot.session.mode not in _CONTEXT_STATE_MODES:
+            return HookExecution()
+        event = normalize_event(platform, name, payload, root)
+        advisory = _context_advisory(event, snapshot, storage, raw_id)
+        return advisory if advisory is not None else HookExecution()
+    except Exception:
+        return HookExecution()
+
+
 def _pre_tool(event, snapshot, root, storage, raw_id):
     session = snapshot.session
     command = (
@@ -794,16 +1354,24 @@ def _pre_tool(event, snapshot, root, storage, raw_id):
         if event.tool_name in _SHELL[event.host]
         else None
     )
-    invocation = (
-        re.match(r"^python \S+ lifecycle(?: (\S+))?(?: |$)", command)
-        if isinstance(command, str)
-        else None
-    )
     # `doctor` is the one lifecycle command that takes no session binding, so
     # there is nothing for the interception to carry into it. It is read only,
     # and denying it would reproduce the deadlock it exists to break: the only
     # path to a challenge runs through the hook flow that is failing.
-    control = invocation is not None and invocation.group(1) not in _UNBOUND_CONTROL
+    span = _control_span(command)
+    control = span is not None
+    compound = trailer = False
+    if control:
+        # An invocation inside a compound command is never run and never
+        # rewritten: the denial hands back the bound command, to be run alone.
+        # A whitelisted output trailer is not compound: the invocation alone
+        # is checked, and the command is still never rewritten in place.
+        rest = command[span[1] :].rstrip()
+        compound = bool(command[: span[0]].strip()) or (
+            _TRAILER.fullmatch(rest) is None
+        )
+        trailer = not compound and bool(rest)
+        command = command[span[0] : span[1]]
     # Work is never gated. The toolkit intercepts only its own control
     # commands, which is how a session discovers its session key, challenge and
     # revision: UserPromptSubmit returns silently, so this denial is the sole
@@ -816,7 +1384,8 @@ def _pre_tool(event, snapshot, root, storage, raw_id):
             and session.current_external_user_turn_reference is not None
         ):
             return _write_advisory(event, snapshot, root, storage, raw_id)
-        return HookExecution()
+        advisory = _context_advisory(event, snapshot, storage, raw_id)
+        return advisory if advisory is not None else HookExecution()
     if session.current_external_user_turn_reference is None:
         return render_hook_execution(
             event.host,
@@ -837,24 +1406,20 @@ def _pre_tool(event, snapshot, root, storage, raw_id):
     note = "Use the current bound control command."
     if session.mode not in _UNGATED:
         code = "AHK-CONTROL-BINDING"
-        tokens = command.split(" ")
-        flags = {
-            "--session-key": session.session_key,
-            "--challenge": capability,
-            "--expected-session-revision": str(session.targeted_revision),
-        }
-        if (
-            len(tokens) > 3
-            and tokens[1] == runner.as_posix()
-            and all(
-                tokens.count(flag) == 1
-                and tokens.index(flag) + 1 < len(tokens)
-                and tokens[tokens.index(flag) + 1] == value
-                for flag, value in flags.items()
-            )
-        ):
+        if not compound and _admits(command, runner, session, capability):
             return HookExecution()
         corrected = _control_command(runner, session, capability, "inspect")
+        # The one denial whose command differs from the attempt only in its
+        # credentials. Claude Code can run the bound form in its place; the
+        # substitute must pass the same check that admits it when typed.
+        if (
+            event.host == "claude"
+            and not compound
+            and not trailer
+            and _stale_inspect(command, runner, root, session)
+            and _admits(corrected, runner, session, capability)
+        ):
+            return _rebind(event, corrected)
     elif repaired is not None:
         corrected, parsed = repaired
         if parsed.operation == "register-root":
@@ -890,10 +1455,15 @@ def _pre_tool(event, snapshot, root, storage, raw_id):
                         ("expected-chain-revision", duplicate.targeted_revision),
                     ),
                 )
-        if corrected == command:
+        if corrected == command and not compound:
             return HookExecution()
     else:
+        strict = len(reasons)
         formed = _form_register_root(command, runner, session, capability, reasons)
+        if len(reasons) > strict:
+            # A plain-slot attempt failed its own check. The strict parse of
+            # that form failed by design and names nothing the author wrote.
+            del reasons[:strict]
         if formed is not None:
             corrected = formed
             note = "Semantic slots accepted and encoded; run this command."
@@ -914,6 +1484,10 @@ def _pre_tool(event, snapshot, root, storage, raw_id):
                 ),
             )
             note = 'Derive the three semantic slots from the initiating user request; tooling does not supply them. Plain --scope-id --scope-kind --scope-title "..." --scope-outcome "..." is encoded for you.'
+    if "scope-kind" in reasons:
+        note += " Valid scope kinds: " + ", ".join(SCOPE_KIND_ORDER) + "."
+    if compound:
+        note = "Run the lifecycle command alone, not inside a compound command. " + note
     reason = f"{code}: {note}"
     # Detail is additive: naming the failed check never costs the code, the
     # corrective action, or the command the author is being handed. It is
@@ -961,6 +1535,9 @@ def _reconcile_chain(storage, raw_id, snapshot):
     mutations all preserve the stale value and would be refused, while this
     one carries the live value and is accepted.
 
+    `Stop` runs it too, before evaluating, so a turn ending is judged against
+    the chain as it is now rather than counted as this session's mistake.
+
     Releasing a completed lease preserves the previous external turn
     reference, because the reentry that follows requires the new reference to
     differ from the recorded one.
@@ -997,6 +1574,45 @@ def _reconcile_chain(storage, raw_id, snapshot):
         "AHK-CHAIN-ADVANCED: another session advanced this authorization to "
         f"revision {chain.targeted_revision}. Rebuild any successor in "
         "progress against the current record before ending the turn."
+    )
+
+
+def _peer_advanced(snapshot):
+    """Whether another session moved this tracked session's chain past it.
+
+    Every write a session makes carries the live chain revision, so a session
+    whose recorded revision differs was overtaken by a peer's write.
+    """
+
+    chain, session = snapshot.chain, snapshot.session
+    return (
+        chain is not None
+        and session.mode not in _UNGATED
+        and session.mode is not EnforcementMode.COMPLETE
+        and session.chain_revision != chain.targeted_revision
+    )
+
+
+def _peer_stale(snapshot):
+    """An uncounted `AHK-STOP-STALE` naming the record a peer made current.
+
+    The session revision advances so the block is recorded, and the observed
+    chain revision is refreshed where the decision is published, but the
+    correction count and the last issue signature are left as they were.
+    """
+
+    reference = snapshot.chain.current_record_reference if snapshot.chain else None
+    issue = LifecycleIssue(
+        "AHK-STOP-STALE",
+        "Lifecycle check failed.",
+        _ACTIONS["AHK-STOP-STALE"],
+        current_record=_record_name(reference.path) if reference else None,
+    )
+    session = replace(
+        snapshot.session, targeted_revision=snapshot.session.targeted_revision + 1
+    )
+    return LifecycleDecision(
+        DecisionKind.BLOCK, (issue,), mutation=LifecycleMutation(session)
     )
 
 
@@ -1181,6 +1797,33 @@ def _user_prompt_steps(event, snapshot, storage, raw_id, root, notices):
         session = snapshot.session
     if event.current_user_reference == session.current_external_user_turn_reference:
         return HookExecution()
+    # Who started the turn decides one `Stop` ending: the `reply` line is
+    # accepted only after a turn the user started. It is recorded with the
+    # observed turn, in the same write.
+    origin = prompt_origin(event.current_user_message)
+    if session.mode is EnforcementMode.COMPLETE and origin == "host":
+        # A task notification arriving after the audit is not the user
+        # starting new work. Reentry would take its turn reference as the
+        # user's and make the session eligible to enroll on the host's behalf,
+        # so only its origin is recorded and the completed state stays.
+        if session.turn_origin != "host":
+
+            def record_host(current=snapshot):
+                return _commit(
+                    storage,
+                    raw_id,
+                    current,
+                    LifecycleMutation(
+                        replace(
+                            current.session,
+                            turn_origin="host",
+                            targeted_revision=current.session.targeted_revision + 1,
+                        )
+                    ),
+                )
+
+            _attempt("turn-origin", notices, record_host, snapshot)
+        return HookExecution()
     if session.mode is EnforcementMode.COMPLETE:
 
         def reenter(current=snapshot):
@@ -1235,6 +1878,7 @@ def _user_prompt_steps(event, snapshot, storage, raw_id, root, notices):
             if snapshot.chain
             else 0,
             expected_session_revision=session.targeted_revision,
+            turn_origin=origin,
         )
 
     # This step records more than the turn reference: it classifies a
@@ -1244,6 +1888,25 @@ def _user_prompt_steps(event, snapshot, storage, raw_id, root, notices):
     # than merely waited out.
     updated = _attempt("observe-turn", notices, observe, None)
     if updated is None:
+        if session.turn_origin != origin:
+            # Best effort on its own: a stale origin would cost the next
+            # `Stop` its correct ending, and this write needs nothing the
+            # failed observation would have produced.
+            def record_origin(current=snapshot):
+                return _commit(
+                    storage,
+                    raw_id,
+                    current,
+                    LifecycleMutation(
+                        replace(
+                            current.session,
+                            turn_origin=origin,
+                            targeted_revision=current.session.targeted_revision + 1,
+                        )
+                    ),
+                )
+
+            _attempt("turn-origin", notices, record_origin, snapshot)
         # Enrollment is deliberately *not* independent of observation.
         # `register_root` binds the new authorization to whatever turn
         # reference is already stored, so enrolling after a failed
@@ -1261,7 +1924,13 @@ def _user_prompt_steps(event, snapshot, storage, raw_id, root, notices):
                     "session is untracked. Tell the user."
                 )
         return HookExecution()
-    if updated.session.pending_correction_hmac is not None:
+    # A turn the host started - a task notification, a message from another
+    # session - is not the user answering. Judging it as an answer drew a
+    # clarification notice for every one while the question stayed open. Nor
+    # does it spend the correction challenge, which only the user's echo of a
+    # block reason may consume.
+    host_turn = origin == "host"
+    if updated.session.pending_correction_hmac is not None and not host_turn:
 
         def clear(current=updated):
             return _commit(
@@ -1282,7 +1951,7 @@ def _user_prompt_steps(event, snapshot, storage, raw_id, root, notices):
         # answer as collateral.
         updated = _attempt("correction-clear", notices, clear, updated)
     request = updated.session.pending_decision_reference
-    if request is not None:
+    if request is not None and not host_turn:
 
         def resolve(current=updated):
             # Classifying the answer belongs inside the step: deciding whether
@@ -1320,7 +1989,7 @@ def _user_prompt_steps(event, snapshot, storage, raw_id, root, notices):
             "untracked. Tell the user."
         )
         return HookExecution()
-    return _pending_clarification(updated)
+    return HookExecution() if host_turn else _pending_clarification(updated)
 
 
 def _enroll(event, updated, service, storage, root):
@@ -1333,10 +2002,18 @@ def _enroll(event, updated, service, storage, root):
             service, storage, updated, match.group(1), root
         )
         if failure is not None:
+            advice = (
+                " to open the session in the checkout that holds the record: it "
+                "is in neither this checkout's handoffs/ nor another worktree of "
+                "this repository"
+                if failure == "candidate-outside-handoffs"
+                else ""
+            )
             return _context(
                 "UserPromptSubmit",
                 f"AHK-RESUME-FAILED failed={failure}: the pasted handoff did not "
-                "resume a tracked chain; this session is untracked. Tell the user.",
+                "resume a tracked chain; this session is untracked. Tell the "
+                f"user{advice}.",
             )
         updated = resumed
         return _context(
@@ -1370,18 +2047,59 @@ def _enroll(event, updated, service, storage, root):
     return HookExecution()
 
 
-def _pending_clarification(updated):
-    """Ask for the outstanding answer, whatever else the turn did."""
+# Every plain reply `classify_affirmation` accepts, and nothing else; a test
+# holds these to its tables. Matching ignores case, repeated spaces and trailing `.!?`;
+# nothing else is inferred, so a qualified reply such as "yes, but..." stays
+# ambiguous by design.
+_APPROVAL_FORMS = "yes, yeah, yep, approved, looks right, go ahead, go with <option>"
+_REJECTION_FORMS = "no, nope, reject, rejected"
+_APPROVAL_CATEGORIES = frozenset(
+    {
+        AuthorityCategory.EXTERNAL_EFFECT,
+        AuthorityCategory.DESTRUCTIVE_OPERATION,
+        AuthorityCategory.REPOSITORY_APPROVAL,
+    }
+)
 
+
+def _pending_clarification(updated):
+    """Ask for the outstanding answer, naming the replies that resolve it.
+
+    Fixed English plus one closed identifier, the blocked exact-action field.
+    The user's reply is never echoed.
+    """
+
+    request = updated.session.pending_decision_reference
     remaining_proposal = updated.session.pending_transition_reference
-    if updated.session.pending_decision_reference or (
-        remaining_proposal and remaining_proposal.status == "pending"
-    ):
-        return _context(
-            "UserPromptSubmit",
-            "AHK-USER-CLARIFY: Clarify the pending decision or reissue the exact scope proposal for an adjacent response. No new authorization was granted.",
+    proposal_pending = remaining_proposal and remaining_proposal.status == "pending"
+    if request is None and not proposal_pending:
+        return HookExecution()
+    if request is not None and request.category not in _APPROVAL_CATEGORIES:
+        forms = (
+            f"Accepted reply, alone on the message: {request.blocked_action_field}: "
+            "<value>, where <value> is a single token. The session cannot record "
+            "completion until the user answers in that form."
         )
-    return HookExecution()
+    else:
+        forms = (
+            f"Accepted replies, alone on the message, case-insensitive: approve "
+            f"with {_APPROVAL_FORMS}; reject with {_REJECTION_FORMS}. The session "
+            "cannot record completion until the user answers yes or no."
+        )
+    subject = (
+        "the pending decision"
+        if request is not None
+        else "the pending scope proposal, reissued exactly for an adjacent response"
+    )
+    return _context(
+        "UserPromptSubmit",
+        "AHK-USER-CLARIFY: The reply did not resolve "
+        + subject
+        + ". Re-ask the pending question and tell the user: "
+        + forms
+        + " Do not perform the blocked action on an ambiguous reply. No new "
+        "authorization was granted.",
+    )
 
 
 def _root_scope_id(title):
@@ -1507,15 +2225,23 @@ def _resume_chain(service, storage, snapshot, pointer, root):
     already supply, or any part of the prompt.
     """
 
+    # A record in another worktree of this repository resumes from here: the
+    # chain's state is shared by every worktree, and the digest is the
+    # evidence. It is read in that checkout, under the same guards.
     try:
         canonical = canonical_record_path(pointer)
-        contained = Path(canonical).is_relative_to(root / "handoffs")
+        target = Path(canonical)
+        checkout = (
+            root
+            if target.is_relative_to(root / "handoffs")
+            else _sibling_checkout(target, root)
+        )
     except Exception:
         return snapshot, "candidate-outside-handoffs"
-    if not contained:
+    if checkout is None:
         return snapshot, "candidate-outside-handoffs"
     try:
-        text, data, digest = _read_record(pointer, root)
+        text, data, digest = _read_record(pointer, checkout)
     except Exception:
         return snapshot, "record-invalid"
     failure = _resume_precheck(storage, data, canonical, digest)
@@ -1577,11 +2303,7 @@ def _resume_precheck(storage, data, path, digest):
 
 def _decision_resolved(message, request):
     classification = classify_affirmation(message)
-    if request.category in {
-        AuthorityCategory.EXTERNAL_EFFECT,
-        AuthorityCategory.DESTRUCTIVE_OPERATION,
-        AuthorityCategory.REPOSITORY_APPROVAL,
-    }:
+    if request.category in _APPROVAL_CATEGORIES:
         return classification in {AffirmationResult.APPROVE, AffirmationResult.REJECT}
     # Free-form input is only mechanically proven when the response explicitly
     # names the blocked field and supplies a bounded concrete token. Unknown
@@ -1602,10 +2324,13 @@ def _decision_resolved(message, request):
 
 
 def run_lifecycle_hook(platform, name, raw, repo_root, storage=None):
+    # Every lock acquisition in this run waits against one deadline.
+    started = time.monotonic()
     event_kind = event_name(name)
     snapshot = None
     raw_id = None
     stage = "decode-input"
+    behind = False
     try:
         payload = decode_payload(raw)
         # Nothing is gated at PreToolUse but the toolkit's own control
@@ -1619,24 +2344,31 @@ def run_lifecycle_hook(platform, name, raw, repo_root, storage=None):
             tool = payload.get("tool_name")
             inputs = payload.get("tool_input")
             command = inputs.get("command") if isinstance(inputs, Mapping) else None
-            control = (
-                isinstance(command, str)
-                and re.match(r"^python \S+ lifecycle(?: |$)", command) is not None
-            )
+            control = _control_segment(command) is not None
             if not control and tool not in _WRITE_TOOLS[platform]:
-                return HookExecution()
-        root = Path(repo_root).resolve()
+                # The context advisory is the one exception, and only around
+                # the reading where the bounded transcript tail first shows
+                # 80%. Otherwise the call returns before any state is opened.
+                if not _context_crossing(platform, payload):
+                    return HookExecution()
+                return _context_only(
+                    platform, name, payload, repo_root, storage, started
+                )
+        stage = "resolve-root"
+        root = hook_repository_root(payload, repo_root)
         raw_id = _string(payload.get("session_id"), 4096)
         if storage is None:
             stage = "open-state"
             state_root = os.environ.get("AHK_STATE_ROOT")
             storage = LocalLifecycleStorage(
-                root, state_root=Path(state_root) if state_root else None
+                root,
+                state_root=Path(state_root) if state_root else None,
+                lock_deadline=started + LOCK_TIMEOUT_SECONDS,
             )
         stage = "load-state"
         snapshot = storage.load_snapshot(raw_id)
         stage = "normalize-event"
-        event = normalize_event(platform, name, payload, repo_root)
+        event = normalize_event(platform, name, payload, root)
         event = replace(event, session_key=snapshot.session.session_key)
         stage = "evaluate"
         if event_kind is EventName.PRE_TOOL_USE:
@@ -1646,12 +2378,39 @@ def run_lifecycle_hook(platform, name, raw, repo_root, storage=None):
         if snapshot.session.correction_cycle_count >= 3:
             decision = _blocked_stop(snapshot, (_issue("AHK-STOP-CIRCUIT"),))
         else:
+            # A peer on the same chain may have published since this session
+            # last looked. That is not this session's mistake: reconcile
+            # first, as the prompt path does, and evaluate against the chain
+            # as it is now - its current record and its progress lines.
+            behind = _peer_advanced(snapshot)
+            if behind:
+                stage = "reconcile-chain"
+                snapshot, _ = _reconcile_chain(storage, raw_id, snapshot)
+                stage = "evaluate"
             candidate = None
             if snapshot.session.mode is EnforcementMode.TRACKED:
                 candidate = _candidate(event, snapshot, root)
             decision = evaluate_stop(
                 event, snapshot, candidate=candidate, decision_secret=storage.secret
             )
+            if behind and decision.kind is DecisionKind.BLOCK:
+                # Whatever was refused was written against a chain that has
+                # since moved, so it is not counted toward the circuit.
+                decision = _peer_stale(snapshot)
+    except _PointerRefused as refused:
+        # The model offered a record and the pointer does not qualify. That is
+        # a policy outcome it can correct, counted toward the circuit like any
+        # other blocked Stop - never a malfunction of the toolkit. Against a
+        # chain a peer has moved, it is uncounted like every other block there.
+        issue = _pointer_issue(refused.check, root)
+        try:
+            decision = (
+                _peer_stale(snapshot)
+                if behind
+                else _blocked_stop(snapshot, (issue,), allow_session_identity=True)
+            )
+        except Exception:
+            decision = LifecycleDecision(DecisionKind.BLOCK, (issue,))
     except StaleLifecycleState:
         decision = LifecycleDecision(DecisionKind.BLOCK, (_issue("AHK-STOP-STALE"),))
     except Exception as error:
@@ -1684,7 +2443,7 @@ def run_lifecycle_hook(platform, name, raw, repo_root, storage=None):
         and snapshot is not None
         and snapshot.session.mode in _UNGATED
     ):
-        note = _no_handoff_note(snapshot, Path(repo_root).resolve(), storage, raw_id)
+        note = _no_handoff_note(snapshot, root, storage, raw_id)
         if note is not None:
             return note
     return output
@@ -1791,6 +2550,21 @@ def _publish_decision(
             if retry and event_kind is EventName.STOP:
                 try:
                     current = storage.load_snapshot(raw_id)
+                    if _peer_advanced(current):
+                        # A peer published between this Stop's read and its
+                        # write. Not this session's mistake either.
+                        current, _ = _reconcile_chain(storage, raw_id, current)
+                        if current.session.mode is EnforcementMode.COMPLETE:
+                            return HookExecution()
+                        return _publish_decision(
+                            platform,
+                            event_kind,
+                            _peer_stale(current),
+                            storage,
+                            raw_id,
+                            current,
+                            retry=False,
+                        )
                     if current.session.authorization_id is not None:
                         blocked = _blocked_stop(current, (_issue("AHK-STOP-STALE"),))
                         return _publish_decision(

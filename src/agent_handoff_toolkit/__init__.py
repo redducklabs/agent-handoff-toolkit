@@ -1,11 +1,11 @@
 """Public API for agent handoff records."""
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 from .records import (
     ValidationIssue,
     parse_markdown,
-    render_progress_response,
+    render_progress_responses,
     render_record,
     render_successor,
     render_tail,
@@ -20,7 +20,7 @@ __all__ = [
     "__version__",
     "parse_markdown",
     "record_digest",
-    "render_progress_response",
+    "render_progress_responses",
     "render_record",
     "render_successor",
     "render_tail",

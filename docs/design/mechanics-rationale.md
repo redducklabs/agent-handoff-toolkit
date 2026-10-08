@@ -38,25 +38,44 @@ knowing the mode is a runtime that cannot be imported at all: the module that
 would report the mode is the one failing, and a missing owned runtime file is
 install corruption rather than a transient fault.
 
+The registry lock is awaited for at most 15 seconds on both platforms. Every
+worktree of a repository shares one state root, so a holder that hung used to
+stall every hook of every session until the host killed it. Past the deadline
+the acquisition raises `LockTimeout`, a storage error reported through this
+same path. It is raised before anything is read or written, so the outcome is
+never in doubt: nothing was published.
+
 ## Locating the runner
 
 Each managed hook command finds `.agent-handoff-toolkit/runner.py` by walking
 upward from the hook process's working directory, and does nothing at all when
 no install is found there. Naming the runner by a path relative to that working
-directory does not work: hosts run hook commands in the directory the agent is
-working in, so any session below the repository root failed to start Python,
+directory does not work: hook commands commonly run in the directory the agent
+is working in, so any session below the repository root failed to start Python,
 and a missing script file exits 2 — which every gated event reads as a block.
 
-The walk is also the only form that is correct across checkouts. A worktree
-carries its own copy of the install, so the walk runs the runner pinned by the
-checkout the agent is actually working in. `CLAUDE_PROJECT_DIR` is deliberately
-not used: Claude Code documents that it stays at the project root the session
-started in even after the agent enters a worktree, so locating the runner
-through it would run one checkout's pinned release against another's. Codex
-documents no equivalent variable, and the walk needs none on either host.
+A worktree carries its own copy of the install, and the toolkit has to run the
+runner pinned by the checkout the agent is actually working in.
+`CLAUDE_PROJECT_DIR` is deliberately not used: Claude Code documents that it
+stays at the project root the session started in even after the agent enters a
+worktree, so locating the runner through it would run one checkout's pinned
+release against another's. Codex documents no equivalent variable.
 
-The runner still takes the repository it operates on from its working
-directory, unchanged.
+The hook process's directory is not a promise either. Desktop worktrees live
+inside the main checkout, at `<repo>/.claude/worktrees/<name>`, and a hook
+process started in the main checkout walked to the main checkout's runner,
+rooted the session there, and bound its commands to that runner and its
+`handoffs/`. Every host payload carries `cwd`, the session's own directory, so
+that names the checkout: the hook's repository root is the nearest directory at
+or above it holding `.git`, and the located runner hands the invocation, once,
+to the runner of that checkout when it is a different file. Both steps apply
+only to a worktree of the same repository, compared by git common directory
+and read from `.git` without spawning git: a session can stand in any clone on
+the machine, and handing off there would execute a runner this repository
+never pinned. The process's
+directory remains the fallback for a payload that names no checkout, and the
+hand-off falls through to the located runner whenever the other one does not
+answer cleanly, so neither step can turn a fault into a block.
 
 ## State across installed releases
 
@@ -122,27 +141,44 @@ and unable to reach any legal terminal outcome.
 
 Tracked sessions have five permitted stop outcomes: continue working, await a
 legitimate decision request, create a valid continuation, complete the
-authorized root with an audit, or end the turn on the canonical progress line.
+authorized root with an audit, or end the turn on one of the progress lines.
 
 `Stop` runs at every turn end, not at the end of a session, so requiring a
 record at every one of them made "I have opened the pull request, watching CI"
-cost a full continuation. The progress line is the alternative:
+cost a full continuation. The progress lines are the alternative. Nothing else
+record-less is accepted, and the comparison is exact. The guarantee they leave
+is: every turn end is a record, an audit, a decision response, or one of those
+lines, and a session that *ends* on one is reported at `SessionEnd`. That is
+weaker on paper than "every turn end is a record", and the evidence is that
+the stronger rule was being paid for in tens of thousands of tokens of record
+text per task per day.
 
-```text
-In progress: "<root title>". Last handoff: <path or none yet>. Say "continue" to keep going, or ask for a handoff.
-```
+There used to be one line, `In progress: ... Say "continue" to keep going, or
+ask for a handoff.`, and it gave no reason. In one session 227 turns ended on
+it. Most were legitimate waits on subagents or other sessions, but the line
+told the user to type "continue" to a session that would resume by itself, and
+agents also used it as an idle pause while executable work remained. Each
+line now names why the turn ended. Three say what the session is waiting on -
+background work, CI, another session - and that it resumes when that reports.
+Only `reply` asks the user to say "continue", and it is accepted only after a
+turn the user started: a task notification or a peer's message is nobody to
+reply to. `AHK-STOP-WORK` says so: executable work remains, so keep working.
 
-Nothing else record-less is accepted, and the comparison is exact. The
-guarantee it leaves is: every turn end is a record, an audit, a decision
-response, or that line, and a session that *ends* on that line is reported at
-`SessionEnd`. That is weaker on paper than "every turn end is a record", and
-the evidence is that the stronger rule was being paid for in tens of thousands
-of tokens of record text per task per day.
+The host marks none of its own turns. `UserPromptSubmit` fires for a task
+notification or a cross-session message exactly as for the user, so the turn
+origin is read from the prompt's opening, by exact prefixes on the stripped
+text. The same classification keeps those prompts from being judged as the
+answer to a pending decision: one session drew thirteen `AHK-USER-CLARIFY`
+notices from them. A user who types one of those openings is read as the host,
+which costs a skipped answer check and the `reply` ending, never an
+authorization. State written before origins were recorded reads as unknown and
+keeps the `reply` ending: refusing it would block existing sessions on a fact
+nobody recorded.
 
-The line is published by `lifecycle inspect` as `progress_response`, not in
-blocking feedback. It contains the declared goal in the user's own words, and
-feedback carries issue codes, the corrective action and bounded identifiers
-only — never authored text.
+The lines are published by `lifecycle inspect` as `progress_responses`, keyed
+by reason, not in blocking feedback. They contain the declared goal in the
+user's own words, and feedback carries issue codes, the corrective action and
+bounded identifiers only — never authored text.
 
 `SessionEnd` is an informational hook and fails open. It emits a
 `systemMessage` only when the session is `TRACKED` and its last stop was a
@@ -163,6 +199,36 @@ when it fails. The toolkit supplies the encoding and never the meaning: here the
 user supplied the meaning in their own turn, which is also the strongest
 authorization evidence the design has — the root is bound to the turn that asked
 for it.
+
+### Peers on one chain
+
+Every worktree shares one state root, so a session joined to a chain falls a
+revision behind whenever a peer publishes. `Stop` used to count that against
+it: `AHK-STOP-STALE`, then `AHK-STOP-WORK` for a wait line naming the old
+record, then the circuit. `Stop` now reconciles first, as the prompt path does,
+and judges the turn ending against the live chain. Anything it still refuses
+was written against a chain that has since moved, so it is reported as an
+uncounted `AHK-STOP-STALE` naming the current record after `current=`; only a
+session's own mistakes arm the circuit. The same holds when the peer
+publishes between this `Stop`'s read and its write.
+
+A turn the host started - a task notification, a message from another session
+- is not the user speaking. It records only its origin: it does not become
+the current user turn, so a task notification arriving between a transition
+proposal and the user's yes leaves the two adjacent, and it does not reset the
+correction circuit.
+
+Approving a transition moves the peers of the superseded chain to its
+successor. It used to rewrite them in the approver's image, forcing `TRACKED`,
+dropping the decision a peer was waiting on and copying in the approver's
+pending transition. A peer now keeps its mode and its pending decision, re-bound
+to the successor; only its own proposal goes, because it re-roots the chain
+that was superseded.
+
+Two sessions in one folder can choose the same `handoffs/` file name.
+`render --output` therefore refuses to overwrite a file whose digest is any
+chain's current record. The guard is best effort and fails open: a file the
+state does not name, or state that cannot be read, renders as before.
 
 ### Record paths are locators, not identity
 
@@ -193,6 +259,21 @@ with the failing check after `failed=` — `candidate-outside-handoffs`,
 `record-invalid`, `chain-inactive`, `record-digest` or `chain-stale` — and the
 session stays untracked. Silence is not a permitted outcome for a prompt that
 carried a pointer.
+
+A pointer into another worktree of the same repository resumes. Sessions were
+opened at a repository's main checkout and handed a record from one of its
+worktrees, and each was refused as `candidate-outside-handoffs` — the same
+repository, whose lifecycle state every worktree shares, treated as a
+stranger. Sharing the git common directory is what makes it the same
+repository; an unrelated clone still is not, and its refusal now tells the
+user to open the session in the checkout that holds the record.
+
+A malformed renderer pointer at `Stop` is `AHK-STOP-POINTER`, a counted policy
+block naming the failed check. It used to surface as `AHK-HOOK-RUNTIME` with a
+bare `ValueError`, which told the model nothing it could correct, and any
+`](` in a final message — an ordinary pull-request link — was treated the
+same way, so consumers learned to avoid links altogether. A message with no
+renderer-owned link now offers no candidate at all.
 
 `Stop` verifies the direct candidate, lineage, locked root, open-decision state,
 and the renderer's complete response. An attempted assistant message may already
@@ -290,6 +371,23 @@ directory that is not a repository, a `git` invocation that times out or
 returns unparseable output, an unreadable state file, or an unexpected
 exception in either advisory path all produce no message and no error.
 
+**`AHK-CONTEXT-HIGH`** answers a field report: a tracked session on a 1M
+window auto-compacted twice, near 967k tokens each time, without writing a
+handoff. The user chose an advisory at 80% over a gate, so it never blocks and
+never refuses a turn ending. It is sent only at `PreToolUse`, on
+`additionalContext`: on `Stop` the only channel the model reads is a block, and
+a `systemMessage` reaches the user, not the model. The transcript is read for
+numbers only, within a 512 KiB tail, and state stores only the transcript size
+at which the notice was shown; a re-arm is looked for only in what the
+transcript gained since. Cost was measured: the tail read is about 2 ms on a
+2.5 MB transcript, while opening lifecycle state is about 190 ms on Windows (a
+git subprocess, path checks and a lock). So an ordinary tool call, which
+otherwise returns before state is opened, opens it for this advisory only while
+one of the last five main-thread readings is below 80% - the calls around the
+crossing - rather than on every call for the rest of the fill. A writing tool
+opens state anyway and always checks, which covers a session that becomes
+tracked after the crossing. Codex is not read: its transcript format differs.
+
 **The guarantee this supports.** The toolkit does not guarantee that work
 needing a handoff produces one. It guarantees that declared tracked work
 follows the lifecycle, and it reports undeclared work that ends unfinished. A
@@ -304,8 +402,8 @@ to a challenge, no path to registering a root, and no path to any lifecycle
 command — the toolkit is unavailable exactly when a session needs it.
 
 `lifecycle doctor` is the out-of-band entry point. It takes no session binding
-because it decides nothing and changes nothing, and for the same reason it is
-the one lifecycle subcommand the control interception does not intercept. It
+because it decides nothing and changes nothing, and for the same reason the
+control interception lets it through, as it does `--help` and `-h`. It
 reports where state resolves, whether it opens, whether its lock is reachable,
 which runner is installed and which one is running, and — given a raw host
 session ID — that session's enforcement mode. The derived session key and the

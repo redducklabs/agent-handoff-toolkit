@@ -33,14 +33,16 @@ from .lifecycle import (
     LifecycleMutation,
     _UNGATED,
     classify_affirmation,
-    progress_response,
+    progress_responses,
     render_decision_response,
 )
 from .lifecycle_storage import LocalLifecycleStorage, StaleLifecycleState
 from .records import parse_markdown, validate_markdown
 
 
-SCOPE_KINDS = {"unit", "issue", "phase", "epic", "rollout", "standalone"}
+# The closed set, in the order feedback names it.
+SCOPE_KIND_ORDER = ("unit", "issue", "phase", "epic", "rollout", "standalone")
+SCOPE_KINDS = set(SCOPE_KIND_ORDER)
 _FLAGS = {
     "register-root": (
         "session-key",
@@ -404,14 +406,15 @@ class LifecycleService:
             else (
                 proposal.kind if proposal and proposal.status != "consumed" else None
             ),
-            # The exact message a tracked session may end a turn on without
-            # authoring a record. It is published here rather than in blocking
-            # feedback, which carries issue codes and bounded identifiers only.
-            # A completed chain has no such message: reporting work in
-            # progress there would tell a session that just reconciled onto a
-            # finished authorization something plainly untrue.
-            "progress_response": (
-                progress_response(chain)
+            # The exact messages a tracked session may end a turn on without
+            # authoring a record, keyed by a closed set of reasons. They are
+            # published here rather than in blocking feedback, which carries
+            # issue codes and bounded identifiers only. A completed chain has
+            # none: reporting work in progress there would tell a session
+            # that just reconciled onto a finished authorization something
+            # plainly untrue.
+            "progress_responses": (
+                progress_responses(chain)
                 if chain is not None and chain.status == "active"
                 else None
             ),
@@ -662,7 +665,14 @@ class LifecycleService:
         preceding_assistant_turn_reference,
         expected_chain_revision,
         expected_session_revision,
+        turn_origin=None,
     ):
+        """Record a new external user turn and any adjacent proposal answer.
+
+        `turn_origin`, when given, records who started the turn - `"user"` or
+        `"host"` - in the same write; None leaves the recorded origin alone.
+        """
+
         snapshot = self._snapshot(expected_session_revision, expected_chain_revision)
         if (
             event.event is not EventName.USER_PROMPT_SUBMIT
@@ -674,6 +684,21 @@ class LifecycleService:
         turn = event.current_user_reference or event.turn_reference
         if turn == snapshot.session.current_external_user_turn_reference:
             return snapshot
+        if turn_origin == "host":
+            # A turn the host started - a task notification, a message from
+            # another session - is not the user speaking. It records only who
+            # started the turn. It does not become the current user turn, so
+            # a pending proposal stays adjacent to the user's next answer, and
+            # it does not reset the correction circuit, which only a real user
+            # turn may clear.
+            if snapshot.session.turn_origin == "host":
+                return snapshot
+            session = replace(
+                snapshot.session,
+                targeted_revision=expected_session_revision + 1,
+                turn_origin="host",
+            )
+            return self._commit(snapshot, session, None)
         proposal = snapshot.session.pending_transition_reference
         chain = None
         if (
@@ -750,6 +775,8 @@ class LifecycleService:
             correction_cycle_count=0,
             last_issue_signature=None,
         )
+        if turn_origin is not None:
+            session = replace(session, turn_origin=turn_origin)
         if chain:
             session = replace(
                 session,

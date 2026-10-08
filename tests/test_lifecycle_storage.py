@@ -10,6 +10,7 @@ import secrets
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 from types import SimpleNamespace
@@ -17,7 +18,10 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from agent_handoff_toolkit.lifecycle import (
+    AuthorityCategory,
+    AuthorizationProposal,
     ChainState,
+    DecisionRequest,
     EnforcementMode,
     LifecycleMutation,
     RecordReference,
@@ -286,6 +290,26 @@ class LifecycleStorageTests(unittest.TestCase):
         self.assertEqual(loaded_chain.locked_root_id, "issue-1")
         self.assertIsNone(loaded_chain.successor_authorization_id)
         self.assertIsNone(loaded_chain.publication_evidence)
+
+    def test_turn_origin_loads_from_older_state_as_unknown(self):
+        """State written before the turn origin existed reads it as unknown."""
+
+        from agent_handoff_toolkit.lifecycle_storage import _model
+
+        loaded = _model(
+            {"session_key": "a" * 64, "targeted_revision": 3, "mode": "open"},
+            SessionState,
+        )
+        self.assertIsNone(loaded.turn_origin)
+        for origin in ("user", "host"):
+            self.assertEqual(
+                replace(loaded, turn_origin=origin).turn_origin,
+                origin,
+            )
+        for invalid in ("assistant", "", 1, True):
+            with self.subTest(origin=invalid):
+                with self.assertRaises(ValueError):
+                    replace(loaded, turn_origin=invalid)
 
     def test_state_missing_an_identity_field_still_fails(self):
         from agent_handoff_toolkit.lifecycle_storage import _model
@@ -573,6 +597,86 @@ class LifecycleStorageTests(unittest.TestCase):
                 "b", 1, 1, LifecycleMutation(replace(b.session, targeted_revision=2))
             )
 
+    def test_a_transition_leaves_each_peer_its_own_pending_state(self):
+        """Approving a transition moves peers to the successor chain, nothing more.
+
+        The supersession used to rewrite every peer in the approver's image:
+        forced to `TRACKED`, its own pending decision dropped and the
+        approver's pending transition copied in. A peer awaiting the user's
+        answer lost the question it was waiting on.
+        """
+
+        a = register(self.storage, "a")
+        waiting = self.join("b", a.chain)
+        tracked = self.join("c", a.chain)
+        request = DecisionRequest(
+            "request-b",
+            "auth-a",
+            AuthorityCategory.REPOSITORY_APPROVAL,
+            "action",
+            "ship",
+            "c" * 64,
+            "d" * 64,
+        )
+        waiting = self.storage.compare_and_swap(
+            "b",
+            1,
+            1,
+            LifecycleMutation(
+                replace(
+                    waiting.session,
+                    targeted_revision=2,
+                    mode=EnforcementMode.AWAITING_DECISION,
+                    pending_decision_reference=request,
+                )
+            ),
+        )
+        scope = {
+            "scope_id": "root-next",
+            "scope_kind": "epic",
+            "parent_scope_id": None,
+            "scope_definition": {"title": "Next", "outcome": "Next done"},
+        }
+        approvers_own = AuthorizationProposal(
+            "proposal-a",
+            "transition",
+            "assistant-9",
+            "auth-next",
+            "auth-later",
+            (scope,),
+            (dict(scope, scope_id="root-later"),),
+        )
+        successor = ChainState("auth-next", "root-next", ("b" * 64,), 1, "active", None)
+        self.storage.compare_and_swap(
+            "a",
+            1,
+            1,
+            LifecycleMutation(
+                replace(
+                    a.session,
+                    targeted_revision=2,
+                    authorization_id="auth-next",
+                    chain_revision=1,
+                    pending_transition_reference=approvers_own,
+                ),
+                successor,
+            ),
+        )
+        moved = self.storage.load_snapshot("b").session
+        self.assertEqual(moved.authorization_id, "auth-next")
+        self.assertEqual(moved.chain_revision, 1)
+        self.assertIs(moved.mode, EnforcementMode.AWAITING_DECISION)
+        self.assertEqual(
+            moved.pending_decision_reference,
+            replace(request, authorization_id="auth-next"),
+        )
+        self.assertIsNone(moved.pending_transition_reference)
+        other = self.storage.load_snapshot("c").session
+        self.assertIs(other.mode, EnforcementMode.TRACKED)
+        self.assertIsNone(other.pending_transition_reference)
+        self.assertIsNone(other.pending_decision_reference)
+        self.assertEqual(other.targeted_revision, tracked.session.targeted_revision + 1)
+
     def test_rejects_duplicate_root_and_invalid_revision_or_scope_mutation(self):
         a = register(self.storage, "a")
         with self.assertRaises(LifecycleStorageError):
@@ -697,8 +801,8 @@ class LifecycleStorageTests(unittest.TestCase):
         moved = self.root / "state-moved-after-lock"
         lock = lifecycle_storage._lock_descriptor
 
-        def substitute(descriptor, *, windows):
-            lock(descriptor, windows=windows)
+        def substitute(descriptor, *, windows, **deadlines):
+            lock(descriptor, windows=windows, **deadlines)
             self.state.rename(moved)
             self.state.mkdir(mode=0o700)
 
@@ -726,8 +830,10 @@ class LifecycleStorageTests(unittest.TestCase):
                 LK_UNLCK=102,
                 locking=lambda fd, kind, count: calls.append((fd, kind, count)),
             )
+            # POSIX polls too: `LOCK_EX` alone waits with no deadline.
             posix = SimpleNamespace(
                 LOCK_EX=201,
+                LOCK_NB=4,
                 LOCK_UN=202,
                 flock=lambda fd, kind: calls.append((fd, kind)),
             )
@@ -741,7 +847,7 @@ class LifecycleStorageTests(unittest.TestCase):
                 [
                     (lock.fileno(), 103, 1),
                     (lock.fileno(), 102, 1),
-                    (lock.fileno(), 201),
+                    (lock.fileno(), 201 | 4),
                     (lock.fileno(), 202),
                 ],
             )
@@ -1105,6 +1211,92 @@ class LockContentionTests(unittest.TestCase):
         finally:
             os.close(held)
         self.assertEqual(lifecycle_storage.probe_lock(lock), "ok")
+
+    def hold(self, directory=None):
+        """Hold the registry lock through a second descriptor in this process."""
+
+        from agent_handoff_toolkit import lifecycle_storage
+
+        lock = (directory or self.root) / "registry.lock"
+        held = lifecycle_storage._open_private(lock, os.O_RDWR | os.O_CREAT)
+        lifecycle_storage._lock_descriptor(held, windows=os.name == "nt")
+
+        def release():
+            lifecycle_storage._unlock_descriptor(held, windows=os.name == "nt")
+            os.close(held)
+
+        return release
+
+    def test_a_held_lock_raises_lock_timeout_at_its_deadline(self):
+        """A hung holder used to stall every hook in every worktree.
+
+        The wait had no deadline on either platform, so one stuck process
+        held every session of the repository until the host killed the hook.
+        """
+
+        from agent_handoff_toolkit import lifecycle_storage
+        from agent_handoff_toolkit.lifecycle_storage import LockTimeout
+
+        self.assertTrue(issubclass(LockTimeout, LifecycleStorageError))
+        self.assertEqual(lifecycle_storage.LOCK_TIMEOUT_SECONDS, 15)
+        release = self.hold()
+        try:
+            descriptor = os.open(self.root / "registry.lock", os.O_RDWR, 0o600)
+            try:
+                started = time.monotonic()
+                with self.assertRaises(LockTimeout):
+                    lifecycle_storage._lock_descriptor(
+                        descriptor, windows=os.name == "nt", timeout=0.3
+                    )
+                self.assertLess(time.monotonic() - started, 5)
+            finally:
+                os.close(descriptor)
+        finally:
+            release()
+
+    def test_storage_operations_take_an_injected_lock_deadline(self):
+        from agent_handoff_toolkit.lifecycle_storage import LockTimeout
+
+        state = self.root / "state"
+        storage = LocalLifecycleStorage(self.root, state_root=state, lock_timeout=0.3)
+        release = self.hold(state)
+        try:
+            with self.assertRaises(LockTimeout):
+                storage.load_snapshot("session")
+        finally:
+            release()
+        self.assertEqual(storage.load_snapshot("session").session.targeted_revision, 0)
+
+    def test_one_absolute_lock_deadline_is_shared_by_every_acquisition(self):
+        """A hook run takes the lock several times; each used to wait 15 s.
+
+        A storage given an absolute monotonic deadline spends one budget
+        across all its acquisitions: once it is exhausted, a contended
+        acquisition fails at once instead of waiting its own full timeout.
+        An uncontended one still succeeds, because the deadline bounds
+        waiting, not work.
+        """
+
+        from agent_handoff_toolkit.lifecycle_storage import LockTimeout
+
+        state = self.root / "state"
+        storage = LocalLifecycleStorage(
+            self.root, state_root=state, lock_deadline=time.monotonic() + 0.4
+        )
+        self.assertIsNone(storage.lock_timeout)
+        release = self.hold(state)
+        try:
+            started = time.monotonic()
+            with self.assertRaises(LockTimeout):
+                storage.load_snapshot("session")
+            self.assertLess(time.monotonic() - started, 5)
+            started = time.monotonic()
+            with self.assertRaises(LockTimeout):
+                storage.load_snapshot("session")
+            self.assertLess(time.monotonic() - started, 0.3)
+        finally:
+            release()
+        self.assertEqual(storage.load_snapshot("session").session.targeted_revision, 0)
 
     @unittest.skipUnless(os.name == "nt", "the give-up window is Windows-only")
     def test_real_contention_beyond_the_give_up_window_still_completes(self):

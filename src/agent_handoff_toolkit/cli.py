@@ -88,6 +88,48 @@ def _repository_root(start: Path) -> Path:
     return resolved
 
 
+def _published_record(path: Path) -> bool:
+    """Whether `path` holds a record the lifecycle state names.
+
+    Two sessions in one folder can pick the same `handoffs/` file name, and
+    the second render overwrote the first one's published record. A file is
+    protected when its digest is the current record of any chain - active,
+    superseded or complete - in the repository's lifecycle state. The guard is
+    best effort: no file, no state or state that cannot be read leaves
+    `render` exactly as it was.
+    """
+
+    try:
+        if not path.is_file():
+            return False
+        from .lifecycle_storage import (
+            LocalLifecycleStorage,
+            resolve_lifecycle_state_root,
+        )
+        from .lineage import record_digest
+
+        digest = record_digest(path.read_text(encoding="utf-8"))
+        configured = os.environ.get("AHK_STATE_ROOT")
+        repository = _repository_root(path.resolve().parent)
+        state_root = (
+            Path(configured) if configured else resolve_lifecycle_state_root(repository)
+        )
+        if not (state_root / "registry.json").is_file():
+            return False
+        registry = LocalLifecycleStorage(
+            repository, state_root=state_root
+        ).load_registry()
+        return any(
+            chain.current_record_reference is not None
+            and chain.current_record_reference.sha256 == digest
+            for chain in registry.chains.values()
+        )
+    except Exception:
+        # Fail open: the guard protects published records when it can, and
+        # never stands between an author and rendering when it cannot.
+        return False
+
+
 def _source_root() -> Path:
     """Infer the checkout or installed toolkit root from this module's path."""
 
@@ -101,6 +143,28 @@ def _configure_output_encoding() -> None:
         reconfigure = getattr(stream, "reconfigure", None)
         if callable(reconfigure):
             reconfigure(encoding="utf-8", errors="strict")
+
+
+def _read_stdin(limit: int, *, strict: bool = False) -> str:
+    """Read at most `limit` bytes of stdin as the UTF-8 the hosts write.
+
+    The text layer of a piped stdin decodes with the console code page - cp1252
+    on a stock Windows install - which turns UTF-8 bytes it leaves undefined,
+    such as the 0x8F in `●`, into an error or a lone surrogate and garbles every
+    other non-ASCII character. The bytes are read below that layer instead.
+
+    With `strict`, bytes that are not UTF-8 raise here. Otherwise they are
+    carried as lone surrogates, so a hook's own input reader - which encodes
+    the text strictly to bound it - rejects them and reports that under its
+    stage and failure policy instead of this boundary's. A stream with no byte
+    layer, such as an in-memory test double, is read as text.
+    """
+
+    buffer = getattr(sys.stdin, "buffer", None)
+    if buffer is None:
+        return sys.stdin.read(limit)
+    data = buffer.read(limit)
+    return data.decode("utf-8", errors="strict" if strict else "surrogateescape")
 
 
 class _LifecycleParser(argparse.ArgumentParser):
@@ -225,8 +289,9 @@ def _doctor_report(session_id=None):
     report["storage"] = "ok"
     report["registry_present"] = storage.registry_path.is_file()
     try:
-        # Probed, never acquired: the waiting acquisition has no deadline, and
-        # a diagnosis that hangs behind another session is no diagnosis.
+        # Probed, never acquired: the waiting acquisition can wait out its
+        # whole deadline, and a diagnosis stalled behind another session is
+        # no diagnosis.
         report["lock"] = probe_lock(storage.state_root / "registry.lock")
     except Exception as error:
         report["lock"] = type(error).__name__
@@ -243,9 +308,30 @@ def _doctor_report(session_id=None):
     return report
 
 
+def _print_recovery(code, scope_kinds):
+    """Name the way back from an input or stale-state error, in fixed text.
+
+    The usual cause is a command the hook never saw: run inside a compound
+    command, so no current credentials were bound into it. The advice never
+    echoes an argument.
+    """
+
+    advice = (
+        "Run the lifecycle command alone, starting with python <runner> "
+        "lifecycle, so the hook binds it. Valid scope kinds: "
+        + ", ".join(scope_kinds)
+        + "."
+    )
+    print(
+        json.dumps({"issue_codes": [code], "corrective_action": advice}),
+        file=sys.stderr,
+    )
+
+
 def _lifecycle_main(argv):
     # Imports remain local so legacy informational hooks retain their behavior.
     from .lifecycle_operations import (
+        SCOPE_KIND_ORDER,
         LifecycleOperationError,
         LifecycleService,
         canonical_record_path,
@@ -296,10 +382,12 @@ def _lifecycle_main(argv):
         elif operation == "one-off":
             result = service.one_off(**args)
         elif operation == "request-decision":
-            reconfigure = getattr(sys.stdin, "reconfigure", None)
-            if callable(reconfigure):
-                reconfigure(encoding="utf-8", errors="strict")
-            response = service.request_decision(question=sys.stdin.read(401), **args)
+            # The question is bounded to 400 UTF-8 bytes, so 401 bytes is
+            # enough to see an overrun; bytes that are not UTF-8 are input
+            # errors.
+            response = service.request_decision(
+                question=_read_stdin(401, strict=True), **args
+            )
             sys.stdout.write(response + "\n")
             return 0
         else:
@@ -382,13 +470,13 @@ def _lifecycle_main(argv):
         )
         return 1
     except StaleLifecycleState:
-        print('{"issue_codes":["AHK-STATE-STALE"]}', file=sys.stderr)
+        _print_recovery("AHK-STATE-STALE", SCOPE_KIND_ORDER)
         return 1
     except (LifecycleStorageError, OSError):
         print('{"issue_codes":["AHK-RUNTIME"]}', file=sys.stderr)
         return 2
     except (ValueError, TypeError, KeyError, UnicodeError):
-        print('{"issue_codes":["AHK-INPUT"]}', file=sys.stderr)
+        _print_recovery("AHK-INPUT", SCOPE_KIND_ORDER)
         return 1
     except Exception:
         print('{"issue_codes":["AHK-RUNTIME"]}', file=sys.stderr)
@@ -410,7 +498,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             output = run_hook(
                 args.platform,
                 args.event,
-                sys.stdin.read(MAX_HOOK_INPUT_BYTES + 1),
+                _read_stdin(MAX_HOOK_INPUT_BYTES + 1),
                 _repository_root(Path.cwd()),
             )
             sys.stdout.write(output.stdout)
@@ -522,6 +610,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.output is None:
                 sys.stdout.write(text)
             else:
+                if _published_record(args.output):
+                    print(
+                        "error: AHK-INPUT: the output file is a published "
+                        "handoff record and is not overwritten; render to a "
+                        "new file name.",
+                        file=sys.stderr,
+                    )
+                    return 1
                 args.output.write_text(text, encoding="utf-8", newline="\n")
                 print(f"rendered: {args.output}")
             return 0

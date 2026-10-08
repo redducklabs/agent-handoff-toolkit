@@ -5,7 +5,9 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
+import runpy
 import sys
 
 
@@ -168,8 +170,183 @@ def _publish(text: str) -> None:
     sys.stdout.flush()
 
 
+# The CLI reads at most this many bytes of hook input, so replaying exactly
+# this many keeps every bound it applies unchanged.
+_MAX_HOOK_INPUT = 128 * 1024 + 1
+# Set on the hand-off so the runner it reaches dispatches instead of looking
+# again: one hop, whatever the two runners' payload readings would say.
+_HANDOFF_MARKER = "AHK_RUNNER_HANDOFF"
+
+
+def _checkout(start: Path) -> Path | None:
+    """The nearest directory at or above `start` holding `.git`."""
+
+    for directory in (start, *start.parents):
+        if (directory / ".git").exists():
+            return directory
+    return None
+
+
+def _git_common_dir(checkout: Path) -> Path | None:
+    """Name the repository a checkout belongs to, without spawning git.
+
+    The same reading as the package's: a `.git` directory is the common
+    directory; a `.git` file names a private directory whose `commondir` leads
+    back to it, and counts only when that directory sits directly under
+    `<common>/worktrees/` and its `gitdir` leads back to this checkout's
+    `.git` - a hand-written file is not a worktree. This runner cannot import
+    the package before deciding which copy of it to load, so the reading is
+    repeated here. Any error raises and the caller hands nothing off.
+    """
+
+    marker = checkout / ".git"
+    if marker.is_dir():
+        return marker.resolve()
+    with marker.open("rb") as source:
+        text = source.read(4097)
+    if len(text) > 4096 or not text.startswith(b"gitdir:"):
+        return None
+    private = Path(text[len(b"gitdir:") :].decode("utf-8").strip())
+    if not private.is_absolute():
+        private = checkout / private
+    private = private.resolve()
+    common = _read_path(private / "commondir", private)
+    back = _read_path(private / "gitdir", private)
+    if common is None or back is None or private.parent != common / "worktrees":
+        return None
+    return common if back == marker.resolve() else None
+
+
+def _read_path(pointer: Path, base: Path) -> Path | None:
+    """The resolved path a git metadata file names, relative to `base`."""
+
+    if not pointer.is_file():
+        return None
+    with pointer.open("rb") as source:
+        text = source.read(4097)
+    if len(text) > 4096:
+        return None
+    named = Path(text.decode("utf-8").strip())
+    return (named if named.is_absolute() else base / named).resolve()
+
+
+def _session_runner(data: bytes) -> Path | None:
+    """Name the runner pinned by the checkout the payload's `cwd` is in.
+
+    The managed command locates this runner by walking up from the hook
+    process's directory, and the host does not promise that is the session's.
+    A desktop worktree sits inside the main checkout, so the walk can land on
+    the main checkout's runner while the session works in the worktree. The
+    payload's `cwd` is the session's directory, and the checkout holding it
+    names the runner: `<that checkout>/.agent-handoff-toolkit/runner.py`, and
+    only when that checkout is a worktree of the same repository as this
+    runner's - the same git common directory. A session can stand in any
+    clone on the machine, and running that clone's runner would execute code
+    this repository never pinned. `None` means there is nothing to hand to.
+    """
+
+    payload = json.loads(data.decode("utf-8"))
+    cwd = payload.get("cwd") if isinstance(payload, dict) else None
+    if not isinstance(cwd, str) or not cwd or "\x00" in cwd:
+        return None
+    start = Path(cwd)
+    if not start.is_absolute() or not start.is_dir():
+        return None
+    checkout = _checkout(start.resolve())
+    own = _checkout(Path(__file__).resolve().parent)
+    if checkout is None or own is None or checkout == own:
+        return None
+    candidate = checkout / ".agent-handoff-toolkit" / "runner.py"
+    if not candidate.is_file() or os.path.samefile(candidate, __file__):
+        return None
+    common = _git_common_dir(checkout)
+    if common is None or common != _git_common_dir(own):
+        return None
+    return candidate
+
+
+def _hand_off(arguments: list[str]) -> bool:
+    """Run a hook through the session checkout's runner, if it has another.
+
+    Returns True when that runner answered and its answer has been published.
+    Anything else - no other runner, a guarded second hop, a runner that
+    raised, exited non-zero, or answered with something other than one
+    response - publishes nothing and returns False, so this runner serves the
+    hook as before. Either way the stdin bytes read here are put back for
+    whoever dispatches next.
+    """
+
+    if not arguments or arguments[0] != "hook":
+        return False
+    source = getattr(sys.stdin, "buffer", None)
+    if source is None:
+        return False
+    try:
+        data = source.read(_MAX_HOOK_INPUT)
+    except (OSError, ValueError):
+        # Unreadable input names no other checkout. Nothing was consumed, and
+        # the CLI's own read reports the fault under its failure policy.
+        return False
+
+    def replay() -> None:
+        sys.stdin = io.TextIOWrapper(io.BytesIO(data), encoding="utf-8")
+
+    replay()
+    if os.environ.get(_HANDOFF_MARKER):
+        return False
+    try:
+        target = _session_runner(data)
+    except Exception:
+        # An unreadable payload names no other checkout. The CLI reads the
+        # same bytes and reports what is wrong with them.
+        return False
+    if target is None:
+        return False
+
+    saved_argv, saved_path = sys.argv, list(sys.path)
+    answer = _HookBuffer()
+    answered = False
+    try:
+        os.environ[_HANDOFF_MARKER] = "1"
+        sys.argv = [str(target), *arguments]
+        with (
+            contextlib.redirect_stdout(answer),
+            contextlib.redirect_stderr(_HookBuffer()),
+        ):
+            try:
+                runpy.run_path(str(target), run_name="__main__")
+                answered = True
+            except SystemExit as exit_:
+                answered = exit_.code in (0, None)
+    except BaseException:
+        answered = False
+    finally:
+        os.environ.pop(_HANDOFF_MARKER, None)
+        sys.argv = saved_argv
+        sys.path[:] = saved_path
+        # The other runner imported its own copy of the package. Dropping it
+        # keeps a fall-through from running that copy as this runner's.
+        for name in [
+            name
+            for name in sys.modules
+            if name == "agent_handoff_toolkit"
+            or name.startswith("agent_handoff_toolkit.")
+        ]:
+            del sys.modules[name]
+        replay()
+
+    text = answer.getvalue()
+    if not answered or answer.overflowed or (text and not _one_response(text)):
+        return False
+    _publish(text)
+    return True
+
+
 def main() -> int:
     """Load the package adjacent to this runner and dispatch its CLI."""
+    # Before anything is imported: the runner handed to loads its own package.
+    if _hand_off(sys.argv[1:]):
+        return 0
     source_root = Path(__file__).resolve().parent / "src"
     if not source_root.is_dir():
         source_root = Path(__file__).resolve().parents[1] / "src"

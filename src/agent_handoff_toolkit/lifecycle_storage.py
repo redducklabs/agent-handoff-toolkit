@@ -55,6 +55,10 @@ _LOCK_CONTENTION_ERRNOS = frozenset(
     if number is not None
 )
 _LOCK_POLL_SECONDS = 0.05
+# How long one acquisition waits for the registry lock before giving up. A
+# hook run instead shares one deadline this far from its start across every
+# acquisition it makes.
+LOCK_TIMEOUT_SECONDS = 15
 
 
 class LifecycleStorageError(ValueError):
@@ -63,6 +67,10 @@ class LifecycleStorageError(ValueError):
 
 class StaleLifecycleState(LifecycleStorageError):
     """The targeted chain or session changed; reconcile before retrying."""
+
+
+class LockTimeout(LifecycleStorageError):
+    """The registry lock stayed held past the deadline; nothing was changed."""
 
 
 def _revision(value):
@@ -474,43 +482,60 @@ def _open_private(path, flags, *, mode=0o600):
         raise
 
 
-def _lock_descriptor(descriptor, *, windows):
-    """Wait for the exclusive region on both platforms.
+def _lock_descriptor(descriptor, *, windows, timeout=None, deadline=None):
+    """Wait for the exclusive region on both platforms, up to a deadline.
 
     `fcntl.flock(LOCK_EX)` waits for as long as the holder keeps the lock.
     `msvcrt.locking(LK_LOCK, 1)` does not: it retries for roughly ten seconds
     and then raises. Every worktree of a repository shares one state root, so
     two concurrent sessions contend on one `registry.lock` in ordinary use, and
     that `OSError` reached the hook boundary and was rendered as a policy
-    block. Poll the non-blocking mode instead, so contention waits and only a
-    genuine failure of the call is raised.
+    block. Both platforms poll the non-blocking mode instead, so contention
+    waits and only a genuine failure of the call is raised.
+
+    The wait is bounded. A holder that hangs used to stall every hook in every
+    worktree of the repository until the host killed it. Past the deadline the
+    acquisition raises `LockTimeout` before anything was read or written, so
+    the outcome is known: nothing was published. `deadline`, an absolute
+    monotonic time, caps the wait further: a hook run shares one across all
+    its acquisitions, so their waits together stay within one budget.
     """
 
+    limit = time.monotonic() + (LOCK_TIMEOUT_SECONDS if timeout is None else timeout)
+    if deadline is not None:
+        limit = min(limit, deadline)
     if windows:
         import msvcrt
 
-        while True:
+        def attempt():
             os.lseek(descriptor, 0, os.SEEK_SET)
-            try:
-                msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
-                return
-            except OSError as error:
-                if error.errno not in _LOCK_CONTENTION_ERRNOS:
-                    raise
-            time.sleep(_LOCK_POLL_SECONDS)
+            msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+
     else:
         import fcntl
 
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        def attempt():
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    while True:
+        try:
+            attempt()
+            return
+        except OSError as error:
+            if error.errno not in _LOCK_CONTENTION_ERRNOS:
+                raise
+        if time.monotonic() >= limit:
+            raise LockTimeout("lifecycle state lock wait exceeded its deadline")
+        time.sleep(_LOCK_POLL_SECONDS)
 
 
 def probe_lock(path) -> str:
     """Report whether the exclusive lock is free, without waiting for it.
 
-    The waiting acquisition above has no deadline, matching `flock`. A
-    diagnosis must never inherit that: `lifecycle doctor` is the recovery
-    command for a broken runtime, and a lock check that queued behind the
-    holder would hang exactly when a consumer needs an answer.
+    The waiting acquisition above can wait up to its deadline. A diagnosis
+    must never inherit that: `lifecycle doctor` is the recovery command for a
+    broken runtime, and a lock check that queued behind the holder would stall
+    exactly when a consumer needs an answer.
     """
 
     descriptor = _open_private(path, os.O_RDWR | os.O_CREAT)
@@ -553,10 +578,12 @@ def _unlock_descriptor(descriptor, *, windows):
 
 
 @contextmanager
-def _exclusive_lock(path):
+def _exclusive_lock(path, timeout=None, deadline=None):
     descriptor = _open_private(path, os.O_RDWR | os.O_CREAT)
     try:
-        _lock_descriptor(descriptor, windows=os.name == "nt")
+        _lock_descriptor(
+            descriptor, windows=os.name == "nt", timeout=timeout, deadline=deadline
+        )
         try:
             yield
         finally:
@@ -663,7 +690,17 @@ def resolve_lifecycle_state_root(repo_root: Path) -> Path:
 
 
 class LocalLifecycleStorage:
-    def __init__(self, repo_root: Path, *, state_root: Path | None = None):
+    def __init__(
+        self,
+        repo_root: Path,
+        *,
+        state_root: Path | None = None,
+        lock_timeout: float | None = None,
+        lock_deadline: float | None = None,
+    ):
+        self.lock_timeout = lock_timeout
+        # An absolute `time.monotonic()` value every acquisition waits within.
+        self.lock_deadline = lock_deadline
         try:
             self.state_root = _mkdir_private(
                 state_root
@@ -697,7 +734,14 @@ class LocalLifecycleStorage:
 
     @contextmanager
     def _locked(self):
-        with self._guard(), _exclusive_lock(self.state_root / "registry.lock"):
+        with (
+            self._guard(),
+            _exclusive_lock(
+                self.state_root / "registry.lock",
+                self.lock_timeout,
+                self.lock_deadline,
+            ),
+        ):
             # POSIX flock pins the lock file, not its pathname or parent.
             # Reconcile the directory identity after waiting for that lock and
             # again before exposing any result read under it.
@@ -958,16 +1002,25 @@ class LocalLifecycleStorage:
                 targeted_revision=old.targeted_revision + 1,
                 successor_authorization_id=chain.authorization_id,
             )
+            # A peer moves to the successor chain and keeps everything that is
+            # its own: its mode and the question it is waiting on, re-bound to
+            # the chain it now holds. Only a proposal of its own goes, because
+            # it re-roots the chain that was just superseded. Nothing of the
+            # approving session's is copied into it.
             for key, prior in sessions.items():
                 if prior.authorization_id == old.authorization_id:
+                    request = prior.pending_decision_reference
                     sessions[key] = replace(
                         prior,
                         authorization_id=chain.authorization_id,
                         chain_revision=chain.targeted_revision,
                         targeted_revision=prior.targeted_revision + 1,
-                        pending_transition_reference=session.pending_transition_reference,
-                        pending_decision_reference=None,
-                        mode=EnforcementMode.TRACKED,
+                        pending_transition_reference=None,
+                        pending_decision_reference=replace(
+                            request, authorization_id=chain.authorization_id
+                        )
+                        if request is not None
+                        else None,
                     )
         if session.authorization_id is not None:
             target = chains.get(session.authorization_id)

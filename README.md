@@ -6,7 +6,71 @@ This repository provides a shared contract, deterministic validation and renderi
 
 ## Status
 
-Version 1.1.0 stops the toolkit from being able to silence a session.
+Version 1.2.0 fixes faults found running the toolkit in consumer repositories.
+Hook stdin is now read as UTF-8: on Windows it was decoded with the console
+code page, so a payload carrying a character cp1252 leaves undefined crashed as
+`AHK-HOOK-RUNTIME stage:decode-input`, and every other non-ASCII payload
+arrived garbled. A hook now roots at the nearest `.git` at or above the
+payload's `cwd` rather than at the hook process's directory, so a session in a
+worktree nested inside the main checkout is served from its own `handoffs/`.
+The installed runner hands a hook once to the runner pinned by that checkout,
+but only when the checkout is a worktree of the same repository: its `.git`
+must resolve to the same git common directory, and a `.git` file is accepted
+only when its private directory is registered under `<common>/worktrees/` and
+leads back to the checkout. That is read from the files, without spawning
+`git`, and any error means no hand-off. A session standing in an unrelated
+clone never executes that clone's runner.
+
+That hand-off is a security consideration to weigh: a session whose `cwd` is a
+linked worktree of the same repository runs the runner pinned in that worktree,
+which may be a different release or a locally modified copy. That is what
+already happened whenever the host ran hooks in that worktree; the hand-off
+extends it to hosts that run hooks from the main checkout.
+
+A refused handoff pointer is now a counted policy block, `AHK-STOP-POINTER`,
+naming why after `failed=`, instead of an `AHK-HOOK-RUNTIME` crash, and a final
+message containing an ordinary markdown link is no longer treated as a
+candidate pointer at all. `Continue from handoff:` naming a record in the
+`handoffs/` of a sibling worktree of the same repository now resumes it.
+
+A prompt the host started — a task notification, or a message from another
+session or agent — is recorded by origin only. It is never judged as the
+answer to a pending decision, never resets the adjacency of a pending
+transition or the correction circuit, and never reenters a completed session.
+
+A turn that ends without a record now carries a reason. `lifecycle inspect`
+reports `progress_responses`, keyed `background-work`, `ci`, `other-session`
+and `reply`; the three waits are accepted after any turn, and `reply` only
+after a turn the user started. This is a breaking change: `progress_response`,
+`render_progress_response` and the old `In progress: … Say continue` line are
+gone, and a session or tool relying on them must use the new lines.
+
+Control commands are intercepted more precisely. A lifecycle invocation is
+recognised only at a command start, including inside a compound command, which
+is denied with the bound command to run alone; quoted text, heredoc bodies and
+commit messages that mention it pass untouched. On Claude Code, a session's own
+`inspect` that is stale only in its challenge or revision is rewritten to the
+bound form through `updatedInput`. A plain `lifecycle one-off` binds as itself,
+a `scope-kind` denial lists the valid kinds, and CLI `AHK-INPUT` and
+`AHK-STATE-STALE` errors name a fixed corrective action.
+
+Concurrent sessions on one chain no longer penalise each other. `Stop`
+reconciles a chain a peer advanced before it evaluates, and a block on a
+session the peer overtook is an uncounted `AHK-STOP-STALE` naming the chain's
+current record after `current=`. Approving a transition moves each peer to the
+successor chain with its own mode and pending decision. `render --output`
+refuses to overwrite a file that is the current record of any chain. The
+registry-lock residual stated for 1.1.0 is closed: acquisition polls without
+blocking on both platforms and raises `LockTimeout` after 15 seconds, before
+anything is read or written, with one deadline shared across a hook run; a hook
+reports it through the runtime-fault path.
+
+A tracked session now receives `AHK-CONTEXT-HIGH` once when its context is at
+least 80% full, as advisory context on `PreToolUse` with no decision. It reads
+only token counts from a bounded tail of the transcript and re-arms after a
+reading below half or a compaction.
+
+Version 1.1.0 stopped the toolkit from being able to silence a session.
 `UserPromptSubmit` is no longer a decision point, for any cause. A hook may
 decide only where the party it blocks can still act on the feedback: a denied
 tool call and a refused turn ending both leave the agent running and able to
@@ -181,10 +245,11 @@ items.
   decisions, and validation gates. Its stored context is limited to 120 words
   and the complete generated tail to 300 words. The response must not reproduce
   the handoff document. The absolute clickable link remains the final line.
-- A tracked session may also end a turn on the canonical progress line instead
-  of authoring a record. `lifecycle inspect` publishes that line as
-  `progress_response`, and a session that ends on one is reported at
-  `SessionEnd`.
+- A tracked session may also end a turn without a record on one exact line
+  from `lifecycle inspect`'s `progress_responses`: a wait on background work,
+  CI or another session, or a `reply` to the user's own message, which is
+  refused after a turn the host started. A session that ends on one is
+  reported at `SessionEnd`.
 
 See [the contract](docs/agent-handoff/contract.md) for what an author must write, and [the mechanics reference](docs/agent-handoff/mechanics.md) for the exact formats and enforcement the toolkit applies.
 
@@ -221,16 +286,16 @@ disposable consumer can be installed from a verified local release source.
 
 ## Consumer installation
 
-Check out the public v1.1.0 release, inspect the proposed changes, then apply
+Check out the public v1.2.0 release, inspect the proposed changes, then apply
 them from that checkout:
 
 ```powershell
-git clone --branch v1.1.0 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
+git clone --branch v1.2.0 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
 Set-Location agent-handoff-toolkit
-python distribution/runner.py install --target <consumer-repository> --release v1.1.0 --dry-run
-python distribution/runner.py install --target <consumer-repository> --release v1.1.0 --apply
-python distribution/runner.py sync --target <consumer-repository> --release v1.1.0 --check
-python distribution/runner.py sync --target <consumer-repository> --release v1.1.0 --apply
+python distribution/runner.py install --target <consumer-repository> --release v1.2.0 --dry-run
+python distribution/runner.py install --target <consumer-repository> --release v1.2.0 --apply
+python distribution/runner.py sync --target <consumer-repository> --release v1.2.0 --check
+python distribution/runner.py sync --target <consumer-repository> --release v1.2.0 --apply
 ```
 
 Run install and sync only in an isolated, clean Git worktree with no concurrent

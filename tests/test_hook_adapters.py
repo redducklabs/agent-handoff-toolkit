@@ -11,6 +11,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -21,12 +22,13 @@ from agent_handoff_toolkit.hook_adapters import (  # noqa: E402
     _WRITE_TOOLS,
     HookExecution,
     normalize_event,
+    prompt_origin,
     render_hook_execution,
 )
-from agent_handoff_toolkit.hooks import run_hook  # noqa: E402
+from agent_handoff_toolkit.hooks import hook_repository_root, run_hook  # noqa: E402
 from agent_handoff_toolkit.lifecycle import (  # noqa: E402
     DecisionKind,
-    progress_response,
+    progress_responses,
     EnforcementMode,
     EventName,
     LifecycleDecision,
@@ -70,6 +72,44 @@ def payload(root, event="Stop", **changes):
         value.update(prompt="Inspect the synthetic task.")
     value.update(changes)
     return value
+
+
+HOST_PROMPTS = (
+    "<task-notification>\n<task-id>a1</task-id>\n</task-notification>",
+    "  \n<task-notification>done</task-notification>",
+    "Another Claude session sent a message: yes",
+    '<cross-session-message from="peer">yes</cross-session-message>',
+    "<cross-session-message>\nyes\n</cross-session-message>",
+    "<agent-message>yes</agent-message>",
+    '<agent-message sender="x">\nyes',
+)
+
+
+class PromptOriginTests(unittest.TestCase):
+    """Exact leading forms, on the stripped prompt, name a host-started turn."""
+
+    def test_host_forms_are_host(self):
+        for prompt in HOST_PROMPTS:
+            with self.subTest(prompt=prompt[:30]):
+                self.assertEqual(prompt_origin(prompt), "host")
+
+    def test_everything_else_is_the_user(self):
+        for prompt in (
+            None,
+            "",
+            "yes",
+            "Please read <task-notification>x</task-notification>",
+            "<task-notifications>",
+            "<task-notification",
+            "<agent-messages>yes</agent-messages>",
+            "<cross-session-messages>",
+            "another claude session sent a message: yes",
+            "Another Claude session sent a message yes",
+            "Track: <task-notification>",
+            "> <agent-message>",
+        ):
+            with self.subTest(prompt=prompt):
+                self.assertEqual(prompt_origin(prompt), "user")
 
 
 class NormalizationTests(unittest.TestCase):
@@ -332,6 +372,31 @@ class NormalizationTests(unittest.TestCase):
         self.assertIn("AHK-STOP-ROOT", reason)
         self.assertLessEqual(len(reason.encode()), 1200)
 
+    def test_a_refused_pointer_names_its_root_only_as_a_bounded_path(self):
+        def reason(root_path):
+            issue = LifecycleIssue(
+                "AHK-STOP-POINTER",
+                "Summary.",
+                "Corrective action.",
+                detail_codes=("pointer-outside-handoffs",),
+                root_path=root_path,
+            )
+            return json.loads(
+                render_hook_execution(
+                    "codex",
+                    EventName.STOP,
+                    LifecycleDecision(DecisionKind.BLOCK, (issue,)),
+                ).stdout
+            )["reason"]
+
+        named = reason("D:/repo/handoffs")
+        self.assertIn("AHK-STOP-POINTER", named)
+        self.assertIn(" root=D:/repo/handoffs", named)
+        self.assertIn("failed=pointer-outside-handoffs", named)
+        for unsafe in ("D:/my repo/handoffs", "relative/handoffs", "/" + "x" * 300):
+            with self.subTest(unsafe=unsafe[:20]):
+                self.assertNotIn(" root=", reason(unsafe))
+
     def test_real_user_corrective_prefix_does_not_establish_synthetic_provenance(self):
         event = normalize_event(
             "codex",
@@ -549,6 +614,134 @@ class EnforcementTests(unittest.TestCase):
             self.invoke("PreToolUse", tool_input={"command": command}), "AHK-PRE-ROOT"
         )
 
+    def test_hook_roots_at_the_checkout_named_by_the_payload_cwd(self):
+        """The session's directory names the checkout, not the hook process's.
+
+        Desktop worktrees live inside the main checkout, at
+        `<repo>/.claude/worktrees/<name>`, and the host does not promise to
+        start the hook process in the session's directory. Rooting at the
+        process's directory passed the containment check and then bound every
+        command to the main checkout's runner and `handoffs/`, so worktree
+        records read as outside `handoffs/` and bound commands went stale.
+        """
+
+        worktree = self.root / ".claude" / "worktrees" / "x"
+        (worktree / "handoffs").mkdir(parents=True)
+        (worktree / ".agent-handoff-toolkit").mkdir()
+        # The layout `git worktree add` writes: a `.git` file naming a
+        # per-worktree directory whose `commondir` leads back to the shared one.
+        private = self.root / ".git" / "worktrees" / "x"
+        private.mkdir(parents=True)
+        (private / "commondir").write_text("../..\n")
+        (private / "gitdir").write_text(f"{(worktree / '.git').as_posix()}\n")
+        (worktree / ".git").write_text(f"gitdir: {private.as_posix()}\n")
+        runner = worktree / ".agent-handoff-toolkit" / "runner.py"
+        runner.write_text("# owned runner\n")
+
+        def invoke(name, **changes):
+            return run_hook(
+                "claude",
+                name,
+                json.dumps(payload(worktree, name, **changes)),
+                self.root,
+                self.storage,
+            )
+
+        self.assertEqual(invoke("UserPromptSubmit"), HookExecution())
+        stale = f"python {runner.as_posix()} lifecycle inspect"
+        reason = json.loads(invoke("PreToolUse", tool_input={"command": stale}).stdout)[
+            "hookSpecificOutput"
+        ]["permissionDecisionReason"]
+        command = reason.split("Command: ", 1)[1]
+        self.assertEqual(command.split()[1], runner.as_posix())
+
+    def test_hook_never_roots_at_an_unrelated_checkout(self):
+        """Only a checkout of the same repository can take the root.
+
+        The payload `cwd` is the session's directory, and a session can stand
+        in any clone on the machine. Rooting there would bind commands to that
+        clone's runner, so a checkout that does not share this repository's
+        git common directory leaves the process-derived root in place.
+        """
+
+        with tempfile.TemporaryDirectory() as directory:
+            unrelated = Path(directory).resolve()
+            (unrelated / ".git").mkdir()
+            nested = unrelated / "src"
+            nested.mkdir()
+            for cwd in (unrelated, nested):
+                with self.subTest(cwd=cwd.name):
+                    self.assertEqual(
+                        hook_repository_root({"cwd": str(cwd)}, self.root), self.root
+                    )
+            (unrelated / ".git").rmdir()
+            (unrelated / ".git").write_text("gitdir: elsewhere\n")
+            self.assertEqual(
+                hook_repository_root({"cwd": str(unrelated)}, self.root), self.root
+            )
+
+    def test_a_hand_written_git_file_is_not_a_worktree_of_this_repository(self):
+        """`gitdir: ../../.git` names the common directory without being a worktree.
+
+        Any directory can carry such a file. A `.git` file counts only when
+        its private directory sits directly under `<common>/worktrees/` and
+        that directory's `gitdir` leads back to this checkout's `.git`.
+        """
+
+        spoof = self.root / "a" / "b"
+        spoof.mkdir(parents=True)
+        (spoof / ".git").write_text("gitdir: ../../.git\n")
+        self.assertEqual(
+            hook_repository_root({"cwd": str(spoof)}, self.root), self.root
+        )
+        # A private directory in the right place whose `gitdir` names another
+        # checkout is not this one's either.
+        private = self.root / ".git" / "worktrees" / "other"
+        private.mkdir(parents=True)
+        (private / "commondir").write_text("../..\n")
+        elsewhere = (self.root / "elsewhere" / ".git").as_posix()
+        (private / "gitdir").write_text(elsewhere + "\n")
+        (spoof / ".git").write_text(f"gitdir: {private.as_posix()}\n")
+        self.assertEqual(
+            hook_repository_root({"cwd": str(spoof)}, self.root), self.root
+        )
+
+    def test_a_genuine_git_worktree_takes_the_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            scratch = Path(directory).resolve()
+            main = scratch / "main"
+            main.mkdir()
+            environment = {**os.environ, "GIT_CEILING_DIRECTORIES": scratch.as_posix()}
+            for arguments in (
+                ("init", "-q"),
+                ("commit", "-q", "--allow-empty", "-m", "synthetic"),
+                ("worktree", "add", "-q", ".claude/worktrees/x"),
+            ):
+                subprocess.run(
+                    [
+                        "git",
+                        "-c",
+                        "user.name=Synthetic",
+                        "-c",
+                        "user.email=synthetic@example.invalid",
+                        "-c",
+                        "commit.gpgsign=false",
+                        *arguments,
+                    ],
+                    cwd=main,
+                    env=environment,
+                    capture_output=True,
+                    check=True,
+                )
+            worktree = main / ".claude" / "worktrees" / "x"
+            nested = worktree / "src"
+            nested.mkdir()
+            for cwd in (worktree, nested):
+                with self.subTest(cwd=cwd.name):
+                    self.assertEqual(
+                        hook_repository_root({"cwd": str(cwd)}, main), worktree
+                    )
+
     def stop_payload(self, drop=(), **changes):
         value = payload(self.root, "Stop", **changes)
         for key in drop:
@@ -665,6 +858,96 @@ class EnforcementTests(unittest.TestCase):
         self.assertIn("stage:normalize-event", details)
         self.assertIn("error:ValueError", details)
         self.assertLessEqual(len(reason.encode()), 1200)
+
+    def test_a_held_lock_is_a_named_runtime_fault_not_a_hang(self):
+        """A hung lock holder used to stall every hook until the host timeout."""
+
+        from agent_handoff_toolkit import lifecycle_storage
+
+        self.register()
+        bounded = LocalLifecycleStorage(
+            self.root, state_root=self.root / "state", lock_timeout=0.3
+        )
+        windows = os.name == "nt"
+        held = lifecycle_storage._open_private(
+            self.root / "state" / "registry.lock", os.O_RDWR | os.O_CREAT
+        )
+        lifecycle_storage._lock_descriptor(held, windows=windows)
+        try:
+            for name in ("Stop", "PreToolUse"):
+                with self.subTest(event=name):
+                    output = run_hook(
+                        "claude",
+                        name,
+                        json.dumps(
+                            payload(
+                                self.root,
+                                name,
+                                tool_name="Write",
+                                tool_input={"file_path": "x"},
+                            )
+                            if name == "PreToolUse"
+                            else payload(self.root, name)
+                        ),
+                        self.root,
+                        bounded,
+                    )
+                    self.assertEqual(output.exit_code, 0)
+                    data = json.loads(output.stdout)
+                    # The lock kept the mode from being read, so nothing is
+                    # decided; the fault is named on the advisory channel.
+                    self.assertNotIn("decision", data)
+                    self.assertNotIn("hookSpecificOutput", data)
+                    self.assertIn(
+                        "failed=stage:load-state,error:LockTimeout",
+                        data["systemMessage"],
+                    )
+        finally:
+            lifecycle_storage._unlock_descriptor(held, windows=windows)
+            os.close(held)
+
+    def test_one_hook_run_shares_one_lock_deadline(self):
+        """A Stop took the lock up to four times, each waiting up to 15 s.
+
+        Every acquisition in one hook invocation now waits against the same
+        absolute deadline, 15 s from the start of the run.
+        """
+
+        from agent_handoff_toolkit import lifecycle_storage
+
+        self.register()
+        original = lifecycle_storage._exclusive_lock
+        deadlines = []
+
+        def recording(path, timeout=None, deadline=None):
+            deadlines.append((timeout, deadline))
+            return original(path, timeout, deadline)
+
+        started = time.monotonic()
+        with (
+            patch.dict(os.environ, {"AHK_STATE_ROOT": str(self.root / "state")}),
+            patch.object(lifecycle_storage, "_exclusive_lock", recording),
+        ):
+            for name in ("Stop", "UserPromptSubmit"):
+                with self.subTest(event=name):
+                    deadlines.clear()
+                    run_hook(
+                        "codex",
+                        name,
+                        json.dumps(payload(self.root, name, turn_id="t-" + name)),
+                        self.root,
+                    )
+                    self.assertGreater(len(deadlines), 1)
+                    self.assertEqual(len(set(deadlines)), 1)
+                    timeout, deadline = deadlines[0]
+                    self.assertIsNone(timeout)
+                    self.assertLessEqual(
+                        deadline,
+                        time.monotonic() + lifecycle_storage.LOCK_TIMEOUT_SECONDS,
+                    )
+                    self.assertGreaterEqual(
+                        deadline, started + lifecycle_storage.LOCK_TIMEOUT_SECONDS
+                    )
 
     def test_unreadable_state_is_reported_rather_than_enforced(self):
         """The mode is unknown when state cannot be read, so nothing is decided.
@@ -1004,6 +1287,97 @@ class EnforcementTests(unittest.TestCase):
             self.storage.load_snapshot("session-1").chain.current_record_reference
         )
 
+    def test_a_final_message_without_a_renderer_pointer_offers_no_candidate(self):
+        """An ordinary Markdown link is not a malfunction.
+
+        A tracked turn that ended on a pull-request link was told the toolkit
+        had failed - `AHK-HOOK-RUNTIME` - and consumers learned to avoid links
+        altogether. With no renderer-owned pointer there is no candidate, and
+        the Stop gets the ordinary keep-working outcome.
+        """
+
+        self.register()
+        for index, message in enumerate(
+            (
+                "Opened [the pull request](https://example.invalid/pull/12).",
+                "The record says\nContinue from handoff: somewhere else.",
+                "See [notes](</tmp/notes.md>) and Continue from handoff: later.",
+            )
+        ):
+            with self.subTest(message=index):
+                result = self.invoke(last_assistant_message=message)
+                self.assert_block(result, "AHK-STOP-WORK")
+                self.assertNotIn("AHK-HOOK-RUNTIME", result.stdout)
+                self.assertNotIn("AHK-STOP-POINTER", result.stdout)
+                self.invoke("UserPromptSubmit", turn_id="reset-link-" + str(index))
+
+    def test_pointer_policy_failures_are_named_counted_policy_blocks(self):
+        """A malformed renderer pointer is the model's to correct, not a fault.
+
+        Each failure is `AHK-STOP-POINTER` with its own closed-vocabulary
+        code, and it counts toward the correction circuit like any other
+        policy block.
+        """
+
+        self.register()
+        path, _, message = self.record()
+        _, _, audit = self.record("completion-audit", "audit")
+        outside = (self.root / "outside.md").as_posix()
+        handoffs = (self.root / "handoffs").as_posix()
+        for value, code in (
+            (message + "\nTrailing", "pointer-ambiguous"),
+            (message + "\n[extra](</other.md>)", "pointer-ambiguous"),
+            (
+                message.replace(
+                    "Continue from handoff: " + path.as_posix(),
+                    "Continue from handoff: " + handoffs + "/other.md",
+                ),
+                "pointer-block-mismatch",
+            ),
+            (
+                "Continue from handoff: " + handoffs + "/audit.md\n" + audit,
+                "pointer-audit-restart",
+            ),
+            (message.replace(path.as_posix(), outside), "pointer-outside-handoffs"),
+            (message.replace("first.md", "first.json"), "pointer-noncanonical"),
+        ):
+            with self.subTest(code=code, length=len(value)):
+                result = self.invoke(last_assistant_message=value)
+                self.assert_block(result, "AHK-STOP-POINTER")
+                reason = json.loads(result.stdout)["reason"]
+                self.assertIn("failed=" + code, reason)
+                self.assertIn("render-tail", reason)
+                self.assertNotIn("AHK-HOOK-RUNTIME", reason)
+                if code == "pointer-outside-handoffs":
+                    self.assertIn(" root=" + handoffs, reason)
+                else:
+                    self.assertNotIn(" root=", reason)
+                self.assertEqual(
+                    self.storage.load_snapshot(
+                        "session-1"
+                    ).session.correction_cycle_count,
+                    1,
+                )
+                self.invoke("UserPromptSubmit", turn_id="reset-" + str(len(value)))
+        self.assertIsNone(
+            self.storage.load_snapshot("session-1").chain.current_record_reference
+        )
+
+    def test_a_pointer_to_a_missing_record_is_a_counted_policy_block(self):
+        """A record that is not in this checkout is the model's to correct."""
+
+        self.register()
+        path, _, message = self.record()
+        path.unlink()
+        result = self.invoke(last_assistant_message=message)
+        self.assert_block(result, "AHK-STOP-POINTER")
+        reason = json.loads(result.stdout)["reason"]
+        self.assertIn("failed=pointer-missing", reason)
+        self.assertNotIn("AHK-HOOK-RUNTIME", reason)
+        self.assertEqual(
+            self.storage.load_snapshot("session-1").session.correction_cycle_count, 1
+        )
+
     def test_a_continuation_reference_resumes_but_a_paraphrase_cannot(self):
         self.register()
         path, _, message = self.record()
@@ -1071,7 +1445,8 @@ class EnforcementTests(unittest.TestCase):
         self.register()
         _, _, message = self.record()
         result = self.invoke(last_assistant_message=message + "\nStill working.")
-        self.assert_block(result, "AHK-HOOK-RUNTIME")
+        self.assert_block(result, "AHK-STOP-POINTER")
+        self.assertIn("failed=pointer-ambiguous", result.stdout)
         self.assertIsNone(
             self.storage.load_snapshot("session-1").chain.current_record_reference
         )
@@ -1500,11 +1875,19 @@ class EnforcementTests(unittest.TestCase):
             self.invoke(last_assistant_message=successor), "AHK-STOP-PREDECESSOR"
         )
 
-    def progress_line(self, session="session-1"):
+    def progress_line(self, reason="reply", session="session-1"):
         chain = self.storage.load_snapshot(session).chain
-        return progress_response(chain)
+        return progress_responses(chain)[reason]
 
-    def test_a_tracked_turn_may_end_on_the_canonical_progress_line(self):
+    def host_prompt(self, turn_id="host-turn"):
+        self.invoke(
+            "UserPromptSubmit",
+            turn_id=turn_id,
+            prompt="<task-notification>\n<status>completed</status>\n"
+            "</task-notification>",
+        )
+
+    def test_a_tracked_turn_may_end_on_the_reply_line_after_a_user_prompt(self):
         """Every turn end used to cost a full record.
 
         therapy-link authored nine continuations of 2,400 words for one task
@@ -1513,6 +1896,10 @@ class EnforcementTests(unittest.TestCase):
         """
 
         self.register()
+        self.invoke("UserPromptSubmit", turn_id="user-2", prompt="How is it going?")
+        self.assertEqual(
+            self.storage.load_snapshot("session-1").session.turn_origin, "user"
+        )
         self.assertEqual(
             self.invoke(last_assistant_message=self.progress_line()), HookExecution()
         )
@@ -1520,12 +1907,90 @@ class EnforcementTests(unittest.TestCase):
         self.assertIs(session.mode, EnforcementMode.TRACKED)
         self.assertTrue(session.last_stop_was_progress)
 
+    def test_every_wait_line_ends_a_turn_whatever_started_it(self):
+        self.register()
+        for index, reason in enumerate(("background-work", "ci", "other-session")):
+            with self.subTest(reason=reason):
+                self.host_prompt("host-" + str(index))
+                self.assertEqual(
+                    self.storage.load_snapshot("session-1").session.turn_origin,
+                    "host",
+                )
+                self.assertEqual(
+                    self.invoke(last_assistant_message=self.progress_line(reason)),
+                    HookExecution(),
+                )
+                self.assertTrue(
+                    self.storage.load_snapshot(
+                        "session-1"
+                    ).session.last_stop_was_progress
+                )
+
+    def test_a_host_started_turn_cannot_end_on_the_reply_line(self):
+        """A task notification is not the user, so nothing was replied to."""
+
+        self.register()
+        self.host_prompt()
+        result = self.invoke(last_assistant_message=self.progress_line())
+        self.assert_block(result, "AHK-STOP-WORK")
+        self.assertIn("failed=reply-host-turn", json.loads(result.stdout)["reason"])
+        self.invoke("UserPromptSubmit", turn_id="user-2", prompt="Status?")
+        self.assertEqual(
+            self.invoke(last_assistant_message=self.progress_line()), HookExecution()
+        )
+
+    def test_an_unknown_turn_origin_accepts_the_reply_line(self):
+        """State written before turn origins existed reads as unknown."""
+
+        self.register()
+        state = self.storage.load_snapshot("session-1")
+        self.storage.compare_and_swap(
+            "session-1",
+            state.chain.targeted_revision,
+            state.session.targeted_revision,
+            LifecycleMutation(
+                replace(
+                    state.session,
+                    targeted_revision=state.session.targeted_revision + 1,
+                    turn_origin=None,
+                ),
+            ),
+        )
+        self.assertEqual(
+            self.invoke(last_assistant_message=self.progress_line()), HookExecution()
+        )
+
+    def test_the_old_bare_progress_line_is_no_longer_an_ending(self):
+        self.register()
+        title = self.storage.load_snapshot("session-1").chain.root_title
+        old = (
+            f'In progress: "{title}". Last handoff: none yet. '
+            'Say "continue" to keep going, or ask for a handoff.'
+        )
+        self.assert_block(self.invoke(last_assistant_message=old), "AHK-STOP-WORK")
+
+    def test_stop_work_says_keep_working_and_names_every_legal_ending(self):
+        self.register()
+        reason = json.loads(self.invoke(last_assistant_message="Paused.").stdout)[
+            "reason"
+        ]
+        for phrase in (
+            "Executable work remains, so keep working.",
+            "Waiting on",
+            "reply line",
+            "lifecycle inspect",
+            "decision request",
+            "continuation",
+            "audit",
+        ):
+            self.assertIn(phrase, reason)
+
     def test_any_other_record_less_message_is_still_blocked(self):
         self.register()
         for message in (
             "Still working on it.",
             self.progress_line() + " Nearly done.",
-            self.progress_line().replace("In progress", "In-progress"),
+            self.progress_line("ci").replace("Waiting on", "Waiting for"),
         ):
             with self.subTest(message=message[:40]):
                 self.assert_block(
@@ -1566,10 +2031,13 @@ class EnforcementTests(unittest.TestCase):
         blocked = self.invoke(last_assistant_message="Still working.")
         reason = json.loads(blocked.stdout)["reason"]
         self.assertIn("AHK-STOP-WORK", reason)
-        self.assertNotIn("In progress:", reason)
+        self.assertNotIn("Replied to your message", reason)
+        self.assertNotIn("Waiting on background", reason)
+        published = self.service.inspect()["progress_responses"]
         self.assertEqual(
-            self.service.inspect()["progress_response"], self.progress_line()
+            published, progress_responses(self.storage.load_snapshot("session-1").chain)
         )
+        self.assertEqual(published["reply"], self.progress_line())
 
     def test_session_end_reports_a_session_that_closed_on_a_progress_line(self):
         self.register()
@@ -1758,6 +2226,135 @@ class EnforcementTests(unittest.TestCase):
             EnforcementMode.TRACKED,
         )
 
+    def test_a_host_prompt_is_never_judged_as_the_pending_answer(self):
+        """Task notifications and peer messages arrive as prompts, not answers.
+
+        One session drew thirteen `AHK-USER-CLARIFY` notices from them while
+        its decision waited on the user.
+        """
+
+        self.register()
+        self.assertEqual(
+            self.invoke(last_assistant_message=self.decision()), HookExecution()
+        )
+        for index, prompt in enumerate(HOST_PROMPTS):
+            with self.subTest(prompt=prompt[:30]):
+                output = self.invoke(
+                    "UserPromptSubmit", turn_id="host-" + str(index), prompt=prompt
+                )
+                self.assertNotIn("CLARIFY", output.stdout)
+                session = self.storage.load_snapshot("session-1").session
+                self.assertIs(session.mode, EnforcementMode.AWAITING_DECISION)
+                self.assertIsNotNone(session.pending_decision_reference)
+                self.assertEqual(session.turn_origin, "host")
+        self.invoke("UserPromptSubmit", turn_id="user-2", prompt="yes")
+        self.assertIs(
+            self.storage.load_snapshot("session-1").session.mode,
+            EnforcementMode.TRACKED,
+        )
+
+    def test_a_host_prompt_keeps_a_proposal_adjacent_to_the_users_answer(self):
+        """A task notification between a proposal and the user's yes.
+
+        The host's turn used to be observed as the user's: it became the
+        current user turn, so the proposal was no longer adjacent to the
+        answer that followed it, and the approval drew a clarification.
+        """
+
+        self.register()
+        _, _, message = self.record()
+        self.invoke(last_assistant_message=message)
+        self.propose()
+        before = self.storage.load_snapshot("session-1").session
+        self.host_prompt("host-1")
+        after = self.storage.load_snapshot("session-1").session
+        self.assertEqual(after.turn_origin, "host")
+        self.assertEqual(
+            after.current_external_user_turn_reference,
+            before.current_external_user_turn_reference,
+        )
+        self.assertEqual(
+            after.pending_transition_reference, before.pending_transition_reference
+        )
+        self.assertEqual(
+            self.invoke("UserPromptSubmit", prompt="yes", turn_id="user-2"),
+            HookExecution(),
+        )
+        approved = self.storage.load_snapshot("session-1")
+        self.assertEqual(approved.chain.locked_root_id, "issue-2")
+        self.assertEqual(approved.session.turn_origin, "user")
+
+    def test_a_host_prompt_does_not_reset_the_correction_circuit(self):
+        """Only a real user turn clears the circuit; the host is not one."""
+
+        self.register()
+        for _ in range(2):
+            self.assert_block(self.invoke(), "AHK-STOP-WORK")
+        self.host_prompt("host-1")
+        session = self.storage.load_snapshot("session-1").session
+        self.assertEqual(session.correction_cycle_count, 2)
+        self.assertIsNotNone(session.last_issue_signature)
+        self.assertFalse(json.loads(self.invoke().stdout)["continue"])
+        self.invoke("UserPromptSubmit", prompt="Carry on.", turn_id="user-2")
+        self.assertEqual(
+            self.storage.load_snapshot("session-1").session.correction_cycle_count, 0
+        )
+
+    def test_clarify_names_the_replies_it_accepts(self):
+        self.register()
+        self.invoke(last_assistant_message=self.decision())
+        output = self.invoke(
+            "UserPromptSubmit",
+            turn_id="user-2",
+            prompt="yes- always merge on green",
+        )
+        context = json.loads(output.stdout)["hookSpecificOutput"]["additionalContext"]
+        for phrase in (
+            "AHK-USER-CLARIFY",
+            "Re-ask the pending question",
+            "cannot record completion until the user answers yes or no",
+            "yes, yeah, yep, approved, looks right, go ahead, go with <option>",
+            "no, nope, reject, rejected",
+            "Do not perform the blocked action on an ambiguous reply",
+        ):
+            self.assertIn(phrase, context)
+        self.assertNotIn("always merge", output.stdout)
+        self.assertIs(
+            self.storage.load_snapshot("session-1").session.mode,
+            EnforcementMode.AWAITING_DECISION,
+        )
+
+    def test_clarify_names_exactly_the_classifier_replies(self):
+        from agent_handoff_toolkit import hook_adapters, lifecycle
+
+        approvals = hook_adapters._APPROVAL_FORMS.split(", ")
+        rejections = hook_adapters._REJECTION_FORMS.split(", ")
+        self.assertEqual(set(approvals) - {"go with <option>"}, lifecycle._APPROVALS)
+        self.assertEqual(set(rejections), lifecycle._REJECTIONS)
+        for form, expected in [
+            *((form, lifecycle.AffirmationResult.APPROVE) for form in approvals),
+            *((form, lifecycle.AffirmationResult.REJECT) for form in rejections),
+        ]:
+            with self.subTest(form=form):
+                self.assertIs(
+                    lifecycle.classify_affirmation(form.replace("<option>", "b")),
+                    expected,
+                )
+
+    def test_clarify_for_an_input_decision_names_the_field_form(self):
+        self.register()
+        self.invoke(last_assistant_message=self.decision("missing-input"))
+        output = self.invoke(
+            "UserPromptSubmit", turn_id="user-2", prompt="staging please"
+        )
+        context = json.loads(output.stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("target: <value>", context)
+        self.assertIn("Re-ask the pending question", context)
+        self.assertIn(
+            "Do not perform the blocked action on an ambiguous reply", context
+        )
+        self.assertNotIn("staging", context)
+
     def test_runtime_failures_from_malformed_stop_count_toward_visible_circuit(self):
         self.register()
         # Ordinary host content is never a fault, so drive this with a genuine
@@ -1943,6 +2540,127 @@ class EnforcementTests(unittest.TestCase):
         # would report a malfunction on the ordinary path.
         self.assertNotIn("systemMessage", data)
         joined = self.storage.load_snapshot("joined")
+        self.assertEqual(joined.session.chain_revision, joined.chain.targeted_revision)
+
+    def peer_publishes(self):
+        """Join a second session, then let the first publish past it.
+
+        Returns the joined session's wait line from before the publication,
+        when its last handoff was still the first record.
+        """
+
+        self.register()
+        path, text, message = self.record()
+        self.invoke(last_assistant_message=message)
+        self.invoke(
+            "UserPromptSubmit",
+            session_id="joined",
+            prompt=render_resume_prompt(path, path.read_text(encoding="utf-8")),
+        )
+        before = self.progress_line("other-session", session="joined")
+        predecessor = {
+            "record_id": "first",
+            "path": path.as_posix(),
+            "sha256": record_digest(text),
+        }
+        _, _, successor = self.record(name="second", predecessor=predecessor)
+        self.assertEqual(self.invoke(last_assistant_message=successor), HookExecution())
+        return before
+
+    def test_a_stop_after_a_peer_publishes_names_the_new_record_uncounted(self):
+        """A peer's publication is not this session's mistake.
+
+        `Stop` used to count it: one `AHK-STOP-STALE`, then the old wait line
+        drew `AHK-STOP-WORK` because it named the old record, and a third
+        attempt tripped the circuit. The chain is reconciled first, the block
+        names the record that is now current, and nothing is counted.
+        """
+
+        before = self.peer_publishes()
+        result = self.invoke(session_id="joined", last_assistant_message=before)
+        self.assert_block(result, "AHK-STOP-STALE")
+        reason = json.loads(result.stdout)["reason"]
+        self.assertIn("current=second.md", reason)
+        joined = self.storage.load_snapshot("joined")
+        self.assertEqual(joined.session.correction_cycle_count, 0)
+        self.assertEqual(joined.session.chain_revision, joined.chain.targeted_revision)
+        # The accepted lines are the reconciled chain's: they name the new
+        # record, and the next ending on one is accepted.
+        after = self.progress_line("other-session", session="joined")
+        self.assertIn("second.md", after)
+        self.assertNotEqual(after, before)
+        self.assertEqual(
+            self.invoke(session_id="joined", last_assistant_message=after),
+            HookExecution(),
+        )
+
+    def test_a_stop_after_a_peer_publishes_accepts_the_reconciled_line(self):
+        self.peer_publishes()
+        line = self.progress_line("background-work", session="joined")
+        self.assertEqual(
+            self.invoke(session_id="joined", last_assistant_message=line),
+            HookExecution(),
+        )
+        joined = self.storage.load_snapshot("joined")
+        self.assertEqual(joined.session.chain_revision, joined.chain.targeted_revision)
+        self.assertTrue(joined.session.last_stop_was_progress)
+
+    def test_a_peer_publishing_during_a_stop_is_not_counted_either(self):
+        """The commit race: the peer publishes between this Stop's read and write."""
+
+        before = self.peer_publishes()
+        self.invoke(
+            session_id="joined",
+            last_assistant_message=self.progress_line(
+                "other-session", session="joined"
+            ),
+        )
+        joined = self.storage.load_snapshot("joined")
+        predecessor = {
+            "record_id": "second",
+            "path": joined.chain.current_record_reference.path,
+            "sha256": joined.chain.current_record_reference.sha256,
+        }
+        _, _, third = self.record(name="third", predecessor=predecessor)
+        original = self.storage.compare_and_swap
+        raced = False
+
+        def peer_first(raw_id, *args, **kwargs):
+            nonlocal raced
+            if raw_id == "joined" and not raced:
+                raced = True
+                self.assertEqual(
+                    self.invoke(last_assistant_message=third), HookExecution()
+                )
+            return original(raw_id, *args, **kwargs)
+
+        with patch.object(self.storage, "compare_and_swap", peer_first):
+            result = self.invoke(session_id="joined", last_assistant_message=before)
+        self.assertTrue(raced)
+        self.assert_block(result, "AHK-STOP-STALE")
+        self.assertIn("current=third.md", json.loads(result.stdout)["reason"])
+        joined = self.storage.load_snapshot("joined")
+        self.assertEqual(joined.session.correction_cycle_count, 0)
+        self.assertEqual(joined.session.chain_revision, joined.chain.targeted_revision)
+
+    def test_a_refused_pointer_after_a_peer_publishes_is_not_counted(self):
+        """A pointer refused against a chain a peer moved is the peer's doing.
+
+        Like every other block in that situation it is the uncounted
+        `AHK-STOP-STALE` naming the current record, not `AHK-STOP-POINTER`.
+        """
+
+        self.peer_publishes()
+        _, _, message = self.record(name="third")
+        result = self.invoke(
+            session_id="joined", last_assistant_message=message + "\nTrailing"
+        )
+        self.assert_block(result, "AHK-STOP-STALE")
+        reason = json.loads(result.stdout)["reason"]
+        self.assertIn("current=second.md", reason)
+        self.assertNotIn("AHK-STOP-POINTER", reason)
+        joined = self.storage.load_snapshot("joined")
+        self.assertEqual(joined.session.correction_cycle_count, 0)
         self.assertEqual(joined.session.chain_revision, joined.chain.targeted_revision)
 
     def test_a_declaration_that_cannot_be_observed_is_never_enrolled_silently(self):
@@ -2365,7 +3083,9 @@ class EnforcementTests(unittest.TestCase):
             self.storage.load_snapshot("session-1").chain.locked_root_id, "issue-1"
         )
 
-    def test_repeated_stale_stops_count_without_changing_chain(self):
+    def test_repeated_peer_advances_never_arm_the_circuit(self):
+        """Only this session's own mistakes count toward the circuit."""
+
         self.register()
         path, text, message = self.record()
         self.invoke(last_assistant_message=message)
@@ -2375,7 +3095,7 @@ class EnforcementTests(unittest.TestCase):
             prompt=render_resume_prompt(path, path.read_text(encoding="utf-8")),
         )
         previous_id = "first"
-        for attempt in (1, 2, 3):
+        for attempt in (1, 2, 3, 4):
             predecessor = {
                 "record_id": previous_id,
                 "path": path.as_posix(),
@@ -2388,13 +3108,13 @@ class EnforcementTests(unittest.TestCase):
             )
             chain = self.storage.load_snapshot("session-1").chain
             result = self.invoke(session_id="joined", last_assistant_message=message)
-            if attempt < 3:
-                self.assert_block(result, "AHK-STOP-STALE")
-            else:
-                self.assertFalse(json.loads(result.stdout)["continue"])
+            self.assert_block(result, "AHK-STOP-STALE")
+            self.assertIn(
+                "current=" + previous_id + ".md", json.loads(result.stdout)["reason"]
+            )
             self.assertEqual(
                 self.storage.load_snapshot("joined").session.correction_cycle_count,
-                attempt,
+                0,
             )
             self.assertEqual(self.storage.load_snapshot("session-1").chain, chain)
 
@@ -2608,6 +3328,34 @@ class EnforcementTests(unittest.TestCase):
         self.assertEqual(self.invoke("PreToolUse"), HookExecution())
         self.assertEqual(self.invoke(), HookExecution())
 
+    def test_a_host_prompt_never_reenters_a_completed_session(self):
+        """A task notification after an audit is not the user starting work.
+
+        Reentry used to take the notification's turn reference as the user's,
+        which made the session eligible to enroll on the host's behalf and
+        discarded the completed state the user had not left.
+        """
+
+        self.register()
+        _, _, audit = self.record("completion-audit", "audit")
+        self.assertEqual(self.invoke(last_assistant_message=audit), HookExecution())
+        before = self.storage.load_snapshot("session-1").session
+        self.assertIs(before.mode, EnforcementMode.COMPLETE)
+        self.host_prompt()
+        after = self.storage.load_snapshot("session-1").session
+        self.assertIs(after.mode, EnforcementMode.COMPLETE)
+        self.assertEqual(
+            after.current_external_user_turn_reference,
+            before.current_external_user_turn_reference,
+        )
+        self.assertEqual(after.authorization_id, before.authorization_id)
+        self.assertEqual(after.turn_origin, "host")
+        # The user's own next turn still reenters as before.
+        self.invoke("UserPromptSubmit", turn_id="fresh-user", prompt="Next task.")
+        fresh = self.storage.load_snapshot("session-1").session
+        self.assertIs(fresh.mode, EnforcementMode.OPEN)
+        self.assertEqual(fresh.current_external_user_turn_reference, "fresh-user")
+
     def test_emitted_absolute_control_command_executes_owned_runner_from_other_cwd(
         self,
     ):
@@ -2749,6 +3497,527 @@ class EnforcementTests(unittest.TestCase):
             self.invoke("PreToolUse", tool_input={"command": command}),
             "AHK-CONTROL-BINDING",
         )
+
+    def reason_of(self, execution):
+        return json.loads(execution.stdout)["hookSpecificOutput"][
+            "permissionDecisionReason"
+        ]
+
+    def test_a_lifecycle_invocation_inside_a_compound_command_is_intercepted(self):
+        """`cd X && python ... lifecycle ...` used to reach the CLI unbound.
+
+        The CLI then printed a bare `AHK-INPUT` and the agent flailed. A
+        compound command is never run or rewritten; it is denied with the
+        bound command for the invocation it contained, to be run alone.
+        """
+
+        self.invoke("UserPromptSubmit")
+        session = self.storage.load_snapshot("session-1").session
+        capability = self.storage.control_capability(session)
+        runner = (self.root / ".agent-handoff-toolkit" / "runner.py").as_posix()
+        bound = (
+            f"python {runner} lifecycle one-off --session-key {session.session_key}"
+            f" --challenge {capability}"
+            f" --expected-session-revision {session.targeted_revision}"
+        )
+        for host in ("claude", "codex"):
+            for command in (
+                f'cd "{self.root.as_posix()}" && python {runner} lifecycle one-off',
+                f"python {runner} lifecycle one-off | grep x",
+                "echo x >> notes.txt; python .agent-handoff-toolkit/runner.py"
+                " lifecycle one-off",
+                bound + " && echo done",
+                bound + " > out.txt",
+                bound + " | head -n 5; rm x",
+            ):
+                with self.subTest(host=host, command=command):
+                    output = self.invoke(
+                        "PreToolUse", host=host, tool_input={"command": command}
+                    )
+                    reason = self.reason_of(output)
+                    self.assertIn("AHK-PRE-ROOT", reason)
+                    self.assertIn("alone", reason)
+                    self.assertEqual(reason.split("Command: ", 1)[1], bound)
+                    self.assertNotIn("updatedInput", output.stdout)
+        self.assertEqual(
+            self.invoke("PreToolUse", tool_input={"command": bound}), HookExecution()
+        )
+
+    def test_only_the_diagnosis_and_help_escape_the_broadened_interception(self):
+        class Unopenable:
+            def __getattr__(self, name):
+                raise RuntimeError("state unavailable")
+
+        runner = (self.root / ".agent-handoff-toolkit" / "runner.py").as_posix()
+
+        def run(command):
+            return run_hook(
+                "claude",
+                "PreToolUse",
+                json.dumps(
+                    payload(self.root, "PreToolUse", tool_input={"command": command})
+                ),
+                self.root,
+                Unopenable(),
+            )
+
+        for command in (
+            f"python {runner} lifecycle --help",
+            f"python {runner} lifecycle -h",
+            f"python {runner} lifecycle register-root --help",
+            f"cd {self.root.as_posix()} && python {runner} lifecycle doctor",
+            'git commit -m "python .agent-handoff-toolkit/runner.py lifecycle inspect"',
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(run(command), HookExecution())
+        for command in (
+            f"cd {self.root.as_posix()} && python {runner} lifecycle inspect",
+            f"python {runner} lifecycle inspect 2>&1 | tail -3",
+            f"echo x; python {runner} lifecycle one-off",
+        ):
+            with self.subTest(command=command):
+                self.assertIn("AHK-HOOK-RUNTIME", run(command).stdout)
+
+    def test_an_invocation_counts_only_at_a_command_start(self):
+        """A mention of the runner inside an argument or a heredoc is not a call.
+
+        Matching after any whitespace denied ordinary commands in every mode,
+        `OPEN` included - a commit message or a notes file written through a
+        heredoc that quoted the lifecycle command - and opened state for them.
+        An invocation starts the command string or a line, or follows `;`,
+        `&&`, `||`, `|`, `(`, `$(` or a backtick.
+        """
+
+        class Unopenable:
+            def __getattr__(self, name):
+                raise RuntimeError("state unavailable")
+
+        def run(command):
+            return run_hook(
+                "claude",
+                "PreToolUse",
+                json.dumps(
+                    payload(self.root, "PreToolUse", tool_input={"command": command})
+                ),
+                self.root,
+                Unopenable(),
+            )
+
+        for command in (
+            "git commit -F - <<'EOF'\nfix: bind inspect\n\n"
+            "python .agent-handoff-toolkit/runner.py lifecycle inspect is now bound\n"
+            "EOF",
+            "cat > notes.md <<'EOF'\nRun python X/runner.py lifecycle inspect first.\n"
+            "EOF\n",
+            'cat <<-"END" > notes.md\n\tpython r lifecycle inspect\n\tEND',
+            "cat <<END\npython r lifecycle inspect\nEND",
+            'git commit -m "fix: python r lifecycle inspect is bound"',
+            "echo python r lifecycle inspect",
+            "grep -n python r lifecycle inspect notes.md",
+            "echo a\\;python r lifecycle inspect",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(run(command), HookExecution())
+        for command in (
+            "echo `python r lifecycle inspect`",
+            "echo $(python r lifecycle inspect)",
+            "echo it\\'s; python r lifecycle inspect",
+            "cd x\npython r lifecycle inspect",
+            "cd x ||  python r lifecycle inspect",
+            "cat <<'EOF' > notes.md\nbody\nEOF\npython r lifecycle inspect",
+        ):
+            with self.subTest(command=command):
+                self.assertIn("AHK-HOOK-RUNTIME", run(command).stdout)
+
+    def test_a_heredoc_mention_passes_an_open_session(self):
+        self.invoke("UserPromptSubmit")
+        command = (
+            "git commit -F - <<'EOF'\nfix: bind inspect\n\n"
+            "python .agent-handoff-toolkit/runner.py lifecycle inspect is now bound\n"
+            "EOF"
+        )
+        for host in ("claude", "codex"):
+            with self.subTest(host=host):
+                self.assertEqual(
+                    self.invoke(
+                        "PreToolUse", host=host, tool_input={"command": command}
+                    ),
+                    HookExecution(),
+                )
+
+    def test_a_bound_invocation_with_an_output_trailer_is_admitted(self):
+        """`2>&1`, `2>/dev/null` and a pipe into `head` or `tail` change nothing.
+
+        They were classified compound and denied. The invocation alone is
+        checked; any other trailer stays compound, and a trailer is never
+        rewritten in place.
+        """
+
+        trailers = (
+            " 2>&1",
+            " 2>/dev/null",
+            " | head -n 5",
+            " | tail -5",
+            " 2>&1 | tail -3",
+            " | head -n5",
+        )
+        self.invoke("UserPromptSubmit")
+        session = self.storage.load_snapshot("session-1").session
+        capability = self.storage.control_capability(session)
+        runner = (self.root / ".agent-handoff-toolkit" / "runner.py").as_posix()
+        one_off = (
+            f"python {runner} lifecycle one-off --session-key {session.session_key}"
+            f" --challenge {capability}"
+            f" --expected-session-revision {session.targeted_revision}"
+        )
+        for trailer in trailers:
+            with self.subTest(mode="pre-root", trailer=trailer):
+                self.assertEqual(
+                    self.invoke(
+                        "PreToolUse", tool_input={"command": one_off + trailer}
+                    ),
+                    HookExecution(),
+                )
+        self.register()
+        session = self.storage.load_snapshot("session-1").session
+        capability = self.storage.control_capability(session)
+        bound = (
+            f"python {runner} lifecycle inspect --session-key {session.session_key}"
+            f" --challenge {capability}"
+            f" --expected-session-revision {session.targeted_revision}"
+        )
+        for host in ("claude", "codex"):
+            for trailer in trailers:
+                with self.subTest(mode="tracked", host=host, trailer=trailer):
+                    self.assertEqual(
+                        self.invoke(
+                            "PreToolUse",
+                            host=host,
+                            tool_input={"command": bound + trailer},
+                        ),
+                        HookExecution(),
+                    )
+            for trailer in (" | grep x", " > out.txt", " 2>&1 | tail -3 | sort"):
+                with self.subTest(mode="tracked", host=host, other=trailer):
+                    reason = self.reason_of(
+                        self.invoke(
+                            "PreToolUse",
+                            host=host,
+                            tool_input={"command": bound + trailer},
+                        )
+                    )
+                    self.assertIn("alone", reason)
+        stale = (
+            f"python {runner} lifecycle inspect --session-key {session.session_key}"
+            " --challenge spent-challenge --expected-session-revision 0"
+        )
+        for trailer in trailers:
+            with self.subTest(stale=trailer):
+                output = self.invoke(
+                    "PreToolUse", host="claude", tool_input={"command": stale + trailer}
+                )
+                self.assertNotIn("updatedInput", output.stdout)
+                reason = self.reason_of(output)
+                self.assertIn("AHK-CONTROL-BINDING", reason)
+                self.assertNotIn("alone", reason)
+                self.assertEqual(
+                    reason.split("Command: ", 1)[1].split()[:4],
+                    ["python", runner, "lifecycle", "inspect"],
+                )
+
+    def test_a_stale_tracked_inspect_is_rebound_in_place_on_claude_only(self):
+        """A spent challenge cost a denial and a retry on every tracked pause.
+
+        On Claude the hook substitutes the bound command through
+        `updatedInput`, deciding nothing about permission. It does so only
+        where it would otherwise deny and offer that very command.
+        """
+
+        self.register()
+        session = self.storage.load_snapshot("session-1").session
+        runner = (self.root / ".agent-handoff-toolkit" / "runner.py").as_posix()
+        stale = (
+            f"python {runner} lifecycle inspect --session-key {session.session_key}"
+            " --challenge spent-challenge --expected-session-revision 0"
+        )
+        tool_input = {"command": stale, "description": "Inspect lifecycle state"}
+        output = self.invoke("PreToolUse", host="claude", tool_input=tool_input)
+        specific = json.loads(output.stdout)["hookSpecificOutput"]
+        self.assertEqual(specific["hookEventName"], "PreToolUse")
+        self.assertNotIn("permissionDecision", specific)
+        self.assertNotIn("permissionDecisionReason", specific)
+        updated = specific["updatedInput"]
+        self.assertEqual(updated["description"], "Inspect lifecycle state")
+        self.assertEqual(set(updated), {"command", "description"})
+        self.assertNotEqual(updated["command"], stale)
+        self.assertTrue(
+            updated["command"].startswith(
+                f"python {runner} lifecycle inspect --session-key {session.session_key}"
+                " --challenge "
+            )
+        )
+        # The substitute is exactly what the interception admits.
+        self.assertEqual(
+            self.invoke(
+                "PreToolUse",
+                host="claude",
+                tool_input={"command": updated["command"]},
+            ),
+            HookExecution(),
+        )
+        # Codex keeps deny-with-command.
+        codex = self.invoke("PreToolUse", host="codex", tool_input=tool_input)
+        self.assertIn("AHK-CONTROL-BINDING", self.reason_of(codex))
+        self.assertNotIn("updatedInput", codex.stdout)
+        # Anything beyond stale credentials is still denied, never rewritten.
+        for command in (
+            stale + " && echo done",
+            f"cd {self.root.as_posix()} && " + stale,
+            stale.replace(session.session_key, "b" * 64),
+            stale.replace(runner, "/elsewhere/runner.py"),
+            stale + " --extra value",
+            f"python {runner} lifecycle inspect",
+            stale.replace(" inspect ", " one-off "),
+        ):
+            with self.subTest(command=command):
+                output = self.invoke(
+                    "PreToolUse", host="claude", tool_input={"command": command}
+                )
+                self.assertNotIn("updatedInput", output.stdout)
+                self.assertIn("AHK-CONTROL-BINDING", self.reason_of(output))
+
+    def test_a_plain_pre_root_one_off_is_bound_as_itself(self):
+        self.invoke("UserPromptSubmit")
+        session = self.storage.load_snapshot("session-1").session
+        capability = self.storage.control_capability(session)
+        runner = (self.root / ".agent-handoff-toolkit" / "runner.py").as_posix()
+        for host in ("claude", "codex"):
+            with self.subTest(host=host):
+                reason = self.reason_of(
+                    self.invoke(
+                        "PreToolUse",
+                        host=host,
+                        tool_input={"command": f"python {runner} lifecycle one-off"},
+                    )
+                )
+                self.assertIn("AHK-PRE-ROOT", reason)
+                self.assertNotIn("register-root", reason)
+                self.assertNotIn("failed=", reason)
+                command = reason.split("Command: ", 1)[1]
+                self.assertEqual(
+                    command,
+                    f"python {runner} lifecycle one-off --session-key"
+                    f" {session.session_key} --challenge {capability}"
+                    f" --expected-session-revision {session.targeted_revision}",
+                )
+                self.assertEqual(
+                    self.invoke(
+                        "PreToolUse", host=host, tool_input={"command": command}
+                    ),
+                    HookExecution(),
+                )
+
+    def test_a_scope_kind_rejection_lists_the_valid_kinds(self):
+        self.invoke("UserPromptSubmit")
+        runner = (self.root / ".agent-handoff-toolkit" / "runner.py").as_posix()
+        for kind in ("task", "ticket", "workstream"):
+            with self.subTest(kind=kind):
+                reason = self.reason_of(
+                    self.invoke(
+                        "PreToolUse",
+                        tool_input={
+                            "command": f"python {runner} lifecycle register-root"
+                            f" --scope-id issue-1 --scope-kind {kind}"
+                            ' --scope-title "A title" --scope-outcome "An outcome"'
+                        },
+                    )
+                )
+                self.assertIn("failed=scope-kind", reason)
+                self.assertIn("unit, issue, phase, epic, rollout, standalone", reason)
+                self.assertNotIn(kind, reason)
+
+
+class SiblingWorktreeResumeTests(unittest.TestCase):
+    """A record is read from the checkout of this repository that holds it.
+
+    A session opened at a repository's main checkout was handed a pointer into
+    one of its worktrees and refused it as `candidate-outside-handoffs`,
+    leaving the session untracked. Another worktree of the same repository -
+    the same git common directory - is the same repository; an unrelated
+    clone is not.
+    """
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.scratch = Path(temporary.name).resolve()
+        # Every checkout here is a child of the scratch directory, so the
+        # ceiling is a strict ancestor of each and fences `git rev-parse`.
+        fence = patch.dict(
+            os.environ, {"GIT_CEILING_DIRECTORIES": self.scratch.as_posix()}
+        )
+        fence.start()
+        self.addCleanup(fence.stop)
+        self.main = self.scratch / "main"
+        self.main.mkdir()
+        self.git("init", "-q", cwd=self.main)
+        self.git("commit", "-q", "--allow-empty", "-m", "synthetic", cwd=self.main)
+        self.git("worktree", "add", "-q", "--detach", ".worktrees/wt", cwd=self.main)
+        self.worktree = self.main / ".worktrees" / "wt"
+        for checkout in (self.main, self.worktree):
+            (checkout / "handoffs").mkdir()
+        self.storage = LocalLifecycleStorage(
+            self.main, state_root=self.scratch / "state"
+        )
+
+    @staticmethod
+    def git(*arguments, cwd):
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=Synthetic",
+                "-c",
+                "user.email=synthetic@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                *arguments,
+            ],
+            cwd=cwd,
+            capture_output=True,
+            check=True,
+        )
+
+    def invoke(self, checkout, name, session, **changes):
+        return run_hook(
+            "codex",
+            name,
+            json.dumps(payload(checkout, name, session_id=session, **changes)),
+            checkout,
+            self.storage,
+        )
+
+    def publish_in_worktree(self):
+        """Register a root in a worktree session and publish its first record."""
+
+        self.assertEqual(
+            self.invoke(self.worktree, "UserPromptSubmit", "in-worktree"),
+            HookExecution(),
+        )
+        snapshot = self.storage.load_snapshot("in-worktree")
+        scope = make_record("continuation", record_id="first")["active_scopes"][0]
+        encoded = (
+            base64.urlsafe_b64encode(canonical_json_bytes(scope["scope_definition"]))
+            .decode()
+            .rstrip("=")
+        )
+        LifecycleService(self.storage, "in-worktree").register_root(
+            challenge=snapshot.session.bootstrap_challenge,
+            scope_id="issue-1",
+            scope_kind="issue",
+            scope_definition_b64=encoded,
+            expected_session_revision=snapshot.session.targeted_revision,
+        )
+        path, text, message = self.record(self.worktree, "in-worktree", "first")
+        self.assertEqual(
+            self.invoke(
+                self.worktree, "Stop", "in-worktree", last_assistant_message=message
+            ),
+            HookExecution(),
+        )
+        return path, text
+
+    def record(self, checkout, session, name, predecessor=None):
+        chain = self.storage.load_snapshot(session).chain
+        data = make_record("continuation", record_id=name, predecessor=predecessor)
+        data["authorization_id"] = chain.authorization_id
+        data["authorization_evidence"] = {
+            "kind": "initial-user-turn",
+            "user_turn_ref": chain.authorization_user_turn_reference,
+            "proposal_turn_ref": None,
+            "evidence_hmac": chain.authorization_evidence_hmac,
+        }
+        text = render_record(data)
+        path = checkout / "handoffs" / (name + ".md")
+        path.write_bytes(text.encode())
+        return path, text, render_terminal_response(path, text)
+
+    def resume(self, session, path):
+        output = self.invoke(
+            self.main,
+            "UserPromptSubmit",
+            session,
+            prompt="Continue from handoff: " + path.as_posix(),
+        )
+        return json.loads(output.stdout)["hookSpecificOutput"]["additionalContext"]
+
+    def test_a_record_in_another_worktree_of_this_repository_resumes(self):
+        path, text = self.publish_in_worktree()
+        context = self.resume("at-main", path)
+        self.assertIn("AHK-RESUMED", context)
+        resumed = self.storage.load_snapshot("at-main")
+        self.assertIs(resumed.session.mode, EnforcementMode.TRACKED)
+        self.assertEqual(
+            resumed.session.authorization_id,
+            self.storage.load_snapshot("in-worktree").session.authorization_id,
+        )
+        # The successor written here names its predecessor where it really
+        # is, in the other worktree, and Stop reads it from there.
+        _, _, successor = self.record(
+            self.main,
+            "at-main",
+            "second",
+            predecessor={
+                "record_id": "first",
+                "path": path.as_posix(),
+                "sha256": record_digest(text),
+            },
+        )
+        self.assertEqual(
+            self.invoke(self.main, "Stop", "at-main", last_assistant_message=successor),
+            HookExecution(),
+        )
+        self.assertEqual(
+            self.storage.load_snapshot(
+                "at-main"
+            ).chain.current_record_reference.record_id,
+            "second",
+        )
+
+    def test_a_record_outside_this_repository_is_refused_with_directions(self):
+        path, text = self.publish_in_worktree()
+        unrelated = self.scratch / "unrelated"
+        unrelated.mkdir()
+        self.git("init", "-q", cwd=unrelated)
+        plain = self.scratch / "plain"
+        for index, checkout in enumerate((unrelated, plain)):
+            with self.subTest(checkout=checkout.name):
+                (checkout / "handoffs").mkdir(parents=True)
+                copy = checkout / "handoffs" / path.name
+                copy.write_bytes(text.encode())
+                context = self.resume("refused-" + str(index), copy)
+                self.assertIn(
+                    "AHK-RESUME-FAILED failed=candidate-outside-handoffs", context
+                )
+                self.assertIn("open the session in the checkout", context)
+                self.assertIs(
+                    self.storage.load_snapshot("refused-" + str(index)).session.mode,
+                    EnforcementMode.OPEN,
+                )
+
+    def test_a_stop_candidate_in_another_worktree_is_still_refused(self):
+        """Stop publishes only from this checkout's own `handoffs/`."""
+
+        path, _ = self.publish_in_worktree()
+        self.resume("at-main", path)
+        _, _, message = self.record(self.worktree, "at-main", "second")
+        result = self.invoke(
+            self.main, "Stop", "at-main", last_assistant_message=message
+        )
+        reason = json.loads(result.stdout)["reason"]
+        self.assertIn("AHK-STOP-POINTER", reason)
+        self.assertIn("failed=pointer-outside-handoffs", reason)
+        self.assertIn(" root=" + (self.main / "handoffs").as_posix(), reason)
 
 
 if __name__ == "__main__":

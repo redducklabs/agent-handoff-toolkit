@@ -260,16 +260,16 @@ class DistributionTests(unittest.TestCase):
         manifest = load_manifest()
 
         self.assertEqual(manifest["manifest_version"], 2)
-        self.assertEqual(manifest["toolkit_version"], "1.1.0")
+        self.assertEqual(manifest["toolkit_version"], "1.2.0")
         self.assertEqual(manifest["text_hash"], "utf8-lf-sha256-v1")
         self.assertIn(
-            '__version__ = "1.1.0"',
+            '__version__ = "1.2.0"',
             (ROOT / "src/agent_handoff_toolkit/__init__.py").read_text(
                 encoding="utf-8"
             ),
         )
         self.assertIn(
-            'version = "1.1.0"',
+            'version = "1.2.0"',
             (ROOT / "pyproject.toml").read_text(encoding="utf-8"),
         )
         self.assertEqual(manifest["record_schema_version"], 2)
@@ -1421,18 +1421,18 @@ class DistributionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             consumer = Path(directory)
             result = run_source_cli(
-                "install", "--apply", target=consumer, release="v1.1.0"
+                "install", "--apply", target=consumer, release="v1.2.0"
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            check = run_source_cli("sync", "--check", target=consumer, release="v1.1.0")
+            check = run_source_cli("sync", "--check", target=consumer, release="v1.2.0")
             self.assertEqual(check.returncode, 0, check.stderr)
             state = json.loads(
                 (consumer / ".agent-handoff-toolkit/install-state.json").read_text(
                     encoding="utf-8"
                 )
             )
-            self.assertEqual(state["release"], "v1.1.0")
-            self.assertEqual(state["toolkit_version"], "1.1.0")
+            self.assertEqual(state["release"], "v1.2.0")
+            self.assertEqual(state["toolkit_version"], "1.2.0")
             self.assertEqual(state["state_version"], 1)
             self.assertEqual(state["record_schema_version"], 2)
             self.assertEqual(
@@ -1623,11 +1623,11 @@ class DistributionTests(unittest.TestCase):
             legacy_record.write_bytes(legacy_bytes)
 
             upgraded = run_source_cli(
-                "sync", "--apply", target=consumer, release="v1.1.0"
+                "sync", "--apply", target=consumer, release="v1.2.0"
             )
             self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
             current = run_source_cli(
-                "sync", "--check", target=consumer, release="v1.1.0"
+                "sync", "--check", target=consumer, release="v1.2.0"
             )
 
             self.assertEqual(current.returncode, 0, current.stderr)
@@ -1654,8 +1654,8 @@ class DistributionTests(unittest.TestCase):
                     encoding="utf-8"
                 )
             )
-            self.assertEqual(state["release"], "v1.1.0")
-            self.assertEqual(state["toolkit_version"], "1.1.0")
+            self.assertEqual(state["release"], "v1.2.0")
+            self.assertEqual(state["toolkit_version"], "1.2.0")
             self.assertEqual(state["record_schema_version"], 2)
             installed_source = (
                 consumer / ".agent-handoff-toolkit" / "src" / "agent_handoff_toolkit"
@@ -1698,7 +1698,7 @@ class DistributionTests(unittest.TestCase):
                 json.dumps(modified), encoding="utf-8", newline="\n"
             )
             conflict = run_source_cli(
-                "sync", "--check", target=conflicted, release="v1.1.0"
+                "sync", "--check", target=conflicted, release="v1.2.0"
             )
             self.assertEqual(conflict.returncode, 2)
             self.assertIn("managed-json-modified", conflict.stdout)
@@ -1725,7 +1725,7 @@ class DistributionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             consumer = Path(directory)
             installed = run_source_cli(
-                "install", "--apply", target=consumer, release="v1.1.0"
+                "install", "--apply", target=consumer, release="v1.2.0"
             )
             self.assertEqual(installed.returncode, 0, installed.stderr)
             installed_configs = {
@@ -1800,6 +1800,161 @@ class DistributionTests(unittest.TestCase):
                     self.assertEqual(
                         output["hookSpecificOutput"]["hookEventName"], "SessionStart"
                     )
+
+    def test_installed_runner_hands_a_hook_to_the_session_checkout_runner(
+        self,
+    ) -> None:
+        """The runner the locator finds is not always the session's.
+
+        The managed command walks up from the hook process's directory, which
+        the host does not promise is the session's. A desktop worktree inside
+        the main checkout then ran the main checkout's pinned runtime against
+        the worktree. The payload `cwd` names the session's checkout, so the
+        located runner hands the invocation to the runner pinned there: same
+        arguments, the same stdin bytes, once.
+        """
+
+        python_command = load_manifest()["runtime"]["python_command"]
+        command = hook_command(python_command, "claude", "session-start")
+        with tempfile.TemporaryDirectory() as directory:
+            scratch = Path(directory).resolve()
+            main = scratch / "main"
+            owned = main / ".agent-handoff-toolkit"
+            owned.mkdir(parents=True)
+
+            def git(*arguments, cwd):
+                subprocess.run(
+                    [
+                        "git",
+                        "-c",
+                        "user.name=Synthetic",
+                        "-c",
+                        "user.email=synthetic@example.invalid",
+                        "-c",
+                        "commit.gpgsign=false",
+                        *arguments,
+                    ],
+                    cwd=cwd,
+                    env={**os.environ, "GIT_CEILING_DIRECTORIES": scratch.as_posix()},
+                    capture_output=True,
+                    check=True,
+                )
+
+            git("init", "-q", cwd=main)
+            git("commit", "-q", "--allow-empty", "-m", "synthetic", cwd=main)
+            git("worktree", "add", "-q", ".claude/worktrees/x", cwd=main)
+            shutil.copyfile(ROOT / "distribution" / "runner.py", owned / "runner.py")
+            shutil.copytree(
+                ROOT / "src" / "agent_handoff_toolkit",
+                owned / "src" / "agent_handoff_toolkit",
+                ignore=shutil.ignore_patterns("__pycache__"),
+            )
+            worktree = main / ".claude" / "worktrees" / "x"
+            pinned = worktree / ".agent-handoff-toolkit" / "runner.py"
+            pinned.parent.mkdir(parents=True)
+            # Two checkouts of other repositories, each pinning a runner that
+            # would leave a marker if it ever ran: a separate clone, and one
+            # nested inside the main checkout, where the walk from its
+            # directory would otherwise pass on to the main checkout's runner.
+            executed = scratch / "executed"
+            hostile = (
+                "import pathlib\n"
+                f"pathlib.Path({str(executed)!r}).write_text('ran')\n"
+                "print('{}')\n"
+            )
+            unrelated = (scratch / "clone", main / "vendor" / "clone")
+            for clone in unrelated:
+                (clone / ".agent-handoff-toolkit").mkdir(parents=True)
+                git("init", "-q", cwd=clone)
+                (clone / ".agent-handoff-toolkit" / "runner.py").write_text(
+                    hostile, encoding="utf-8", newline="\n"
+                )
+            echo = (
+                "import json, os, sys\n"
+                "data = sys.stdin.buffer.read()\n"
+                "sys.stdout.write(json.dumps({\n"
+                "    'argv': sys.argv[1:],\n"
+                "    'stdin': data.decode('utf-8'),\n"
+                "    'guarded': 'AHK_RUNNER_HANDOFF' in os.environ,\n"
+                "}))\n"
+            )
+            raw = json.dumps(
+                {"session_id": "s", "cwd": str(worktree), "note": "● café"},
+                ensure_ascii=False,
+            )
+
+            def run(payload=raw, environment=None):
+                arguments = shlex.split(command, posix=os.name != "nt")
+                if os.name == "nt":
+                    arguments = [
+                        value[1:-1] if value[:1] == value[-1:] == '"' else value
+                        for value in arguments
+                    ]
+                return subprocess.run(
+                    [sys.executable, *arguments[1:]],
+                    cwd=main,
+                    input=payload.encode("utf-8"),
+                    capture_output=True,
+                    check=False,
+                    env=environment,
+                )
+
+            def reminder(result):
+                self.assertEqual(result.returncode, 0, result.stderr)
+                output = json.loads(result.stdout.decode("utf-8"))
+                self.assertEqual(
+                    output["hookSpecificOutput"]["hookEventName"], "SessionStart"
+                )
+
+            with self.subTest("no runner pinned in the session checkout"):
+                reminder(run())
+
+            pinned.write_text(echo, encoding="utf-8", newline="\n")
+            with self.subTest("hands off with the same arguments and bytes"):
+                result = run()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stderr, b"")
+                output = json.loads(result.stdout.decode("utf-8"))
+                self.assertEqual(
+                    output["argv"],
+                    ["hook", "--platform", "claude", "--event", "session-start"],
+                )
+                self.assertEqual(output["stdin"], raw)
+                self.assertTrue(output["guarded"])
+
+            with self.subTest("the located runner is the session's own"):
+                reminder(run(json.dumps({"session_id": "s", "cwd": str(main)})))
+
+            for clone in unrelated:
+                with self.subTest("never runs another repository's runner", at=clone):
+                    reminder(run(json.dumps({"session_id": "s", "cwd": str(clone)})))
+                    self.assertFalse(executed.exists())
+
+            # A hand-written `.git` file naming the main checkout's common
+            # directory is not a worktree of it: git never registered it.
+            spoof = main / "spoof"
+            (spoof / ".agent-handoff-toolkit").mkdir(parents=True)
+            (spoof / ".git").write_text("gitdir: ../.git\n", encoding="utf-8")
+            (spoof / ".agent-handoff-toolkit" / "runner.py").write_text(
+                hostile, encoding="utf-8", newline="\n"
+            )
+            with self.subTest("never runs a spoofed worktree's runner"):
+                reminder(run(json.dumps({"session_id": "s", "cwd": str(spoof)})))
+                self.assertFalse(executed.exists())
+
+            with self.subTest("a handed-off invocation never hands off again"):
+                reminder(run(environment={**os.environ, "AHK_RUNNER_HANDOFF": "1"}))
+
+            for label, body in (
+                ("raises", "raise RuntimeError('pinned runner unavailable')\n"),
+                ("exits two", "import sys\nsys.exit(2)\n"),
+                ("answers twice", "print('{}')\nprint('{}')\n"),
+            ):
+                pinned.write_text(body, encoding="utf-8", newline="\n")
+                with self.subTest(f"falls through when the pinned runner {label}"):
+                    result = run()
+                    reminder(result)
+                    self.assertEqual(result.stderr, b"")
 
     def test_hook_commands_fail_open_when_no_install_is_reachable(self) -> None:
         """An unlocatable runner is not a policy decision and must not block.

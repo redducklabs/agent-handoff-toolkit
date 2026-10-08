@@ -408,6 +408,77 @@ class HookCommandLineTests(unittest.TestCase):
             "PostToolUse",
         )
 
+    def test_hook_stdin_is_utf8_whatever_the_console_encoding(self) -> None:
+        """Hosts write hook payloads as UTF-8; the console code page is not it.
+
+        On Windows a piped stdin decodes with the ANSI code page. `●` carries
+        byte 0x8F, which cp1252 leaves undefined, so the payload either failed
+        to decode or reached the adapter as a lone surrogate and surfaced as
+        `AHK-HOOK-RUNTIME stage:decode-input`; every other non-ASCII character
+        arrived silently garbled. The ambient case is the real Windows default;
+        forcing cp1252 reproduces it on any platform.
+        """
+
+        path = "handoffs/●-café.md"
+        post_tool = json.dumps(
+            {"tool_name": "Write", "tool_input": {"file_path": path}},
+            ensure_ascii=False,
+        ).encode("utf-8")
+        pre_tool = json.dumps(
+            {
+                "session_id": "session-utf8",
+                "cwd": str(ROOT),
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Bash",
+                "tool_input": {"command": "echo ● café"},
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+        ambient = {
+            key: value
+            for key, value in os.environ.items()
+            if key not in {"PYTHONIOENCODING", "PYTHONUTF8"}
+        }
+        ambient["PYTHONPATH"] = str(ROOT / "src")
+        for label, environment in (
+            ("ambient", ambient),
+            ("cp1252", {**ambient, "PYTHONIOENCODING": "cp1252", "PYTHONUTF8": "0"}),
+        ):
+            for event, raw in (
+                ("post-tool-use", post_tool),
+                ("pre-tool-use", pre_tool),
+            ):
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "agent_handoff_toolkit",
+                        "hook",
+                        "--platform",
+                        "claude",
+                        "--event",
+                        event,
+                    ],
+                    cwd=ROOT,
+                    env=environment,
+                    input=raw,
+                    capture_output=True,
+                    check=False,
+                )
+                with self.subTest(encoding=label, event=event):
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stderr, b"")
+                    stdout = result.stdout.decode("utf-8")
+                    if event == "pre-tool-use":
+                        # Ordinary work is never gated: no runtime notice.
+                        self.assertEqual(stdout, "")
+                        continue
+                    # The display form percent-encodes the decoded path's UTF-8
+                    # bytes, so this proves the characters round-tripped.
+                    self.assertIn(
+                        "handoffs/%E2%97%8F-caf%C3%A9.md", hook_context(stdout)
+                    )
+
     def test_hook_command_fails_open_for_malformed_stdin(self) -> None:
         result = self.run_cli(
             "hook",

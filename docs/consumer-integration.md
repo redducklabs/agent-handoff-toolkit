@@ -6,12 +6,12 @@ Run installation from an inspectable checkout of the public release rather than
 from a network downloader:
 
 ```powershell
-git clone --branch v1.1.0 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
+git clone --branch v1.2.0 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
 Set-Location agent-handoff-toolkit
-python distribution/runner.py install --target <consumer-repository> --release v1.1.0 --dry-run
-python distribution/runner.py install --target <consumer-repository> --release v1.1.0 --apply
-python distribution/runner.py sync --target <consumer-repository> --release v1.1.0 --check
-python distribution/runner.py sync --target <consumer-repository> --release v1.1.0 --apply
+python distribution/runner.py install --target <consumer-repository> --release v1.2.0 --dry-run
+python distribution/runner.py install --target <consumer-repository> --release v1.2.0 --apply
+python distribution/runner.py sync --target <consumer-repository> --release v1.2.0 --check
+python distribution/runner.py sync --target <consumer-repository> --release v1.2.0 --apply
 ```
 
 Run install and sync only in an isolated, clean Git worktree. Confirm the
@@ -199,11 +199,11 @@ the local HMAC secret never appear in its output.
 
 A prompt is never blocked, whatever is wrong. `UserPromptSubmit` reports and
 delivers the message, so a session can always be talked to, including when the
-installed runtime cannot be imported at all. One exception remains and it is a
-hang rather than a block: if another process holds `registry.lock` and never
-releases it, a hook waits on it without a deadline. The lock is released when
-its holder exits and every hold is a short read or write, so this needs a
-wedged live process; if you see it, find that process rather than waiting.
+installed runtime cannot be imported at all. A hook waits at most 15 seconds
+for `registry.lock` and then reports `AHK-HOOK-RUNTIME` naming
+`error:LockTimeout`. The lock is released when its holder exits and every hold
+is a short read or write, so a repeated `LockTimeout` means a wedged live
+process; find that process.
 
 Read the report against these rules:
 
@@ -211,9 +211,8 @@ Read the report against these rules:
   normal: every worktree of a repository shares one state root. The lock is
   probed rather than acquired for that line, so producing it does not wait on
   the holder. Opening state before the probe does take the lock, though, so a
-  lock held and never released delays `doctor` itself; that is the same
-  residual described above, and it is the one case where this command is not
-  a reliable escape.
+  lock held and never released delays `doctor` by the same 15 seconds before
+  it reports the `LockTimeout`.
 - `storage`, `state_root` or `lock` naming an exception class means state is
   unreachable. Sessions that declared no tracked work are unaffected: a fault
   there is reported as a notice and blocks nothing.
@@ -235,7 +234,7 @@ Before bulk adoption, select one repository with mature handoffs and one with li
 1. Inventory local instructions, hook and skill configuration, and tracker
    conventions. Count or locate historical handoff storage only if needed to
    protect it; do not open the records.
-2. Run the v1.1.0 installer in dry-run mode from its release checkout.
+2. Run the v1.2.0 installer in dry-run mode from its release checkout.
 3. Review the proposed instruction and hook merges.
 4. Apply on a branch. Treat every record that predates this adoption as
    deprecated by policy without marking, reading, or rewriting individual files.

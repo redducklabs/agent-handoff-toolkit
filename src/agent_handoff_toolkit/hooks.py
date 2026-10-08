@@ -86,6 +86,105 @@ def hook_runtime_reason(stage: str, error: BaseException | None = None) -> str:
     )
 
 
+def _read_path(pointer: Path, base: Path) -> Path | None:
+    """The resolved path a git metadata file names, relative to `base`."""
+
+    if not pointer.is_file():
+        return None
+    with pointer.open("rb") as source:
+        text = source.read(4097)
+    if len(text) > 4096:
+        return None
+    named = Path(text.decode("utf-8").strip())
+    return (named if named.is_absolute() else base / named).resolve()
+
+
+def _git_common_dir(checkout: Path) -> Path | None:
+    """Name the repository a checkout belongs to, without spawning git.
+
+    A main checkout's `.git` is the common directory itself. A linked worktree's
+    `.git` is a file naming its private directory, whose `commondir` file leads
+    back to the shared one. Anything else - a missing or oversized file, no
+    `gitdir:` line, a path that cannot be resolved - names no repository.
+
+    A `.git` file is anyone's to write, and `gitdir: ../../.git` would name
+    the common directory from an arbitrary directory. So a file counts only as
+    `git worktree add` registers it: its private directory sits directly
+    under `<common>/worktrees/`, and that directory's `gitdir` file leads back
+    to this checkout's `.git`.
+    """
+
+    marker = checkout / ".git"
+    try:
+        if marker.is_dir():
+            return marker.resolve()
+        if not marker.is_file():
+            return None
+        with marker.open("rb") as source:
+            text = source.read(4097)
+        if len(text) > 4096 or not text.startswith(b"gitdir:"):
+            return None
+        private = Path(text[len(b"gitdir:") :].decode("utf-8").strip())
+        if not private.is_absolute():
+            private = checkout / private
+        private = private.resolve()
+        common = _read_path(private / "commondir", private)
+        back = _read_path(private / "gitdir", private)
+        if common is None or back is None or private.parent != common / "worktrees":
+            return None
+        return common if back == marker.resolve() else None
+    except (OSError, ValueError):
+        # Unreadable or unrepresentable: it names no repository, and a checkout
+        # whose repository cannot be named is never treated as this one.
+        return None
+
+
+def hook_repository_root(payload: object, fallback: Path) -> Path:
+    """Name the checkout a hook serves: the one holding the session's cwd.
+
+    Every host payload carries `cwd`, the session's current directory. The
+    hook process's own directory is not guaranteed to be that, and a project
+    variable stays at the original checkout even inside a worktree - while
+    desktop worktrees live inside the main checkout, so rooting at the process
+    silently served a worktree session from the main checkout's runner and
+    `handoffs/`. The candidate is the nearest directory at or above an
+    absolute, existing payload `cwd` that holds `.git`, file or directory, and
+    it is the root only when it is a worktree of the same repository as
+    `fallback`, the process-derived root: the same git common directory. A
+    session can stand in any clone on the machine, and rooting at an unrelated
+    one would bind its commands to that clone's runner. Anything else keeps
+    `fallback`, and the event's own containment check still applies.
+    """
+
+    fallback = Path(fallback).resolve()
+    cwd = payload.get("cwd") if isinstance(payload, dict) else None
+    if not isinstance(cwd, str) or not cwd or len(cwd) > 4096 or "\x00" in cwd:
+        return fallback
+    start = Path(cwd)
+    try:
+        if not start.is_absolute() or not start.is_dir():
+            return fallback
+        resolved = start.resolve()
+        checkout = next(
+            (
+                candidate
+                for candidate in (resolved, *resolved.parents)
+                if (candidate / ".git").exists()
+            ),
+            None,
+        )
+    except (OSError, ValueError):
+        # An unreadable or unrepresentable path names no checkout; the
+        # process-derived root is the documented answer for that.
+        return fallback
+    if checkout is None or checkout == fallback:
+        return fallback
+    common = _git_common_dir(checkout)
+    if common is None or common != _git_common_dir(fallback):
+        return fallback
+    return checkout
+
+
 @dataclass(frozen=True)
 class HookExecution:
     stdout: str = ""
@@ -235,17 +334,21 @@ def _session_end_notice(
 
     try:
         import os
+        import time
 
         from .lifecycle import EnforcementMode
-        from .lifecycle_storage import LocalLifecycleStorage
+        from .lifecycle_storage import LOCK_TIMEOUT_SECONDS, LocalLifecycleStorage
 
+        started = time.monotonic()
         session_id = payload.get("session_id")
         if not isinstance(session_id, str) or not session_id:
             return ""
         if storage is None:
             state_root = os.environ.get("AHK_STATE_ROOT")
             storage = LocalLifecycleStorage(
-                Path(repo_root), state_root=Path(state_root) if state_root else None
+                Path(repo_root),
+                state_root=Path(state_root) if state_root else None,
+                lock_deadline=started + LOCK_TIMEOUT_SECONDS,
             )
         snapshot = storage.load_snapshot(session_id)
         session, chain = snapshot.session, snapshot.chain
@@ -307,7 +410,9 @@ def _run_advisory_hook(
         if normalized_event == "session-start":
             return _hook_output("SessionStart", _SESSION_START_REMINDER)
         if normalized_event == "session-end":
-            return _session_end_notice(payload, repo_root, storage)
+            return _session_end_notice(
+                payload, hook_repository_root(payload, repo_root), storage
+            )
         if normalized_event != "post-tool-use":
             return ""
 
