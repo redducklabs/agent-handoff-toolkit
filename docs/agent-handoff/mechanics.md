@@ -162,7 +162,7 @@ link offers no candidate, whatever other links or pointer text it carries. A
 renderer link that does not qualify is a counted policy block,
 `AHK-STOP-POINTER`, with `failed=` `pointer-ambiguous`,
 `pointer-block-mismatch`, `pointer-audit-restart`, `pointer-noncanonical`,
-`pointer-missing` or `pointer-outside-handoffs`; a candidate must be in this
+`pointer-missing`, `pointer-record-invalid` or `pointer-outside-handoffs`; a candidate must be in this
 checkout's own `handoffs/`, which the last names after `root=`. An attempted
 assistant message may already be displayed before `Stop` runs; the hook
 returns corrective feedback and requires a corrected response or a visibly
@@ -173,12 +173,11 @@ Blocking feedback names the issue code, the corrective action, and — after
 are a closed vocabulary of identifiers. The adapter emits no other issue text:
 no prompt, reply, or transcript content can reach the host through it.
 
-Informational hooks fail open. Tracked lifecycle hooks fail closed on
-`PreToolUse` and `Stop`, including corrupt tracked state, unreadable
-candidates, missing owned runtime files, and lifecycle validation exceptions.
-A session in `OPEN` or `ONE_OFF` fails open by construction: it has no
-lifecycle state to fail closed on. Successful lifecycle checks emit no routine
-model context.
+Informational hooks fail open. Tracked lifecycle hooks fail closed on explicit
+policy violations at `PreToolUse` and `Stop`, including invalid or unreadable
+offered records. Runtime malfunctions are advisory in every mode. A session in
+`OPEN` or `ONE_OFF` has no tracked lifecycle policy to enforce. Successful
+lifecycle checks emit no routine model context.
 
 `UserPromptSubmit` is never a decision point, for any cause: a blocked prompt
 erases the user's message and starts no turn. It reports instead, naming the
@@ -191,16 +190,16 @@ is registered only when the turn that carried it was observed, because
 authorization binds to the stored turn reference. A declaration that could not
 be enrolled says the session is untracked.
 
-A runtime fault is a malfunction, not a decision about the work. Once the
-adapter has loaded, `AHK-HOOK-RUNTIME` blocks only a session whose own state
-was read and shows a declared mode outside `OPEN` and `ONE_OFF`, and never at
-`UserPromptSubmit`; otherwise it is a bare `systemMessage` carrying no
-decision, so the host behaves as it would with no hook installed.
-
-Install corruption is the exception: when the package or adapter cannot be
-imported, or dispatch fails outright, nothing can read the declared mode, so
-`PreToolUse` is denied and `Stop` blocked regardless of mode. `UserPromptSubmit` is delivered even
-there.
+A runtime fault is a malfunction, not a decision about the work.
+`AHK-HOOK-RUNTIME` is advisory for every session, including tracked sessions,
+and never carries a permission decision, stop decision, or correction-circuit
+mutation. Corrupt state, lock timeouts, evaluation exceptions, failed state
+writes, package or adapter import failures, and dispatch failures cannot deny
+a tool, block a turn ending, or erase a user prompt. `PreToolUse` and `Stop`
+receive a bare `systemMessage`; `UserPromptSubmit` also receives agent-facing
+context. Failed writes accept no record. Explicit
+record and lifecycle policy rejections remain enforced, and CLI validation
+still fails closed.
 
 Every report names its failing stage and exception class after `failed=`; the
 bootstrap boundary distinguishes an import that produced no runtime from a
@@ -220,9 +219,7 @@ serves the hook itself if that runner gives no single response.
 
 ## Recovering a broken hook runtime
 
-Every lifecycle command but `doctor` needs session credentials, and a session
-whose hook flow is failing has no path to them. `lifecycle doctor` is the
-out-of-band entry point: it takes no session binding and decides and changes
+`lifecycle doctor` takes no session binding and decides and changes
 nothing. It reports where state resolves, whether it opens, whether its lock is
 reachable, which runner is installed and which one is running, and — given a raw host session ID —
 that session's enforcement mode. The derived session key and
@@ -351,10 +348,13 @@ Control commands need credentials the interception binds into them. It
 finds `python <runner> lifecycle` at a command start, outside quotes, escapes,
 comments and heredoc bodies; only `doctor` and `--help`/`-h` pass. A compound command is
 denied with the bound command, to run alone. A trailing `2>&1`, `2>/dev/null`,
-numeric `| head`/`| tail` or comment is not compound, nor rewritten. On Claude Code,
-the session's own `inspect`, wrong only in its challenge or revision, is
-replaced by the bound form through `updatedInput`, permission unchanged; Codex
-is denied with it. A CLI `AHK-INPUT` or `AHK-STATE-STALE` says to run the
+numeric `| head`/`| tail` or comment is not compound, nor rewritten. On both hosts,
+a plain `inspect`, or this session's own `inspect` with stale credentials, is
+replaced by the bound form through `updatedInput`. A pre-root `resume` is also
+rebound after flag-order and relative-path normalization. Rewrites preserve other
+tool-input fields, require the owned runner, and never replace another session's
+key. Codex requires `permissionDecision: "allow"` with `updatedInput`; Claude
+needs no permission decision. A CLI `AHK-INPUT` or `AHK-STATE-STALE` says to run the
 command alone and lists the scope kinds.
 
 Authoring a record outside a tracked session uses `render`, `validate`, and

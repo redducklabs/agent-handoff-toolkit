@@ -4,8 +4,8 @@ Read `docs/agent-handoff/contract.md` and `docs/agent-handoff/mechanics.md` befo
 
 - Preserve the continuation/completion-audit distinction.
 - Keep the core package independent of Claude Code, Codex, GitHub, and tracker APIs.
-- Informational hooks fail open; tracked lifecycle hooks fail closed at
-  `PreToolUse` and `Stop`. Explicit CLI validation fails closed.
+- Informational hooks fail open; tracked lifecycle hooks fail closed on explicit
+  policy violations at `PreToolUse` and `Stop`. Explicit CLI validation fails closed.
 - `UserPromptSubmit` is never a decision point, for any cause. A hook may
   decide only where the blocked party can still act on the feedback, and
   blocking a prompt erases the user's message and starts no turn. Its
@@ -14,11 +14,16 @@ Read `docs/agent-handoff/contract.md` and `docs/agent-handoff/mechanics.md` befo
   `Continue from handoff:` declaration is registered only when its own turn
   was observed, and a declaration that could not be enrolled says the session
   is untracked.
-- A runtime fault is a malfunction, not a policy decision. It blocks only a
-  session whose declared mode was actually read and is outside `OPEN` and
-  `ONE_OFF`; otherwise it is reported as a notice carrying no decision. Every
+- A runtime fault is a malfunction, not a policy decision. Every automatic hook
+  malfunction is advisory in every mode, including tracked sessions and import,
+  dispatch, storage, and evaluation failures. It carries no permission or stop
+  decision and never arms the correction circuit. Invalid offered records remain
+  explicit policy rejections. Every
   `AHK-HOOK-RUNTIME` report names its failing stage and exception after
   `failed=`, and no hook command exits 2.
+- Resolved focused-test invocation warning: adapter tests import shared helpers
+  by bare module name. Use `python -m unittest discover -s tests`, or set
+  `PYTHONPATH=src;tests` for individual module targets on Windows.
 - Managed hook commands locate the runner by walking up from the hook
   process's working directory. Never reintroduce a path relative to it: a
   missing script file exits 2, which every gated event reads as a block.

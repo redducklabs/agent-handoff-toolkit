@@ -493,6 +493,15 @@ class EnforcementTests(unittest.TestCase):
         self.assertIn(code, reason)
         self.assertLessEqual(len(reason.encode()), 1200)
 
+    def assert_runtime_notice(self, execution):
+        self.assertEqual(execution.exit_code, 0)
+        self.assertEqual(execution.stderr, "")
+        data = json.loads(execution.stdout)
+        self.assertIn("AHK-HOOK-RUNTIME", data["systemMessage"])
+        self.assertNotIn("decision", data)
+        self.assertNotIn("continue", data)
+        self.assertNotIn("permissionDecision", data.get("hookSpecificOutput", {}))
+
     def test_untracked_information_and_intrinsic_reads_are_silent(self):
         for host, names in (
             ("claude", ("Read", "Glob", "Grep")),
@@ -559,9 +568,8 @@ class EnforcementTests(unittest.TestCase):
             self.assertEqual(feedback.count("Command: "), 1)
             self.assertIn("lifecycle register-root --session-key", feedback)
         (self.root / ".agent-handoff-toolkit" / "runner.py").unlink()
-        self.assert_block(
+        self.assert_runtime_notice(
             self.invoke("PreToolUse", tool_input={"command": command}),
-            "AHK-HOOK-RUNTIME",
         )
 
     def test_the_read_only_diagnosis_is_never_intercepted(self):
@@ -649,10 +657,10 @@ class EnforcementTests(unittest.TestCase):
 
         self.assertEqual(invoke("UserPromptSubmit"), HookExecution())
         stale = f"python {runner.as_posix()} lifecycle inspect"
-        reason = json.loads(invoke("PreToolUse", tool_input={"command": stale}).stdout)[
-            "hookSpecificOutput"
-        ]["permissionDecisionReason"]
-        command = reason.split("Command: ", 1)[1]
+        specific = json.loads(
+            invoke("PreToolUse", tool_input={"command": stale}).stdout
+        )["hookSpecificOutput"]
+        command = specific["updatedInput"]["command"]
         self.assertEqual(command.split()[1], runner.as_posix())
 
     def test_hook_never_roots_at_an_unrelated_checkout(self):
@@ -821,8 +829,8 @@ class EnforcementTests(unittest.TestCase):
             self.storage.load_snapshot("session-1").session.correction_cycle_count, 0
         )
 
-    def test_runtime_fault_still_fails_closed_once_the_session_is_tracked(self):
-        """Declared tracked work keeps the documented fail-closed guarantee."""
+    def test_runtime_fault_never_blocks_tracked_work_or_arms_the_circuit(self):
+        """A malfunction cannot enforce policy or consume correction attempts."""
 
         self.register()
         broken = payload(self.root, "Stop")
@@ -831,10 +839,13 @@ class EnforcementTests(unittest.TestCase):
             output = run_hook(
                 "codex", "Stop", json.dumps(broken), self.root, self.storage
             )
-            self.assert_block(output, "AHK-HOOK-RUNTIME")
+            data = json.loads(output.stdout)
+            self.assertIn("AHK-HOOK-RUNTIME", data["systemMessage"])
+            self.assertNotIn("decision", data)
+            self.assertNotIn("hookSpecificOutput", data)
             self.assertEqual(
                 self.storage.load_snapshot("session-1").session.correction_cycle_count,
-                attempt,
+                0,
             )
 
     def test_runtime_fault_names_its_stage_and_exception(self):
@@ -852,12 +863,57 @@ class EnforcementTests(unittest.TestCase):
             run_hook(
                 "codex", "Stop", json.dumps(broken), self.root, self.storage
             ).stdout
-        )["reason"]
+        )["systemMessage"]
         self.assertIn("failed=", reason)
         details = reason.split("failed=")[1].split()[0].split(",")
         self.assertIn("stage:normalize-event", details)
         self.assertIn("error:ValueError", details)
         self.assertLessEqual(len(reason.encode()), 1200)
+
+    def test_tracked_evaluation_and_commit_faults_are_advisory_on_both_hosts(self):
+        self.register()
+        before = self.storage.load_snapshot("session-1")
+        _, _, message = self.record()
+        for host in ("claude", "codex"):
+            with self.subTest(host=host, stage="evaluate"):
+                with patch(
+                    "agent_handoff_toolkit.hook_adapters.evaluate_stop",
+                    side_effect=RuntimeError("sensitive synthetic fault"),
+                ):
+                    output = self.invoke(host=host)
+                self.assert_runtime_notice(output)
+                self.assertIn("stage:evaluate,error:RuntimeError", output.stdout)
+                self.assertNotIn("sensitive", output.stdout)
+            with self.subTest(host=host, stage="commit-state"):
+                with patch.object(
+                    self.storage,
+                    "compare_and_swap",
+                    side_effect=OSError(errno.EACCES, "sensitive synthetic fault"),
+                ):
+                    output = self.invoke(host=host, last_assistant_message=message)
+                self.assert_runtime_notice(output)
+                self.assertIn("stage:commit-state,error:PermissionError", output.stdout)
+                self.assertNotIn("sensitive", output.stdout)
+            after = self.storage.load_snapshot("session-1")
+            self.assertEqual(after, before)
+
+    def test_stale_republish_fault_cannot_block_tracked_work(self):
+        self.register()
+        with (
+            patch.object(
+                self.storage, "compare_and_swap", side_effect=StaleLifecycleState()
+            ),
+            patch(
+                "agent_handoff_toolkit.hook_adapters._peer_advanced",
+                side_effect=[False, RuntimeError("fault")],
+            ),
+        ):
+            output = self.invoke()
+        self.assert_runtime_notice(output)
+        self.assertIn("stage:republish-stale,error:RuntimeError", output.stdout)
+        self.assertEqual(
+            self.storage.load_snapshot("session-1").session.correction_cycle_count, 0
+        )
 
     def test_a_held_lock_is_a_named_runtime_fault_not_a_hang(self):
         """A hung lock holder used to stall every hook until the host timeout."""
@@ -1234,7 +1290,7 @@ class EnforcementTests(unittest.TestCase):
         )
         self.assert_block(self.invoke(), "AHK-STOP-WORK")
 
-    def test_runtime_input_corruption_and_cas_races_block_without_content(self):
+    def test_runtime_input_corruption_is_advisory_and_cas_races_remain_policy(self):
         self.register()
         for raw in (
             "{",
@@ -1242,9 +1298,8 @@ class EnforcementTests(unittest.TestCase):
             '{"session_id":"session-1","session_id":"other"}',
             "x" * 131073,
         ):
-            self.assert_block(
+            self.assert_runtime_notice(
                 run_hook("codex", "Stop", raw, self.root, self.storage),
-                "AHK-HOOK-RUNTIME",
             )
         _, _, message = self.record()
         with patch.object(
@@ -1259,7 +1314,7 @@ class EnforcementTests(unittest.TestCase):
             self.storage.load_snapshot("session-1").chain.current_record_reference
         )
         self.storage.registry_path.write_text("corrupt")
-        self.assert_block(self.invoke(), "AHK-HOOK-RUNTIME")
+        self.assert_runtime_notice(self.invoke())
 
     def test_preamble_wrong_path_and_unsafe_candidates_block_without_enumeration(self):
         self.register()
@@ -2355,18 +2410,18 @@ class EnforcementTests(unittest.TestCase):
         )
         self.assertNotIn("staging", context)
 
-    def test_runtime_failures_from_malformed_stop_count_toward_visible_circuit(self):
+    def test_runtime_failures_from_malformed_stop_leave_circuit_unchanged(self):
         self.register()
         # Ordinary host content is never a fault, so drive this with a genuine
         # normalization failure: the loop-evidence flag must be boolean.
         malformed = {"stop_hook_active": "not-a-boolean"}
         for attempt in (1, 2):
-            self.assert_block(self.invoke(**malformed), "AHK-HOOK-RUNTIME")
+            self.assert_runtime_notice(self.invoke(**malformed))
             self.assertEqual(
                 self.storage.load_snapshot("session-1").session.correction_cycle_count,
-                attempt,
+                0,
             )
-        self.assertFalse(json.loads(self.invoke(**malformed).stdout)["continue"])
+        self.assert_runtime_notice(self.invoke(**malformed))
 
     def test_large_tool_input_never_blocks_and_never_reaches_state(self):
         """The payload is the work's; it must neither fail nor be recorded."""
@@ -2420,7 +2475,7 @@ class EnforcementTests(unittest.TestCase):
 
         with patch.object(Path, "lstat", reparse):
             self.assert_block(
-                self.invoke(last_assistant_message=message), "AHK-HOOK-RUNTIME"
+                self.invoke(last_assistant_message=message), "AHK-STOP-POINTER"
             )
         link = self.root / "handoffs" / "link.md"
         try:
@@ -2430,7 +2485,7 @@ class EnforcementTests(unittest.TestCase):
             return
         self.assert_block(
             self.invoke(last_assistant_message=render_terminal_response(link, text)),
-            "AHK-HOOK-RUNTIME",
+            "AHK-STOP-POINTER",
         )
 
     @unittest.skipUnless(os.name == "nt", "Windows junction containment")
@@ -2459,7 +2514,7 @@ class EnforcementTests(unittest.TestCase):
                         junction / "escape.md", text
                     )
                 ),
-                "AHK-HOOK-RUNTIME",
+                "AHK-STOP-POINTER",
             )
         finally:
             junction.rmdir()
@@ -3244,7 +3299,7 @@ class EnforcementTests(unittest.TestCase):
         self.register()
         self.assert_block(self.invoke(transcript_path=None), "AHK-STOP-WORK")
 
-    def test_malformed_identifiable_stop_fields_reach_circuit_in_four_attempts(self):
+    def test_malformed_identifiable_stop_fields_never_arm_the_circuit(self):
         self.register()
         for index, changes in enumerate(
             (
@@ -3256,18 +3311,13 @@ class EnforcementTests(unittest.TestCase):
             1,
         ):
             output = self.invoke(**changes)
-            if index < 3:
-                self.assert_block(output, "AHK-HOOK-RUNTIME")
-                self.assertIsNotNone(
-                    self.storage.load_snapshot(
-                        "session-1"
-                    ).session.pending_correction_hmac
-                )
-            else:
-                self.assertFalse(json.loads(output.stdout)["continue"])
+            self.assert_runtime_notice(output)
+            self.assertIsNone(
+                self.storage.load_snapshot("session-1").session.pending_correction_hmac
+            )
             self.assertEqual(
                 self.storage.load_snapshot("session-1").session.correction_cycle_count,
-                index,
+                0,
             )
 
     def test_the_copied_prompt_resumes_however_the_user_edits_it(self):
@@ -3482,21 +3532,16 @@ class EnforcementTests(unittest.TestCase):
         runner = (self.root / ".agent-handoff-toolkit" / "runner.py").as_posix()
         stale = f"python {runner} lifecycle inspect"
         result = self.invoke("PreToolUse", tool_input={"command": stale})
-        reason = json.loads(result.stdout)["hookSpecificOutput"][
-            "permissionDecisionReason"
-        ]
-        self.assertIn("AHK-CONTROL-BINDING", reason)
-        command = reason.split("Command: ", 1)[1]
+        specific = json.loads(result.stdout)["hookSpecificOutput"]
+        command = specific["updatedInput"]["command"]
         self.assertEqual(
             self.invoke("PreToolUse", tool_input={"command": command}), HookExecution()
         )
         self.invoke(
             "UserPromptSubmit", prompt="Continue this task.", turn_id="new-user"
         )
-        self.assert_block(
-            self.invoke("PreToolUse", tool_input={"command": command}),
-            "AHK-CONTROL-BINDING",
-        )
+        repaired = self.invoke("PreToolUse", tool_input={"command": command})
+        self.assertIn("updatedInput", repaired.stdout)
 
     def reason_of(self, execution):
         return json.loads(execution.stdout)["hookSpecificOutput"][
@@ -3733,7 +3778,7 @@ class EnforcementTests(unittest.TestCase):
                     ["python", runner, "lifecycle", "inspect"],
                 )
 
-    def test_a_stale_tracked_inspect_is_rebound_in_place_on_claude_only(self):
+    def test_a_stale_tracked_inspect_is_rebound_on_both_hosts(self):
         """A spent challenge cost a denial and a retry on every tracked pause.
 
         On Claude the hook substitutes the bound command through
@@ -3773,10 +3818,11 @@ class EnforcementTests(unittest.TestCase):
             ),
             HookExecution(),
         )
-        # Codex keeps deny-with-command.
+        # Codex requires an explicit allow alongside updatedInput.
         codex = self.invoke("PreToolUse", host="codex", tool_input=tool_input)
-        self.assertIn("AHK-CONTROL-BINDING", self.reason_of(codex))
-        self.assertNotIn("updatedInput", codex.stdout)
+        specific = json.loads(codex.stdout)["hookSpecificOutput"]
+        self.assertEqual(specific["permissionDecision"], "allow")
+        self.assertEqual(specific["updatedInput"], updated)
         # Anything beyond stale credentials is still denied, never rewritten.
         for command in (
             stale + " && echo done",
@@ -3784,7 +3830,6 @@ class EnforcementTests(unittest.TestCase):
             stale.replace(session.session_key, "b" * 64),
             stale.replace(runner, "/elsewhere/runner.py"),
             stale + " --extra value",
-            f"python {runner} lifecycle inspect",
             stale.replace(" inspect ", " one-off "),
         ):
             with self.subTest(command=command):
@@ -3793,6 +3838,71 @@ class EnforcementTests(unittest.TestCase):
                 )
                 self.assertNotIn("updatedInput", output.stdout)
                 self.assertIn("AHK-CONTROL-BINDING", self.reason_of(output))
+
+    def test_plain_inspect_recovers_without_a_denied_tool_call(self):
+        for tracked in (False, True):
+            if tracked:
+                self.register()
+            else:
+                self.invoke("UserPromptSubmit")
+            runner = (self.root / ".agent-handoff-toolkit" / "runner.py").as_posix()
+            for host in ("claude", "codex"):
+                with self.subTest(tracked=tracked, host=host):
+                    output = self.invoke(
+                        "PreToolUse",
+                        host=host,
+                        tool_input={"command": f"python {runner} lifecycle inspect"},
+                    )
+                    specific = json.loads(output.stdout)["hookSpecificOutput"]
+                    self.assertNotEqual(specific.get("permissionDecision"), "deny")
+                    command = specific["updatedInput"]["command"]
+                    self.assertIn(" lifecycle inspect --session-key ", command)
+                    self.assertEqual(
+                        self.invoke(
+                            "PreToolUse", host=host, tool_input={"command": command}
+                        ),
+                        HookExecution(),
+                    )
+
+    def test_resume_repairs_relative_record_and_flag_order_without_blocking(self):
+        self.invoke("UserPromptSubmit")
+        session = self.storage.load_snapshot("session-1").session
+        runner = (self.root / ".agent-handoff-toolkit" / "runner.py").as_posix()
+        command = (
+            f"python {runner} lifecycle resume --record handoffs/first.md"
+            f" --session-key {session.session_key} --challenge old-challenge"
+            " --expected-session-revision 0"
+        )
+        for host in ("claude", "codex"):
+            with self.subTest(host=host):
+                output = self.invoke(
+                    "PreToolUse", host=host, tool_input={"command": command}
+                )
+                specific = json.loads(output.stdout)["hookSpecificOutput"]
+                self.assertNotEqual(specific.get("permissionDecision"), "deny")
+                repaired = specific["updatedInput"]["command"]
+                self.assertIn(" lifecycle resume ", repaired)
+                self.assertIn(
+                    f"--record {self.root.as_posix()}/handoffs/first.md", repaired
+                )
+                self.assertEqual(
+                    self.invoke(
+                        "PreToolUse", host=host, tool_input={"command": repaired}
+                    ),
+                    HookExecution(),
+                )
+
+    def test_resume_repair_never_rebinds_another_sessions_key(self):
+        self.invoke("UserPromptSubmit")
+        runner = (self.root / ".agent-handoff-toolkit" / "runner.py").as_posix()
+        output = self.invoke(
+            "PreToolUse",
+            tool_input={
+                "command": f"python {runner} lifecycle resume --record {self.root.as_posix()}/handoffs/first.md"
+                f" --session-key {'b' * 64} --challenge old-challenge --expected-session-revision 0"
+            },
+        )
+        self.assertNotIn("updatedInput", output.stdout)
 
     def test_a_plain_pre_root_one_off_is_bound_as_itself(self):
         self.invoke("UserPromptSubmit")

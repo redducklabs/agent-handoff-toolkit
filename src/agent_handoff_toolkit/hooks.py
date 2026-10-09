@@ -1,4 +1,4 @@
-"""Advisory context hooks and fail-closed lifecycle dispatch."""
+"""Advisory context hooks and lifecycle dispatch with advisory runtime faults."""
 
 from __future__ import annotations
 
@@ -37,27 +37,17 @@ PROMPT_NOTICE_SENTENCE = (
 
 
 def hook_failure_output(event: str, reason: str) -> dict[str, Any]:
-    """Shape one boundary failure for a host, deciding nothing on a prompt.
+    """Report a boundary malfunction without denying work or ending a session.
 
     Shared by every failure boundary above the lifecycle adapter, including
     the ones that exist because that adapter could not be loaded, so it must
     stay free of lifecycle imports. `event` is the compact spelling both
     callers already normalize to.
 
-    A denied tool call and a refused turn ending both leave the agent running
-    and able to act on the reason. Blocking `UserPromptSubmit` erases the
-    user's message and starts no turn, which leaves nobody who can act on it -
-    so a fault reports itself there instead of deciding.
+    Runtime faults cannot establish a lifecycle violation, even when a module
+    cannot load. Keep the diagnostic on the advisory channel on every event.
     """
 
-    if event == "pretooluse":
-        return {
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": reason,
-            }
-        }
     if event == "userpromptsubmit":
         return {
             "systemMessage": PROMPT_NOTICE_SENTENCE,
@@ -66,7 +56,7 @@ def hook_failure_output(event: str, reason: str) -> dict[str, Any]:
                 "additionalContext": reason,
             },
         }
-    return {"decision": "block", "reason": reason}
+    return {"systemMessage": reason}
 
 
 def hook_runtime_reason(stage: str, error: BaseException | None = None) -> str:
@@ -453,12 +443,8 @@ def run_hook(
 
         return run_lifecycle_hook(platform, event, raw, repo_root, storage)
     except Exception as error:
-        # Reached only when the owned adapter or lifecycle modules cannot load,
-        # which is install corruption rather than a transient fault: the module
-        # that would report whether this session declared tracked work is the
-        # one failing, so this boundary keeps failing closed. It still names the
-        # stage and the exception class, both fixed identifiers - never the
-        # message, which could carry host content.
+        # Even install corruption cannot establish a lifecycle violation.
+        # Name the boundary and exception, never sensitive exception content.
         reason = hook_runtime_reason("load-adapter", error)
         value = hook_failure_output(name, reason)
         return HookExecution(stdout=json.dumps(value, separators=(",", ":")))

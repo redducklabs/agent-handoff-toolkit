@@ -9,22 +9,21 @@ Anyone changing the toolkit needs both.
 
 A malfunction of the toolkit is not a decision about the work. `AHK-HOOK-RUNTIME`
 marks a fault the hook could not evaluate past — a malformed payload, state that
-could not be read, an unexpected exception — and how it is reported depends
-entirely on what the session had declared when it happened.
+could not be read, an unexpected exception. Runtime malfunctions are advisory
+in every mode. The user explicitly requested that toolkit failures never prevent
+continuing work after tracked faults had consumed the correction circuit and
+blocked sessions. A malfunction cannot establish a policy violation. It now
+reports on a bare top-level `systemMessage` carrying no permission or stop
+decision and never consumes a correction attempt. The same rule applies at the
+bootstrap boundary when package imports or dispatch fail: the repair tools and
+the user's message must remain available.
 
-A fault blocks only when the session's own state was read and shows a declared
-mode outside `OPEN` and `ONE_OFF`. That is the fail-closed guarantee above, and
-it is unchanged. In every other case — a session that declared nothing, or one
-whose mode could not be determined because reading state is what failed — the
-fault is reported as a bare top-level `systemMessage` carrying no permission
-decision and no stop decision, so the host behaves exactly as it would with no
-hook installed. An unknown mode is not a tracked mode: state that could not be
-read cannot show that a session declared anything, and a session that declared
-nothing is ungated by construction, so there is no policy for the fault to
-enforce. Blocking there only removed the session's way out, denying it the
-tools its own repair required.
+Invalid offered records remain explicit policy rejections: containment and
+no-reparse source guards reject the candidate without accepting or publishing
+it. Explicit CLI validation also continues to fail closed. An exception during
+state persistence reports a malfunction; no successful publication is claimed.
 
-Every `AHK-HOOK-RUNTIME` report, blocking or advisory, names its failing stage
+Every `AHK-HOOK-RUNTIME` report names its failing stage
 and the exception class after `failed=`, alongside the platform error number
 where the exception carries one. Both are bounded identifiers fixed in source —
 a stage label and a Python class name — so this detail cannot carry turn content
@@ -32,11 +31,8 @@ any more than the validator codes it sits beside.
 
 The hook command's exit status never signals a fault. Exit 2 is the host's block
 signal at `PreToolUse`, `UserPromptSubmit` and `Stop`, indistinguishable from a
-deliberate denial, so a decision is always rendered on the structured channel
-and the status stays silent. The one boundary that still fails closed without
-knowing the mode is a runtime that cannot be imported at all: the module that
-would report the mode is the one failing, and a missing owned runtime file is
-install corruption rather than a transient fault.
+deliberate denial, so diagnostics stay on the advisory structured channel
+and the status stays silent, including when owned runtime files cannot load.
 
 The registry lock is awaited for at most 15 seconds on both platforms. Every
 worktree of a repository shares one state root, so a holder that hung used to

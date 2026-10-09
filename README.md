@@ -6,6 +6,18 @@ This repository provides a shared contract, deterministic validation and renderi
 
 ## Status
 
+Version 1.2.2 keeps hook malfunctions from interrupting the user's work.
+Runtime, storage, and import failures report `AHK-HOOK-RUNTIME` as a notice
+without denying tools or blocking a turn. Invalid records and lifecycle policy
+violations still fail validation; a malfunction never counts as acceptance.
+
+Plain or stale `lifecycle inspect` commands now receive their current binding
+without a denied tool call on both hosts. A pre-root `resume` preserves its
+operation, resolves a relative record path, and accepts flags in any order
+before checking the strict control-command grammar. The hook rewrites only
+standalone commands for this session's owned runner; compound commands and
+another session's credentials remain rejected.
+
 Version 1.2.1 fixes a false positive in the control-command interception
 that 1.2.0 introduced. A shell comment was not treated as inert, so an
 ordinary command such as `git status # then; python <runner> lifecycle
@@ -99,9 +111,10 @@ imported. Enrollment is deliberately not independent: a `Track:` or
 `Continue from handoff:` declaration registers only when its own turn was
 observed, because authorization binds to the stored turn reference, and a
 declaration that could not be enrolled says the session is untracked.
-`PreToolUse` and `Stop` are unchanged and still fail closed for tracked work.
+That release kept `PreToolUse` and `Stop` fail closed for tracked work;
+v1.2.2 makes runtime faults advisory while preserving policy checks.
 
-One way to stall a session remains and is not fixed here: a registry lock held
+One residual in that release, addressed in version 1.2.0: a registry lock held
 by a live process hangs a hook rather than blocking it. Bounding that needs
 non-blocking acquisition on both platforms and an explicit unknown-outcome
 result from a compare-and-swap that may already have published, which is its
@@ -293,16 +306,16 @@ disposable consumer can be installed from a verified local release source.
 
 ## Consumer installation
 
-Check out the public v1.2.1 release, inspect the proposed changes, then apply
+Check out the public v1.2.2 release, inspect the proposed changes, then apply
 them from that checkout:
 
 ```powershell
-git clone --branch v1.2.1 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
+git clone --branch v1.2.2 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
 Set-Location agent-handoff-toolkit
-python distribution/runner.py install --target <consumer-repository> --release v1.2.1 --dry-run
-python distribution/runner.py install --target <consumer-repository> --release v1.2.1 --apply
-python distribution/runner.py sync --target <consumer-repository> --release v1.2.1 --check
-python distribution/runner.py sync --target <consumer-repository> --release v1.2.1 --apply
+python distribution/runner.py install --target <consumer-repository> --release v1.2.2 --dry-run
+python distribution/runner.py install --target <consumer-repository> --release v1.2.2 --apply
+python distribution/runner.py sync --target <consumer-repository> --release v1.2.2 --check
+python distribution/runner.py sync --target <consumer-repository> --release v1.2.2 --apply
 ```
 
 Run install and sync only in an isolated, clean Git worktree with no concurrent

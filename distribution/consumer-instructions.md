@@ -19,8 +19,7 @@ until a root is registered.
   once. `lifecycle one-off` records that a session needs no handoff.
 - If a hook looks broken, run
   `python .agent-handoff-toolkit/runner.py lifecycle doctor` from the
-  repository root. An `AHK-HOOK-RUNTIME` notice blocks nothing in an untracked
-  session.
+  repository root. `AHK-HOOK-RUNTIME` blocks nothing in any session; policy rejections still apply.
 - Handoff records that predate the installed release are historical. Do not
   read, validate or migrate them.
 - Run `install` and `sync` only from the toolkit release checkout.
