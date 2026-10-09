@@ -74,32 +74,17 @@ def _bootstrap_hook_failure(
         return None
     if event in _QUIET_EVENTS:
         return ""
-    # The installed runtime could not be imported at all, so nothing here can
-    # tell whether the session declared tracked work. That is install
-    # corruption rather than a transient fault, and it keeps failing closed -
-    # but it still names the stage, so a consumer can tell it apart from a
-    # lifecycle decision.
+    # A broken runtime cannot establish a policy violation. Report its stage
+    # without denying the tools or turn ending needed to continue or repair it.
     details = "stage:" + stage
     name = type(error).__name__ if error is not None else ""
     # A fixed identifier from the interpreter: bounded, and never host content.
     if name.isascii() and name.isidentifier() and len(name) <= 64:
         details += ",error:" + name.replace("_", "-")
     reason = f"AHK-HOOK-RUNTIME: Repair lifecycle runtime and retry. failed={details}"
-    if event == "pre-tool-use":
-        value = {
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": reason,
-            }
-        }
-    elif event == "user-prompt-submit":
-        # Work still fails closed here, but the user's own message never does.
-        # Blocking it erases what they typed and starts no turn, so nobody is
-        # left who could act on this reason - and a corrupt runtime is exactly
-        # the state in which someone has to be able to talk to the session to
-        # repair it. This duplicates the package renderer deliberately: it runs
-        # only when no package module can be imported at all.
+    if event == "user-prompt-submit":
+        # Duplicate the package renderer deliberately: this also runs when no
+        # package module can be imported at all.
         value = {
             "systemMessage": (
                 "Agent handoff toolkit reported AHK-HOOK-RUNTIME; this prompt "
@@ -111,7 +96,7 @@ def _bootstrap_hook_failure(
             },
         }
     else:
-        value = {"decision": "block", "reason": reason}
+        value = {"systemMessage": reason}
     return json.dumps(value, separators=(",", ":"))
 
 

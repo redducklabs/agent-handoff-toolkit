@@ -260,16 +260,16 @@ class DistributionTests(unittest.TestCase):
         manifest = load_manifest()
 
         self.assertEqual(manifest["manifest_version"], 2)
-        self.assertEqual(manifest["toolkit_version"], "1.2.1")
+        self.assertEqual(manifest["toolkit_version"], "1.2.2")
         self.assertEqual(manifest["text_hash"], "utf8-lf-sha256-v1")
         self.assertIn(
-            '__version__ = "1.2.1"',
+            '__version__ = "1.2.2"',
             (ROOT / "src/agent_handoff_toolkit/__init__.py").read_text(
                 encoding="utf-8"
             ),
         )
         self.assertIn(
-            'version = "1.2.1"',
+            'version = "1.2.2"',
             (ROOT / "pyproject.toml").read_text(encoding="utf-8"),
         )
         self.assertEqual(manifest["record_schema_version"], 2)
@@ -650,7 +650,7 @@ class DistributionTests(unittest.TestCase):
         # exist, and this is where it lives.
         for phrase in (
             "runtime faults are not policy decisions",
-            "an unknown mode is not a tracked mode",
+            "runtime malfunctions are advisory in every mode",
             "locating the runner",
             "walking upward from the hook process's working directory",
             "`claude_project_dir` is deliberately not used",
@@ -697,7 +697,7 @@ class DistributionTests(unittest.TestCase):
             "each fires once",
             "lifecycle one-off",
             "lifecycle doctor",
-            "blocks nothing in an untracked session",
+            "blocks nothing in any session",
         ):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, normalized["consumer"])
@@ -1078,18 +1078,25 @@ class DistributionTests(unittest.TestCase):
                 newline="\n",
             )
 
-            result = run_installed_command(
-                "python .agent-handoff-toolkit/runner.py hook "
-                "--platform claude --event user-prompt-submit",
-                consumer,
-                "{}",
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            output = json.loads(result.stdout)
-            self.assertNotIn("decision", output)
-            self.assertEqual(
-                output["hookSpecificOutput"]["additionalContext"], DISPATCH_REASON
-            )
+            for platform in ("claude", "codex"):
+                for event in ("user-prompt-submit", "pre-tool-use", "stop"):
+                    with self.subTest(platform=platform, event=event):
+                        result = run_installed_command(
+                            "python .agent-handoff-toolkit/runner.py hook "
+                            f"--platform {platform} --event {event}",
+                            consumer,
+                            "{}",
+                        )
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(result.stderr, "")
+                        output = json.loads(result.stdout)
+                        self.assertNotIn("decision", output)
+                        specific = output.get("hookSpecificOutput", {})
+                        self.assertNotIn("permissionDecision", specific)
+                        self.assertEqual(
+                            specific.get("additionalContext", output["systemMessage"]),
+                            DISPATCH_REASON,
+                        )
 
     def test_a_malformed_gated_hook_command_never_exits_two(self) -> None:
         """A corrupted managed command must not read as a denial.
@@ -1102,8 +1109,8 @@ class DistributionTests(unittest.TestCase):
 
         for event, key in (
             ("user-prompt-submit", "additionalContext"),
-            ("pre-tool-use", "permissionDecisionReason"),
-            ("stop", "reason"),
+            ("pre-tool-use", "systemMessage"),
+            ("stop", "systemMessage"),
         ):
             result = subprocess.run(
                 [
@@ -1371,27 +1378,18 @@ class DistributionTests(unittest.TestCase):
                             self.assertEqual(
                                 output,
                                 {
-                                    "hookSpecificOutput": {
-                                        "hookEventName": "PreToolUse",
-                                        "permissionDecision": "deny",
-                                        "permissionDecisionReason": BOOTSTRAP_REASON,
-                                    }
+                                    "systemMessage": BOOTSTRAP_REASON,
                                 },
                             )
                         elif event == "stop":
                             self.assertEqual(
                                 output,
                                 {
-                                    "decision": "block",
-                                    "reason": BOOTSTRAP_REASON,
+                                    "systemMessage": BOOTSTRAP_REASON,
                                 },
                             )
                         else:
-                            # Install corruption still fails closed for work,
-                            # but never for the user's own message: erasing a
-                            # prompt leaves nobody able to act on the reason,
-                            # and the runner cannot be repaired by a session
-                            # that cannot be spoken to.
+                            # Prompt diagnostics are visible to the model too.
                             self.assertNotIn("decision", output)
                             self.assertEqual(
                                 output["hookSpecificOutput"]["additionalContext"],
@@ -1421,18 +1419,18 @@ class DistributionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             consumer = Path(directory)
             result = run_source_cli(
-                "install", "--apply", target=consumer, release="v1.2.1"
+                "install", "--apply", target=consumer, release="v1.2.2"
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            check = run_source_cli("sync", "--check", target=consumer, release="v1.2.1")
+            check = run_source_cli("sync", "--check", target=consumer, release="v1.2.2")
             self.assertEqual(check.returncode, 0, check.stderr)
             state = json.loads(
                 (consumer / ".agent-handoff-toolkit/install-state.json").read_text(
                     encoding="utf-8"
                 )
             )
-            self.assertEqual(state["release"], "v1.2.1")
-            self.assertEqual(state["toolkit_version"], "1.2.1")
+            self.assertEqual(state["release"], "v1.2.2")
+            self.assertEqual(state["toolkit_version"], "1.2.2")
             self.assertEqual(state["state_version"], 1)
             self.assertEqual(state["record_schema_version"], 2)
             self.assertEqual(
@@ -1623,11 +1621,11 @@ class DistributionTests(unittest.TestCase):
             legacy_record.write_bytes(legacy_bytes)
 
             upgraded = run_source_cli(
-                "sync", "--apply", target=consumer, release="v1.2.1"
+                "sync", "--apply", target=consumer, release="v1.2.2"
             )
             self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
             current = run_source_cli(
-                "sync", "--check", target=consumer, release="v1.2.1"
+                "sync", "--check", target=consumer, release="v1.2.2"
             )
 
             self.assertEqual(current.returncode, 0, current.stderr)
@@ -1654,8 +1652,8 @@ class DistributionTests(unittest.TestCase):
                     encoding="utf-8"
                 )
             )
-            self.assertEqual(state["release"], "v1.2.1")
-            self.assertEqual(state["toolkit_version"], "1.2.1")
+            self.assertEqual(state["release"], "v1.2.2")
+            self.assertEqual(state["toolkit_version"], "1.2.2")
             self.assertEqual(state["record_schema_version"], 2)
             installed_source = (
                 consumer / ".agent-handoff-toolkit" / "src" / "agent_handoff_toolkit"
@@ -1698,7 +1696,7 @@ class DistributionTests(unittest.TestCase):
                 json.dumps(modified), encoding="utf-8", newline="\n"
             )
             conflict = run_source_cli(
-                "sync", "--check", target=conflicted, release="v1.2.1"
+                "sync", "--check", target=conflicted, release="v1.2.2"
             )
             self.assertEqual(conflict.returncode, 2)
             self.assertIn("managed-json-modified", conflict.stdout)
@@ -1725,7 +1723,7 @@ class DistributionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             consumer = Path(directory)
             installed = run_source_cli(
-                "install", "--apply", target=consumer, release="v1.2.1"
+                "install", "--apply", target=consumer, release="v1.2.2"
             )
             self.assertEqual(installed.returncode, 0, installed.stderr)
             installed_configs = {

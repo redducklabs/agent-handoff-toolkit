@@ -574,7 +574,7 @@ def run_acceptance(
                 "--target",
                 str(scratch_path),
                 "--release",
-                "v1.2.1",
+                "v1.2.2",
                 "--apply",
             ),
             cwd=root,

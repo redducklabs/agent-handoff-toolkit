@@ -40,6 +40,7 @@ from .lifecycle import (
     evaluate_user_prompt,
 )
 from .lifecycle_operations import (
+    _FLAGS,
     SCOPE_KIND_ORDER,
     SCOPE_KINDS,
     LifecycleService,
@@ -50,6 +51,7 @@ from .lifecycle_operations import (
 )
 from .lifecycle_storage import (
     LOCK_TIMEOUT_SECONDS,
+    LifecycleStorageError,
     LocalLifecycleStorage,
     StaleLifecycleState,
     _check_path,
@@ -552,17 +554,6 @@ def _runtime_advisory(issue):
     )
 
 
-def _declared_tracked(snapshot):
-    """Report whether the session opted in to enforcement.
-
-    An unknown mode is not tracked: state that could not be read cannot show
-    that a session declared anything, and a session that declared nothing is
-    ungated by construction.
-    """
-
-    return snapshot is not None and snapshot.session.mode not in _UNGATED
-
-
 def _commit(storage, raw_id, snapshot, mutation):
     return storage.compare_and_swap(
         raw_id,
@@ -669,6 +660,16 @@ def _sibling_checkout(target, root):
 
 
 def _candidate(event, snapshot, root):
+    try:
+        return _load_candidate(event, snapshot, root)
+    except (LifecycleStorageError, OSError, ValueError) as error:
+        # An offered record must remain readable under the source guards.
+        # Rejection is a policy outcome; unrelated runtime faults propagate
+        # to the advisory boundary without accepting or publishing the record.
+        raise _PointerRefused("pointer-record-invalid") from error
+
+
+def _load_candidate(event, snapshot, root):
     message = event.latest_assistant_message
     if message is None:
         # The turn produced no usable final text, so it offers no candidate.
@@ -886,6 +887,13 @@ def _stale_inspect(command, runner, root, session):
     """This session's own `inspect`, wrong only in its challenge or revision."""
 
     tokens = command.split(" ")
+    if tokens == ["python", runner.as_posix(), "lifecycle", "inspect"] or tokens == [
+        "python",
+        _advisory_runner(root).as_posix(),
+        "lifecycle",
+        "inspect",
+    ]:
+        return True
     return (
         re.fullmatch(r"[A-Za-z0-9._:/ -]+", command) is not None
         and len(tokens) == 10
@@ -899,24 +907,26 @@ def _stale_inspect(command, runner, root, session):
 
 
 def _rebind(event, command):
-    """Run the bound command in place of the stale one, deciding nothing.
+    """Substitute only a validated, standalone toolkit control command.
 
-    Claude Code only. `updatedInput` replaces the tool input, so every other
-    field is carried over unchanged. No `permissionDecision` is set: the
-    user's own permission flow applies to the substitute as it would have to
-    the original.
+    Every other input field is preserved. Claude needs no permission decision;
+    Codex requires allow with updatedInput. This is never used for arbitrary
+    shell commands, compound commands, or another session's credentials.
     """
 
     inputs = dict(event.tool_input)
     inputs["command"] = command
+    specific = {
+        "hookEventName": "PreToolUse",
+        "updatedInput": inputs,
+    }
+    if event.host == "codex":
+        # Codex rejects updatedInput unless accompanied by allow. Only the
+        # toolkit's validated control command is substituted here.
+        specific["permissionDecision"] = "allow"
     return HookExecution(
         stdout=json.dumps(
-            {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "updatedInput": inputs,
-                }
-            },
+            {"hookSpecificOutput": specific},
             separators=(",", ":"),
         )
     )
@@ -946,6 +956,35 @@ def _repair_bootstrap(command, runner, session, capability, reasons=None):
     tokens = command.split(" ")
     if len(tokens) < 4 or tokens[0] != "python" or tokens[2] != "lifecycle":
         return reject("command-shape")
+    if tokens[1] not in {runner.as_posix(), ".agent-handoff-toolkit/runner.py"}:
+        return reject("runner-path")
+    if (len(tokens) - 4) % 2:
+        return reject("flag-count")
+    values = {}
+    for index in range(4, len(tokens), 2):
+        flag = tokens[index]
+        if not flag.startswith("--") or flag in values:
+            return reject("flag-order")
+        values[flag] = tokens[index + 1]
+    if values.get("--session-key", session.session_key) != session.session_key:
+        return reject("session-key")
+    # Normalize argument order before the strict parser, retaining its closed
+    # flag set and all value checks. CLI flag order is not authorization.
+    flags = _FLAGS.get(tokens[3])
+    if flags is None:
+        return reject("operation")
+    if any(flag[2:] not in flags for flag in values):
+        return reject("flag-count")
+    if tokens[3] == "resume" and "--record" in values:
+        path = Path(values["--record"])
+        if not path.is_absolute():
+            values["--record"] = (runner.parent.parent / path).resolve().as_posix()
+    tokens = tokens[:4] + [
+        token
+        for flag in flags
+        if "--" + flag in values
+        for token in ("--" + flag, values["--" + flag])
+    ]
     tokens[1] = runner.as_posix()
     # A plain attempt - `lifecycle one-off` - carries no binding at all. Each
     # missing credential goes where the fixed flag order puts it.
@@ -1411,6 +1450,11 @@ def _pre_tool(event, snapshot, root, storage, raw_id):
     ):
         raise ValueError("unsafe owned runner")
     capability = storage.control_capability(session)
+    if not compound and not trailer and _stale_inspect(command, runner, root, session):
+        corrected = _control_command(runner, session, capability, "inspect")
+        if corrected == command:
+            return HookExecution()
+        return _rebind(event, corrected)
     reasons = []
     repaired = _repair_bootstrap(command, runner, session, capability, reasons)
     code = "AHK-PRE-ROOT"
@@ -1420,17 +1464,6 @@ def _pre_tool(event, snapshot, root, storage, raw_id):
         if not compound and _admits(command, runner, session, capability):
             return HookExecution()
         corrected = _control_command(runner, session, capability, "inspect")
-        # The one denial whose command differs from the attempt only in its
-        # credentials. Claude Code can run the bound form in its place; the
-        # substitute must pass the same check that admits it when typed.
-        if (
-            event.host == "claude"
-            and not compound
-            and not trailer
-            and _stale_inspect(command, runner, root, session)
-            and _admits(corrected, runner, session, capability)
-        ):
-            return _rebind(event, corrected)
     elif repaired is not None:
         corrected, parsed = repaired
         if parsed.operation == "register-root":
@@ -1468,6 +1501,8 @@ def _pre_tool(event, snapshot, root, storage, raw_id):
                 )
         if corrected == command and not compound:
             return HookExecution()
+        if parsed.operation == "resume" and not compound and not trailer:
+            return _rebind(event, corrected)
     else:
         strict = len(reasons)
         formed = _form_register_root(command, runner, session, capability, reasons)
@@ -2426,25 +2461,9 @@ def run_lifecycle_hook(platform, name, raw, repo_root, storage=None):
         decision = LifecycleDecision(DecisionKind.BLOCK, (_issue("AHK-STOP-STALE"),))
     except Exception as error:
         issue = _runtime_issue(stage, error)
-        # A runtime fault is a malfunction, not a policy decision. A session
-        # that declared no tracked work is ungated by construction, so there is
-        # nothing here to enforce and blocking only removes the session's way
-        # out - it was denied the very tools needed to repair the fault. Report
-        # it on the advisory channel instead, which carries no decision at all.
-        if not _declared_tracked(snapshot):
-            return _runtime_advisory(issue)
-        # Declared tracked work keeps the documented fail-closed guarantee. A
-        # counted block is the only thing that arms the correction circuit, and
-        # this is the last-resort handler, so a failure forming the counted
-        # block still has to yield a rendered decision rather than a crash.
-        try:
-            decision = (
-                _blocked_stop(snapshot, (issue,), allow_session_identity=True)
-                if event_kind is EventName.STOP
-                else LifecycleDecision(DecisionKind.BLOCK, (issue,))
-            )
-        except Exception:
-            decision = LifecycleDecision(DecisionKind.BLOCK, (issue,))
+        # Malfunctions cannot decide policy, even for declared tracked work.
+        # Report the failed stage without denying work or arming the circuit.
+        return _runtime_advisory(issue)
     output = _publish_decision(
         platform, event_kind, decision, storage, raw_id, snapshot
     )
@@ -2589,13 +2608,7 @@ def _publish_decision(
                         )
                 except Exception as error:
                     issue = _runtime_issue("republish-stale", error)
-                    if not _declared_tracked(snapshot):
-                        return _runtime_advisory(issue)
-                    return render_hook_execution(
-                        platform,
-                        event_kind,
-                        LifecycleDecision(DecisionKind.BLOCK, (issue,)),
-                    )
+                    return _runtime_advisory(issue)
             return render_hook_execution(
                 platform,
                 event_kind,
@@ -2603,11 +2616,5 @@ def _publish_decision(
             )
         except Exception as error:
             issue = _runtime_issue("commit-state", error)
-            if not _declared_tracked(snapshot):
-                return _runtime_advisory(issue)
-            return render_hook_execution(
-                platform,
-                event_kind,
-                LifecycleDecision(DecisionKind.BLOCK, (issue,)),
-            )
+            return _runtime_advisory(issue)
     return output

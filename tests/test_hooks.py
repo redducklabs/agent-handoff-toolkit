@@ -101,19 +101,19 @@ class HostHookTests(unittest.TestCase):
                 self.assertIn("stage:dispatch-hook", reason)
                 self.assertIn("error:RuntimeError", reason)
                 self.assertNotIn("sensitive", reason)
+                data = json.loads(stdout.getvalue())
+                self.assertNotIn("decision", data)
+                self.assertNotIn(
+                    "permissionDecision", data.get("hookSpecificOutput", {})
+                )
 
-    def test_adapter_import_failure_names_the_stage_and_still_fails_closed(self):
-        """A missing owned runtime file is install corruption, not a fault here.
-
-        The runner cannot tell whether the session declared tracked work when
-        the module that would answer that is the one failing to load, so this
-        boundary keeps blocking. It must still say what failed.
-        """
+    def test_adapter_import_failure_names_the_stage_without_blocking(self):
+        """Install corruption is advisory and names the failing boundary."""
 
         for event, key in (
-            ("stop", "reason"),
+            ("stop", "systemMessage"),
             ("user-prompt-submit", "additionalContext"),
-            ("pre-tool-use", "permissionDecisionReason"),
+            ("pre-tool-use", "systemMessage"),
         ):
             with mock_patch.dict(
                 sys.modules, {"agent_handoff_toolkit.hook_adapters": None}
@@ -125,9 +125,10 @@ class HostHookTests(unittest.TestCase):
                 self.assertEqual(output.exit_code, 0)
                 self.assertIn("AHK-HOOK-RUNTIME", reason)
                 self.assertIn("stage:load-adapter", reason)
-                # Work fails closed here; the user's own message never does.
-                if event == "user-prompt-submit":
-                    self.assertNotIn("decision", data)
+                self.assertNotIn("decision", data)
+                self.assertNotIn(
+                    "permissionDecision", data.get("hookSpecificOutput", {})
+                )
 
     def test_cli_bounds_input_read_before_dispatch(self):
         class BoundedInput(io.StringIO):
