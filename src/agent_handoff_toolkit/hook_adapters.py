@@ -760,7 +760,7 @@ def _load_candidate(event, snapshot, root):
 
 
 # An ambiguous `#` doubles the readings masked; past this many, the rest of
-# the command is left unmasked instead.
+# the command is left unmasked instead, and that reading exempts nothing.
 _MAX_COMMENT_FORKS = 6
 
 
@@ -778,7 +778,9 @@ def _mask_shell(command):
     Telling those apart needs a parser, and either reading can hide a command
     the other runs - a quote in a real comment would open a string - so such a
     `#` is masked both ways and every reading is returned. An invocation found
-    in any reading is intercepted, never hidden.
+    in any reading is intercepted, never hidden. Each reading is paired with
+    whether it is exact: one past the fork limit leaves quoted text visible,
+    so it cannot prove a help flag or an unbound operation.
     """
 
     readings = []
@@ -825,7 +827,8 @@ def _mask_from(command, index, masked, quote, pending, bracketed, forks, reading
             if bracketed or (masked and masked[-1][-1] in "()`<>"):
                 if forks >= _MAX_COMMENT_FORKS:
                     masked.append(command[index:])
-                    break
+                    readings.append(("".join(masked)[:length], False))
+                    return
                 _mask_from(
                     command,
                     stop,
@@ -860,7 +863,7 @@ def _mask_from(command, index, masked, quote, pending, bracketed, forks, reading
             bracketed = bracketed or char in "()[]{}`"
             masked.append(char)
         index += 1
-    readings.append("".join(masked)[:length])
+    readings.append(("".join(masked)[:length], True))
 
 
 def _control_span(command):
@@ -874,15 +877,18 @@ def _control_span(command):
 
     if not isinstance(command, str) or "lifecycle" not in command:
         return None
-    for masked in _mask_shell(command):
-        span = _reading_span(masked)
+    for masked, exact in _mask_shell(command):
+        span = _reading_span(masked, exact)
         if span is not None:
             return span
     return None
 
 
-def _reading_span(masked):
-    """The first binding lifecycle invocation in one masked reading."""
+def _reading_span(masked, exact):
+    """The first binding lifecycle invocation in one masked reading.
+
+    An inexact reading exempts nothing: any lifecycle invocation is binding.
+    """
 
     for match in _INVOCATION.finditer(masked):
         start = match.start(1)
@@ -895,7 +901,9 @@ def _reading_span(masked):
         stop = start + len(text)
         words = text.split()
         operation = words[3] if len(words) > 3 else None
-        if operation in _UNBOUND_CONTROL or _HELP_FLAGS.intersection(words[3:]):
+        if exact and (
+            operation in _UNBOUND_CONTROL or _HELP_FLAGS.intersection(words[3:])
+        ):
             continue
         return start, stop
     return None

@@ -289,7 +289,7 @@
     },
     {
       "source": "src/agent_handoff_toolkit/hook_adapters.py",
-      "sha256": "75a3ff22eec666e445848ab6df16307ceea5766ea530339410f896a68653a9a7",
+      "sha256": "b5fd5a37282e48781535f195439c01714e32441dc9943bb9cde78f618dda61ce",
       "install": {
         "mode": "copy",
         "transform": "none",

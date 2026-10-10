@@ -3711,6 +3711,8 @@ class EnforcementTests(unittest.TestCase):
             'echo $((# $(python r lifecycle inspect "x -h x")))',
             # Past the fork limit the rest is left unmasked, not hidden.
             "echo [ " + "# '\n" * 8 + "python r lifecycle inspect",
+            # Unmasked text proves no help flag or exempt operation.
+            "echo [\n" + "# c\n" * 7 + 'python r lifecycle inspect "x --help x"',
         ):
             with self.subTest(command=command):
                 self.assertIn("AHK-HOOK-RUNTIME", run(command).stdout)
