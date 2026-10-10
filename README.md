@@ -6,7 +6,17 @@ This repository provides a shared contract, deterministic validation and renderi
 
 ## Status
 
-Version 1.2.2 keeps hook malfunctions from interrupting the user's work.
+Version 1.2.3 closes a gap in the comment rule of the control-command
+interception. A `#` counted as the start of a comment whenever the raw
+character before it was a blank or an operator, even when that character
+was escaped, and after a closing substitution, so commands such as
+`echo x\ #; python <runner> lifecycle inspect` and
+`echo $(printf x)#x; ...` hid an invocation the shell runs. The character
+before `#` is now read after masking, and a `#` after `)` or a backtick
+stays inside its word, so an ambiguous case is intercepted rather than
+hidden.
+
+Version 1.2.2 kept hook malfunctions from interrupting the user's work.
 Runtime, storage, and import failures report `AHK-HOOK-RUNTIME` as a notice
 without denying tools or blocking a turn. Invalid records and lifecycle policy
 violations still fail validation; a malfunction never counts as acceptance.
@@ -112,7 +122,7 @@ imported. Enrollment is deliberately not independent: a `Track:` or
 observed, because authorization binds to the stored turn reference, and a
 declaration that could not be enrolled says the session is untracked.
 That release kept `PreToolUse` and `Stop` fail closed for tracked work;
-v1.2.2 makes runtime faults advisory while preserving policy checks.
+version 1.2.2 made runtime faults advisory while preserving policy checks.
 
 One residual in that release, addressed in version 1.2.0: a registry lock held
 by a live process hangs a hook rather than blocking it. Bounding that needs
@@ -306,16 +316,16 @@ disposable consumer can be installed from a verified local release source.
 
 ## Consumer installation
 
-Check out the public v1.2.2 release, inspect the proposed changes, then apply
+Check out the public v1.2.3 release, inspect the proposed changes, then apply
 them from that checkout:
 
 ```powershell
-git clone --branch v1.2.2 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
+git clone --branch v1.2.3 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
 Set-Location agent-handoff-toolkit
-python distribution/runner.py install --target <consumer-repository> --release v1.2.2 --dry-run
-python distribution/runner.py install --target <consumer-repository> --release v1.2.2 --apply
-python distribution/runner.py sync --target <consumer-repository> --release v1.2.2 --check
-python distribution/runner.py sync --target <consumer-repository> --release v1.2.2 --apply
+python distribution/runner.py install --target <consumer-repository> --release v1.2.3 --dry-run
+python distribution/runner.py install --target <consumer-repository> --release v1.2.3 --apply
+python distribution/runner.py sync --target <consumer-repository> --release v1.2.3 --check
+python distribution/runner.py sync --target <consumer-repository> --release v1.2.3 --apply
 ```
 
 Run install and sync only in an isolated, clean Git worktree with no concurrent

@@ -3676,6 +3676,12 @@ class EnforcementTests(unittest.TestCase):
             "git status # note\npython r lifecycle inspect",
             "echo a#b; python r lifecycle inspect",
             "echo ${#x}; python r lifecycle inspect",
+            "echo x\\ #; python r lifecycle inspect",
+            "echo x\\\t#; python r lifecycle inspect",
+            "echo x\\;#; python r lifecycle inspect",
+            'echo "a"#; python r lifecycle inspect',
+            "echo $(printf x)#x; python r lifecycle inspect",
+            "echo `printf x`#x; python r lifecycle inspect",
         ):
             with self.subTest(command=command):
                 self.assertIn("AHK-HOOK-RUNTIME", run(command).stdout)

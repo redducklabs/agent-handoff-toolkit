@@ -33,6 +33,10 @@ Read `docs/agent-handoff/contract.md` and `docs/agent-handoff/mechanics.md` befo
   worktree of the same repository (same git common directory).
 - Never claim semantic truth is mechanically verified. Validation proves structure and internal consistency only.
 - Add or update tests before implementation changes and run the full verification commands in `README.md` before reporting success.
+- Cut releases and re-pin consumers by `docs/releasing.md`: manifest hashes
+  are re-synced by hand, POSIX-only tests must be run under WSL on Windows
+  before pushing, and consumers are re-pinned in new worktrees, never their
+  primary checkout.
 - Do not add secrets, credentials, prompts, replies, transcripts, or customer data to fixtures or logs.
 - Use `gh` for GitHub operations.
 - Do not use `gh pr merge --auto` as a check gate unless repository rulesets
