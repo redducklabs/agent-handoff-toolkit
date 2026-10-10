@@ -3705,6 +3705,12 @@ class EnforcementTests(unittest.TestCase):
             "(true)# '\npython r lifecycle inspect",
             "echo hi >#'\npython r lifecycle inspect",
             "echo hi <#x ; python r lifecycle inspect",
+            # Quoted text after an ambiguous `#` is still masked in each
+            # reading, so a quoted `--help` is not taken for a help flag.
+            'echo [ # comment\npython r lifecycle inspect "x --help x"',
+            'echo $((# $(python r lifecycle inspect "x -h x")))',
+            # Past the fork limit the rest is left unmasked, not hidden.
+            "echo [ " + "# '\n" * 8 + "python r lifecycle inspect",
         ):
             with self.subTest(command=command):
                 self.assertIn("AHK-HOOK-RUNTIME", run(command).stdout)

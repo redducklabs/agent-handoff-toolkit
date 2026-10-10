@@ -11,12 +11,11 @@ arithmetic, a parameter expansion or `[[`, a `#` after a blank or `(` is
 not a comment, but the interception masked the rest of the line, so
 `echo $((# $(python <runner> lifecycle inspect)))` hid an invocation the
 shell runs. Once any bracket or backtick has appeared in a command, or
-right after a redirection, a word-initial `#` leaves the rest of the command
-unmasked, since either
-reading of it could hide what the other runs: an ambiguous invocation is
-intercepted, never hidden. The interception is not a shell parser and does not look inside
-double quotes or heredoc bodies; control commands still need the session's
-credentials, which the CLI checks.
+right after a redirection, a word-initial `#` is masked both as a comment
+and as part of a word, and an invocation found in either reading is
+intercepted, never hidden. The interception is not a shell parser and does
+not look inside double quotes or heredoc bodies; control commands still
+need the session's credentials, which the CLI checks.
 
 Version 1.2.3 closed a gap in the comment rule of the control-command
 interception. A `#` counted as the start of a comment whenever the raw

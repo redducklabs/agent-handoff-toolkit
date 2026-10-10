@@ -759,21 +759,34 @@ def _load_candidate(event, snapshot, root):
     )
 
 
+# An ambiguous `#` doubles the readings masked; past this many, the rest of
+# the command is left unmasked instead.
+_MAX_COMMENT_FORKS = 6
+
+
 def _mask_shell(command):
-    """The command with inert text replaced, character for character.
+    """Every reading of the command with inert text replaced, character for character.
 
     Quoted text, a character escaped by a backslash outside single quotes, a
     comment from a word-initial `#` to the end of its line, and every heredoc
     body line through its terminator are masked; the quote
     characters, operators and line breaks stay. An unterminated heredoc masks
     the rest of the command, as the shell would read it.
+
+    Inside arithmetic, a parameter expansion or `[[`, a word-initial `#` is not
+    a comment; after `)`, a backtick or a redirection it may or may not be one.
+    Telling those apart needs a parser, and either reading can hide a command
+    the other runs - a quote in a real comment would open a string - so such a
+    `#` is masked both ways and every reading is returned. An invocation found
+    in any reading is intercepted, never hidden.
     """
 
-    masked = []
-    quote = None
-    pending = []
-    bracketed = False
-    index = 0
+    readings = []
+    _mask_from(command, 0, [], None, [], False, 0, readings)
+    return readings
+
+
+def _mask_from(command, index, masked, quote, pending, bracketed, forks, readings):
     length = len(command)
     while index < length:
         char = command[index]
@@ -806,19 +819,28 @@ def _mask_shell(command):
             # after it - a separator or a mention of the runner - is a command.
             # The preceding character is read as masked: an escaped blank or
             # operator is part of the word, so a `#` after it is not a comment.
-            if bracketed or (masked and masked[-1][-1] in "<>"):
-                # Inside arithmetic, a parameter expansion or `[[`, such a `#`
-                # is not a comment; after `)`, a backtick or a redirection it
-                # may or may not be one. Telling those apart needs a parser,
-                # and either reading can hide a command the other runs - a
-                # quote in a real comment would open a string - so nothing
-                # after it is masked: an ambiguous invocation is intercepted,
-                # never hidden.
-                masked.append(command[index:])
-                break
             end = command.find("\n", index)
             stop = length if end < 0 else end
-            masked.append("#" + "_" * (stop - index - 1))
+            comment = "#" + "_" * (stop - index - 1)
+            if bracketed or (masked and masked[-1][-1] in "()`<>"):
+                if forks >= _MAX_COMMENT_FORKS:
+                    masked.append(command[index:])
+                    break
+                _mask_from(
+                    command,
+                    stop,
+                    [*masked, comment],
+                    quote,
+                    list(pending),
+                    bracketed,
+                    forks + 1,
+                    readings,
+                )
+                masked.append(char)
+                forks += 1
+                index += 1
+                continue
+            masked.append(comment)
             index = stop
             continue
         elif char == "\n" and pending:
@@ -838,7 +860,7 @@ def _mask_shell(command):
             bracketed = bracketed or char in "()[]{}`"
             masked.append(char)
         index += 1
-    return "".join(masked)[:length]
+    readings.append("".join(masked)[:length])
 
 
 def _control_span(command):
@@ -852,7 +874,16 @@ def _control_span(command):
 
     if not isinstance(command, str) or "lifecycle" not in command:
         return None
-    masked = _mask_shell(command)
+    for masked in _mask_shell(command):
+        span = _reading_span(masked)
+        if span is not None:
+            return span
+    return None
+
+
+def _reading_span(masked):
+    """The first binding lifecycle invocation in one masked reading."""
+
     for match in _INVOCATION.finditer(masked):
         start = match.start(1)
         end = _SEGMENT_END.search(masked, match.end())
