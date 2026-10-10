@@ -801,19 +801,19 @@ def _mask_shell(command):
             masked.append(command[index : match.end()])
             index = match.end()
             continue
-        elif (
-            char == "#"
-            and not bracketed
-            and (not masked or masked[-1][-1] in " \t\n;&|")
-        ):
+        elif char == "#" and (not masked or masked[-1][-1] in " \t\n;&|"):
             # A word-initial `#` comments out the rest of its line, so nothing
             # after it - a separator or a mention of the runner - is a command.
             # The preceding character is read as masked: an escaped blank or
             # operator is part of the word, so a `#` after it is not a comment.
-            # Inside arithmetic, a parameter expansion or `[[`, a `#` after a
-            # blank is not a comment either, and telling those apart needs a
-            # parser. Once any bracket or backtick has appeared, a `#` stays
-            # visible: an ambiguous invocation is intercepted, never hidden.
+            if bracketed:
+                # Inside arithmetic, a parameter expansion or `[[`, such a `#`
+                # is not a comment, and telling those apart needs a parser.
+                # Either reading can hide a command the other runs - a quote in
+                # a real comment would open a string - so nothing after it is
+                # masked: an ambiguous invocation is intercepted, never hidden.
+                masked.append(command[index:])
+                break
             end = command.find("\n", index)
             stop = length if end < 0 else end
             masked.append("#" + "_" * (stop - index - 1))

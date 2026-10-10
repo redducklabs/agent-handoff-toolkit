@@ -10,9 +10,10 @@ Version 1.2.4 fixes a regression from the 1.2.1 comment rule. Inside
 arithmetic, a parameter expansion or `[[`, a `#` after a blank or `(` is
 not a comment, but the interception masked the rest of the line, so
 `echo $((# $(python <runner> lifecycle inspect)))` hid an invocation the
-shell runs. Once any bracket or backtick has appeared in a command, a `#` no
-longer starts a comment: an ambiguous invocation is intercepted, never
-hidden. The interception is not a shell parser and does not look inside
+shell runs. Once any bracket or backtick has appeared in a command, a
+word-initial `#` leaves the rest of the command unmasked, since either
+reading of it could hide what the other runs: an ambiguous invocation is
+intercepted, never hidden. The interception is not a shell parser and does not look inside
 double quotes or heredoc bodies; control commands still need the session's
 credentials, which the CLI checks.
 

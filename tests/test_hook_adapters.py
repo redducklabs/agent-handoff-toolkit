@@ -3693,6 +3693,12 @@ class EnforcementTests(unittest.TestCase):
             # After any bracket or backtick, telling a comment from a word is
             # left to the shell: the invocation is intercepted, never hidden.
             "echo $((1 + 2)) # ; python r lifecycle inspect",
+            # Such a `#` may still start a real comment, whose quote must not
+            # open a string that hides the next line.
+            "echo [ # '\npython r lifecycle inspect",
+            '(true) # it"s\npython r lifecycle inspect',
+            "(true) # x <<EOF\npython r lifecycle inspect\nEOF",
+            "(true) # x \\\npython r lifecycle inspect",
         ):
             with self.subTest(command=command):
                 self.assertIn("AHK-HOOK-RUNTIME", run(command).stdout)
