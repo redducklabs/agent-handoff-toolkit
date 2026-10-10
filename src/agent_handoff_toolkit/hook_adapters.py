@@ -759,20 +759,36 @@ def _load_candidate(event, snapshot, root):
     )
 
 
+# An ambiguous `#` doubles the readings masked; past this many, or once the
+# readings would total more characters than the budget, the rest of the
+# command is left unmasked instead, and that reading exempts nothing.
+_MAX_COMMENT_FORKS = 6
+_MAX_MASKED_CHARACTERS = 4_000_000
+
+
 def _mask_shell(command):
-    """The command with inert text replaced, character for character.
+    """Every reading of the command with inert text replaced, character for character.
 
     Quoted text, a character escaped by a backslash outside single quotes, a
     comment from a word-initial `#` to the end of its line, and every heredoc
     body line through its terminator are masked; the quote
     characters, operators and line breaks stay. An unterminated heredoc masks
     the rest of the command, as the shell would read it.
+
+    Inside arithmetic, a parameter expansion or `[[`, a word-initial `#` is not
+    a comment; after `)`, a backtick or a redirection it may or may not be one.
+    Telling those apart needs a parser, and either reading can hide a command
+    the other runs - a quote in a real comment would open a string - so such a
+    `#` is masked both ways and every reading is yielded. An invocation found
+    in any reading is intercepted, never hidden. Each reading is paired with
+    whether it is exact: one past the fork limit leaves quoted text visible,
+    so it cannot prove a help flag or an unbound operation.
     """
 
-    masked = []
-    quote = None
-    pending = []
-    index = 0
+    yield from _mask_from(command, 0, [], None, [], False, 0)
+
+
+def _mask_from(command, index, masked, quote, pending, bracketed, forks):
     length = len(command)
     while index < length:
         char = command[index]
@@ -800,16 +816,36 @@ def _mask_shell(command):
             masked.append(command[index : match.end()])
             index = match.end()
             continue
-        elif char == "#" and (not masked or masked[-1][-1] in " \t\n;&|("):
+        elif char == "#" and (not masked or masked[-1][-1] in " \t\n;&|()`<>"):
             # A word-initial `#` comments out the rest of its line, so nothing
             # after it - a separator or a mention of the runner - is a command.
             # The preceding character is read as masked: an escaped blank or
             # operator is part of the word, so a `#` after it is not a comment.
-            # A closing `)` or backtick may end a substitution inside a word,
-            # so a `#` after one is read as part of the word too.
             end = command.find("\n", index)
             stop = length if end < 0 else end
-            masked.append("#" + "_" * (stop - index - 1))
+            comment = "#" + "_" * (stop - index - 1)
+            if bracketed or (masked and masked[-1][-1] in "()`<>"):
+                if (
+                    forks >= _MAX_COMMENT_FORKS
+                    or length << (forks + 1) > _MAX_MASKED_CHARACTERS
+                ):
+                    masked.append(command[index:])
+                    yield "".join(masked)[:length], False
+                    return
+                yield from _mask_from(
+                    command,
+                    stop,
+                    [*masked, comment],
+                    quote,
+                    list(pending),
+                    bracketed,
+                    forks + 1,
+                )
+                masked.append(char)
+                forks += 1
+                index += 1
+                continue
+            masked.append(comment)
             index = stop
             continue
         elif char == "\n" and pending:
@@ -826,9 +862,10 @@ def _mask_shell(command):
                     pending.pop(0)
             continue
         else:
+            bracketed = bracketed or char in "()[]{}`"
             masked.append(char)
         index += 1
-    return "".join(masked)[:length]
+    yield "".join(masked)[:length], True
 
 
 def _control_span(command):
@@ -842,7 +879,19 @@ def _control_span(command):
 
     if not isinstance(command, str) or "lifecycle" not in command:
         return None
-    masked = _mask_shell(command)
+    for masked, exact in _mask_shell(command):
+        span = _reading_span(masked, exact)
+        if span is not None:
+            return span
+    return None
+
+
+def _reading_span(masked, exact):
+    """The first binding lifecycle invocation in one masked reading.
+
+    An inexact reading exempts nothing: any lifecycle invocation is binding.
+    """
+
     for match in _INVOCATION.finditer(masked):
         start = match.start(1)
         end = _SEGMENT_END.search(masked, match.end())
@@ -854,7 +903,9 @@ def _control_span(command):
         stop = start + len(text)
         words = text.split()
         operation = words[3] if len(words) > 3 else None
-        if operation in _UNBOUND_CONTROL or _HELP_FLAGS.intersection(words[3:]):
+        if exact and (
+            operation in _UNBOUND_CONTROL or _HELP_FLAGS.intersection(words[3:])
+        ):
             continue
         return start, stop
     return None

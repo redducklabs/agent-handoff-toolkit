@@ -3682,6 +3682,41 @@ class EnforcementTests(unittest.TestCase):
             'echo "a"#; python r lifecycle inspect',
             "echo $(printf x)#x; python r lifecycle inspect",
             "echo `printf x`#x; python r lifecycle inspect",
+            # Inside arithmetic, a parameter expansion or `[[`, a `#` after a
+            # blank or `(` is not a comment, so the substitution still runs.
+            "echo $((# $(python r lifecycle inspect)))",
+            "(( 1 # $(python r lifecycle inspect) ))",
+            "echo $[ 1 # $(python r lifecycle inspect) ]",
+            "echo ${x:- #$(python r lifecycle inspect)}",
+            "[[ a == # ]] ; python r lifecycle inspect",
+            "(# x\npython r lifecycle inspect)",
+            # After any bracket or backtick, telling a comment from a word is
+            # left to the shell: the invocation is intercepted, never hidden.
+            "echo $((1 + 2)) # ; python r lifecycle inspect",
+            # Such a `#` may still start a real comment, whose quote must not
+            # open a string that hides the next line.
+            "echo [ # '\npython r lifecycle inspect",
+            '(true) # it"s\npython r lifecycle inspect',
+            "(true) # x <<EOF\npython r lifecycle inspect\nEOF",
+            "(true) # x \\\npython r lifecycle inspect",
+            "(# '\npython r lifecycle inspect\n)",
+            "(# <<EOF\npython r lifecycle inspect\n)",
+            "(# \\\npython r lifecycle inspect\n)",
+            "(true)# '\npython r lifecycle inspect",
+            "echo hi >#'\npython r lifecycle inspect",
+            "echo hi <#x ; python r lifecycle inspect",
+            # Quoted text after an ambiguous `#` is still masked in each
+            # reading, so a quoted `--help` is not taken for a help flag.
+            'echo [ # comment\npython r lifecycle inspect "x --help x"',
+            'echo $((# $(python r lifecycle inspect "x -h x")))',
+            # Past the fork limit the rest is left unmasked, not hidden.
+            "echo [ " + "# '\n" * 8 + "python r lifecycle inspect",
+            # Unmasked text proves no help flag or exempt operation.
+            "echo [\n" + "# c\n" * 7 + 'python r lifecycle inspect "x --help x"',
+            # A long command forks no further than the masking budget allows.
+            "echo [\n# c\n"
+            + 'python r lifecycle inspect "x --help x"\n# '
+            + "x" * 3_000_000,
         ):
             with self.subTest(command=command):
                 self.assertIn("AHK-HOOK-RUNTIME", run(command).stdout)
