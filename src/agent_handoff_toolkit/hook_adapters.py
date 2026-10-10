@@ -772,6 +772,7 @@ def _mask_shell(command):
     masked = []
     quote = None
     pending = []
+    bracketed = False
     index = 0
     length = len(command)
     while index < length:
@@ -800,13 +801,19 @@ def _mask_shell(command):
             masked.append(command[index : match.end()])
             index = match.end()
             continue
-        elif char == "#" and (not masked or masked[-1][-1] in " \t\n;&|("):
+        elif (
+            char == "#"
+            and not bracketed
+            and (not masked or masked[-1][-1] in " \t\n;&|")
+        ):
             # A word-initial `#` comments out the rest of its line, so nothing
             # after it - a separator or a mention of the runner - is a command.
             # The preceding character is read as masked: an escaped blank or
             # operator is part of the word, so a `#` after it is not a comment.
-            # A closing `)` or backtick may end a substitution inside a word,
-            # so a `#` after one is read as part of the word too.
+            # Inside arithmetic, a parameter expansion or `[[`, a `#` after a
+            # blank is not a comment either, and telling those apart needs a
+            # parser. Once any bracket or backtick has appeared, a `#` stays
+            # visible: an ambiguous invocation is intercepted, never hidden.
             end = command.find("\n", index)
             stop = length if end < 0 else end
             masked.append("#" + "_" * (stop - index - 1))
@@ -826,6 +833,7 @@ def _mask_shell(command):
                     pending.pop(0)
             continue
         else:
+            bracketed = bracketed or char in "()[]{}`"
             masked.append(char)
         index += 1
     return "".join(masked)[:length]

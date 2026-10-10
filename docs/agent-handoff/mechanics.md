@@ -346,14 +346,14 @@ approved transition. `validate_successor` still runs at `Stop`.
 
 Control commands need credentials the interception binds into them. It
 finds `python <runner> lifecycle` at a command start, outside quotes, escapes,
-comments and heredoc bodies; only `doctor` and `--help`/`-h` pass. A compound command is
-denied with the bound command, to run alone. A trailing `2>&1`, `2>/dev/null`,
-numeric `| head`/`| tail` or comment is not compound, nor rewritten. On both hosts,
-a plain `inspect`, or this session's own `inspect` with stale credentials, is
-replaced by the bound form through `updatedInput`. A pre-root `resume` is also
-rebound after flag-order and relative-path normalization. Rewrites preserve other
-tool-input fields, require the owned runner, and never replace another session's
-key. Codex requires `permissionDecision: "allow"` with `updatedInput`; Claude
+comments and heredoc bodies; only `doctor` and `--help`/`-h` pass. After a
+bracket or backtick, `#` never starts a comment, so ambiguity is intercepted.
+A compound command is denied with the bound command. A trailing
+`2>&1`, `2>/dev/null`, numeric `| head`/`| tail` or comment is not compound, nor
+rewritten. A plain or stale `inspect`, and a pre-root `resume`
+after flag-order and relative-path normalization, are replaced by the bound form
+through `updatedInput` on both hosts. Rewrites preserve other tool-input fields,
+require the owned runner, and never replace another session's key. Codex requires `permissionDecision: "allow"` with `updatedInput`; Claude
 needs no permission decision. A CLI `AHK-INPUT` or `AHK-STATE-STALE` says to run the
 command alone and lists the scope kinds.
 

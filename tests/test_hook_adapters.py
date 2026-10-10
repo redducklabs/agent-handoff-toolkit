@@ -3682,6 +3682,17 @@ class EnforcementTests(unittest.TestCase):
             'echo "a"#; python r lifecycle inspect',
             "echo $(printf x)#x; python r lifecycle inspect",
             "echo `printf x`#x; python r lifecycle inspect",
+            # Inside arithmetic, a parameter expansion or `[[`, a `#` after a
+            # blank or `(` is not a comment, so the substitution still runs.
+            "echo $((# $(python r lifecycle inspect)))",
+            "(( 1 # $(python r lifecycle inspect) ))",
+            "echo $[ 1 # $(python r lifecycle inspect) ]",
+            "echo ${x:- #$(python r lifecycle inspect)}",
+            "[[ a == # ]] ; python r lifecycle inspect",
+            "(# x\npython r lifecycle inspect)",
+            # After any bracket or backtick, telling a comment from a word is
+            # left to the shell: the invocation is intercepted, never hidden.
+            "echo $((1 + 2)) # ; python r lifecycle inspect",
         ):
             with self.subTest(command=command):
                 self.assertIn("AHK-HOOK-RUNTIME", run(command).stdout)
