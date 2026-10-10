@@ -759,9 +759,11 @@ def _load_candidate(event, snapshot, root):
     )
 
 
-# An ambiguous `#` doubles the readings masked; past this many, the rest of
-# the command is left unmasked instead, and that reading exempts nothing.
+# An ambiguous `#` doubles the readings masked; past this many, or once the
+# readings would total more characters than the budget, the rest of the
+# command is left unmasked instead, and that reading exempts nothing.
 _MAX_COMMENT_FORKS = 6
+_MAX_MASKED_CHARACTERS = 4_000_000
 
 
 def _mask_shell(command):
@@ -777,18 +779,16 @@ def _mask_shell(command):
     a comment; after `)`, a backtick or a redirection it may or may not be one.
     Telling those apart needs a parser, and either reading can hide a command
     the other runs - a quote in a real comment would open a string - so such a
-    `#` is masked both ways and every reading is returned. An invocation found
+    `#` is masked both ways and every reading is yielded. An invocation found
     in any reading is intercepted, never hidden. Each reading is paired with
     whether it is exact: one past the fork limit leaves quoted text visible,
     so it cannot prove a help flag or an unbound operation.
     """
 
-    readings = []
-    _mask_from(command, 0, [], None, [], False, 0, readings)
-    return readings
+    yield from _mask_from(command, 0, [], None, [], False, 0)
 
 
-def _mask_from(command, index, masked, quote, pending, bracketed, forks, readings):
+def _mask_from(command, index, masked, quote, pending, bracketed, forks):
     length = len(command)
     while index < length:
         char = command[index]
@@ -825,11 +825,14 @@ def _mask_from(command, index, masked, quote, pending, bracketed, forks, reading
             stop = length if end < 0 else end
             comment = "#" + "_" * (stop - index - 1)
             if bracketed or (masked and masked[-1][-1] in "()`<>"):
-                if forks >= _MAX_COMMENT_FORKS:
+                if (
+                    forks >= _MAX_COMMENT_FORKS
+                    or length << (forks + 1) > _MAX_MASKED_CHARACTERS
+                ):
                     masked.append(command[index:])
-                    readings.append(("".join(masked)[:length], False))
+                    yield "".join(masked)[:length], False
                     return
-                _mask_from(
+                yield from _mask_from(
                     command,
                     stop,
                     [*masked, comment],
@@ -837,7 +840,6 @@ def _mask_from(command, index, masked, quote, pending, bracketed, forks, reading
                     list(pending),
                     bracketed,
                     forks + 1,
-                    readings,
                 )
                 masked.append(char)
                 forks += 1
@@ -863,7 +865,7 @@ def _mask_from(command, index, masked, quote, pending, bracketed, forks, reading
             bracketed = bracketed or char in "()[]{}`"
             masked.append(char)
         index += 1
-    readings.append(("".join(masked)[:length], True))
+    yield "".join(masked)[:length], True
 
 
 def _control_span(command):

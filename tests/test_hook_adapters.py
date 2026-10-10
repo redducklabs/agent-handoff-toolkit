@@ -3713,6 +3713,10 @@ class EnforcementTests(unittest.TestCase):
             "echo [ " + "# '\n" * 8 + "python r lifecycle inspect",
             # Unmasked text proves no help flag or exempt operation.
             "echo [\n" + "# c\n" * 7 + 'python r lifecycle inspect "x --help x"',
+            # A long command forks no further than the masking budget allows.
+            "echo [\n# c\n"
+            + 'python r lifecycle inspect "x --help x"\n# '
+            + "x" * 3_000_000,
         ):
             with self.subTest(command=command):
                 self.assertIn("AHK-HOOK-RUNTIME", run(command).stdout)
