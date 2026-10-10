@@ -3699,6 +3699,12 @@ class EnforcementTests(unittest.TestCase):
             '(true) # it"s\npython r lifecycle inspect',
             "(true) # x <<EOF\npython r lifecycle inspect\nEOF",
             "(true) # x \\\npython r lifecycle inspect",
+            "(# '\npython r lifecycle inspect\n)",
+            "(# <<EOF\npython r lifecycle inspect\n)",
+            "(# \\\npython r lifecycle inspect\n)",
+            "(true)# '\npython r lifecycle inspect",
+            "echo hi >#'\npython r lifecycle inspect",
+            "echo hi <#x ; python r lifecycle inspect",
         ):
             with self.subTest(command=command):
                 self.assertIn("AHK-HOOK-RUNTIME", run(command).stdout)

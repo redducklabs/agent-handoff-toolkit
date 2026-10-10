@@ -45,7 +45,7 @@
     },
     {
       "source": "docs/agent-handoff/mechanics.md",
-      "sha256": "fc9db0617519e5ee2977cee1258e2b5c5d0cb53fb1fb6b785dd6ed7af359c3ac",
+      "sha256": "668f33f61fc233cc7212f39b7dcb87c46560daa6d6d18d5678711221fed7a47c",
       "install": {
         "mode": "copy",
         "transform": "none",
@@ -289,7 +289,7 @@
     },
     {
       "source": "src/agent_handoff_toolkit/hook_adapters.py",
-      "sha256": "ff6e5dc8b750ae25da5181decea440959214ab5d1adf6d82a22d5f4bd4e8a183",
+      "sha256": "c6249be2dd0441bb83db03eb61a369ba90aefad3758717bc24190db4c22919f2",
       "install": {
         "mode": "copy",
         "transform": "none",

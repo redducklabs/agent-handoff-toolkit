@@ -346,8 +346,8 @@ approved transition. `validate_successor` still runs at `Stop`.
 
 Control commands need credentials the interception binds into them. It
 finds `python <runner> lifecycle` at a command start, outside quotes, escapes,
-comments and heredoc bodies; only `doctor` and `--help`/`-h` pass. After a
-bracket or backtick, a word-initial `#` unmasks the rest: ambiguity is intercepted.
+comments and heredoc bodies; only `doctor` and `--help`/`-h` pass. A `#` after
+a bracket, backtick or redirection unmasks the rest: ambiguity is intercepted.
 A compound command is denied with the bound command. A trailing
 `2>&1`, `2>/dev/null`, numeric `| head`/`| tail` or comment is not compound, nor
 rewritten. A plain or stale `inspect`, and a pre-root `resume`
