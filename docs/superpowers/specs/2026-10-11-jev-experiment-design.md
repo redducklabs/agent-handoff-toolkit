@@ -102,8 +102,12 @@ validates and parses the candidate using existing record APIs. It does not scan,
 open, migrate, or assess historical records.
 
 An agent prepares an explicit evidence bundle. The toolkit does not automatically
-upload repository files, retrieve references, or send prompts, replies, or
-transcripts. The bundle supplies:
+upload repository files, retrieve references, or send full prompts, replies, or
+transcripts. Authorized goal text can originate in a user prompt (including a
+`Track:` declaration); goal text, selected narrative, and evidence locators are
+sent to TypeSafe when review is enabled. Document that boundary explicitly.
+Prepare the temporary evidence bundle outside the repository and delete it after
+review. The bundle supplies:
 
 - `criteria`: one to sixteen entries, each with a unique bounded identifier, an
   observable acceptance condition, and supporting evidence identifiers.
@@ -112,9 +116,14 @@ transcripts. The bundle supplies:
 
 Require bounded strings and bound the entire evidence file to 64 KiB. Verify all
 referenced identifiers locally. An omitted evidence file, empty criteria list,
-empty acceptance condition, or criterion without evidence is a local assessment
+empty acceptance condition, or audit criterion without evidence is a local assessment
 failure with the corresponding criterion identifier; no model request is needed
 to discover that information is absent. Malformed JSON is an input error.
+
+For continuations, criteria for future work may have empty evidence references.
+Require a nonempty evidence bundle supporting current progress claims and the
+next action, not proof of future completion. Review those claims with Jev. Any
+local finding stops the request before credential lookup.
 
 Criteria operationalize the existing authorized outcome; they cannot narrow,
 expand, or replace it. The agent derives them from the user's goal and governing
@@ -212,6 +221,47 @@ All network and credential failures carry bounded stage/reason codes only. No
 model output can mutate a record, accept a transition, grant user authority,
 register tracking, block a tool, or arm the correction circuit. Existing hooks,
 validation, lineage, rendering, and runtime malfunction policy remain intact.
+
+## Review corrections from Claude Code (2026-10-11)
+
+These clarifications govern the preceding workflow:
+
+- Branch on JSON `status`, not exit code alone: fail and unavailable both exit 1.
+- After at most two corrective reruns, stop retrying unchanged judgments. Inspect
+  underlying evidence independently. Confirmed incomplete work continues or gets
+  an executable continuation; it never gets a completion audit. Unresolved goal
+  ambiguity or insufficient proof remains a failure, not a success. A defensible
+  disagreement with the classifier is recorded as a one-sentence risk, retaining
+  the failed assessment; the author still follows the deterministic contract.
+- On unavailable review, add one short risk sentence and validate/render normally.
+  That diagnostic-only edit does not require another model call. Any substantive
+  change still requires assessment. Never retry outages in a loop.
+- Use short positional API question IDs (`criterion-1` through `criterion-16`)
+  and map them to criterion identifiers locally. The official API documents
+  `state`, `model`, and a `questions` map, with per-question Choice answers and
+  full probability maps. It does not specify probability serialization precision
+  or a question-count maximum. A `1e-6` probability-sum tolerance is toolkit
+  policy, not a vendor guarantee; rejection is unavailable, never pass. Drop
+  unknown envelope/answer fields while rejecting extra question IDs or verdicts.
+  Add a hand-written synthetic wire-contract test without prompt/source content;
+  do not build all fake replies from the implementation under test.
+- Live smoke/evaluation remains opt-in, skipped by default, and explicitly
+  unverified if not run. Lack of credentials does not prevent shipping the
+  optional experiment; offline tests establish no model accuracy or live
+  compatibility claim.
+- Consumers need network access and credential visibility in the process running
+  review. Document host-specific sandbox/environment restrictions conditionally,
+  without assuming either host is permanently blocked. Credential-missing,
+  connection, and internal toolkit faults have distinct codes; do not attribute
+  a connection failure to a sandbox without evidence.
+- Ignore `.env` in this repository and exclude credential files from scratch
+  checkout copying. Consumers must ignore their selected credential file. Relative
+  credential paths remain checkout-relative; linked worktrees use an environment
+  variable or explicitly configured absolute file path, not automatic fallback
+  into another checkout. Edit active `jev.json`, not the managed example.
+- Honor `GIT_CEILING_DIRECTORIES` in root discovery and isolate ancestor-walk tests.
+  Validate configured model identifiers like response model identifiers and bearer
+  values as visible ASCII. urllib honors proxy environment variables; document it.
 
 ## Verification and delivery
 
