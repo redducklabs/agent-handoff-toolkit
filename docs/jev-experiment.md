@@ -261,8 +261,7 @@ A reviewed diagnostic moved unchanged selected facts into `state` and isolated
 each question. Two opened clean cases became supported, two sampled gaps remained
 deficient, and missing proof remained inconclusive. The case with the domain caveat
 stayed uncertain. That carrier-and-isolation diagnostic is not fresh qualification.
-Version 5 uses this input boundary and still requires a new independently labeled
-qualification run and STS validation. It increases requests and latency: each
+Version 5 uses this input boundary. It increases requests and latency: each
 unique question makes one sequential call; a maximum-size version-3 continuation
 can require 115 calls. The configured timeout applies to socket operations, not
 an overall assessment deadline. Any fault withholds the whole assessment; no
@@ -273,7 +272,17 @@ fault and localized each controlled gap. Actual ephemeral Claude Code and Codex
 then invoked the installed unreleased candidate: each supported the clean STS
 copy, rejected the serializer gap, and kept missing proof inconclusive. These
 opened cases establish compatibility and diagnostic progress, not fresh accuracy
-qualification. The new unseen version-5 comparison remains pending.
+qualification. The new independently labeled version-5 comparison selected 40
+cases and stopped on case 4 when the response failed probability validation.
+Three substantive assessments completed: one localized critical gap, one clean
+case remained uncertain, and missing proof correctly remained inconclusive.
+The fourth assessment was unavailable and 36 cases were not attempted. This is
+an incomplete, unqualified run; unattempted critical seeds are not counted as
+misses or detections. Preserve it without normalizing responses, relaxing the
+confidence floor or retrying until passing. A provider response-contract
+correction is needed before dependable qualification can proceed; the rejected
+response's exact probability subcondition is unknown because raw payloads are
+not retained. Release and consumer adoption remain on hold.
 
 See TypeSafe's [citation verification](https://docs.typesafe.ai/cookbooks/citation_check),
 [decomposed verification](https://docs.typesafe.ai/cookbooks/sde_cascade),
