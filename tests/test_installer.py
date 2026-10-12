@@ -4,6 +4,7 @@ from dataclasses import FrozenInstanceError
 import hashlib
 import json
 import os
+import secrets
 from pathlib import Path
 import shutil
 import stat
@@ -99,6 +100,46 @@ class InstallerFixture:
         for change in changes:
             change.target.parent.mkdir(parents=True, exist_ok=True)
             change.target.write_bytes(change.after)
+
+
+class JevSyncTests(InstallerFixture, unittest.TestCase):
+    def test_example_sync_preserves_project_configuration_and_credential(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.root = Path(directory)
+            consumer = self.root / "consumer"
+            consumer.mkdir()
+            (consumer / ".git").mkdir()
+            target = ".agent-handoff-toolkit/jev.example.json"
+            old = self.make_install_source(
+                "old",
+                "1.2.4",
+                {"jev.example.json": b'{"enabled":false}\n'},
+                [self.copy_artifact_for_install("jev.example.json", target)],
+            )
+            new = self.make_install_source(
+                "new",
+                "1.3.0",
+                {"jev.example.json": b'{"enabled":false,"timeout_seconds":10}\n'},
+                [self.copy_artifact_for_install("jev.example.json", target)],
+            )
+            with mock.patch.dict(
+                os.environ, {"GIT_CEILING_DIRECTORIES": str(self.root)}
+            ):
+                apply_plan(build_plan(old, consumer, "v1.2.4", "install"))
+                config = consumer / ".agent-handoff-toolkit" / "jev.json"
+                config.write_bytes(b'{"enabled":true}\n')
+                credential = consumer / ".env"
+                credential.write_text(
+                    "JEV_API_KEY=" + secrets.token_hex(16), encoding="utf-8"
+                )
+                before = (config.read_bytes(), credential.read_bytes())
+                apply_plan(build_plan(new, consumer, "v1.3.0", "sync"))
+                self.assertTrue(config.read_bytes() == before[0])
+                self.assertTrue(credential.read_bytes() == before[1])
+                self.assertEqual(
+                    (consumer / target).read_bytes(),
+                    (new / "jev.example.json").read_bytes(),
+                )
 
 
 class CopyPlanningTests(InstallerFixture, unittest.TestCase):

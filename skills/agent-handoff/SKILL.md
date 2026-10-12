@@ -102,6 +102,41 @@ shape and how to compute each scope's `scope_definition_digest`.
 
 Fix every reported error before calling the record valid. Validation proves structure and internal consistency only. You remain responsible for factual accuracy, current hierarchy, verification evidence, and whether the action is correct. A skipped check is `not-run`, never `pass`. For a tracked lifecycle session, validate the direct candidate record and its lineage before stopping.
 
+## Gate: Assess the candidate with optional Jev
+
+Before final rendering, run optional review for this newly authored candidate.
+Read `.agent-handoff-toolkit/jev-experiment.md` for setup and the evidence schema.
+When enabled, derive observable acceptance criteria from the immutable authorized outcome;
+prepare explicit supporting evidence in a temporary file outside the repository,
+then delete it after review. Never weaken the goal or criteria to obtain a pass.
+Selected goals, narrative and evidence leave the machine; full prompts/transcripts
+are not collected. Do not include secrets or customer data.
+
+```text
+python .agent-handoff-toolkit/runner.py review <record-path> --evidence <temporary-evidence.json>
+```
+
+Inspect JSON status, not exit alone: fail and unavailable both exit 1. Disabled
+adds no routine notice. Error requires correcting local input/configuration.
+Pass means supported by supplied evidence, never mechanically verified truth.
+Keep results outside factual verification, metadata and the renderer-owned terminal
+response; optional advice never changes lifecycle authority.
+
+For fail, inspect every finding, gather missing proof or improve deficient work
+and the candidate, then reassess. Continuations need evidence for current claims
+and next action; future criteria may lack proof of completion.
+After at most two corrective reruns, independently examine remaining findings.
+Confirmed unfinished work means keep working or create an executable continuation,
+never a completion audit. Unresolved goal ambiguity or insufficient evidence stays
+a failed assessment. Suspected classifier errors require independent examination
+of the actual criterion and evidence; defensible disagreement gets one risk
+sentence while retaining failure and following the deterministic contract.
+
+For unavailable, add one short risk sentence and validate/render normally without
+another review for that diagnostic-only edit. Never loop on outages. Internal
+faults are toolkit defects, not presumed service outages. Substantive changes
+require fresh assessment; no result is cached as acceptance.
+
 ## Gate: Render the final response tail
 
 Your entire terminal message is the renderer's output for the record, copied verbatim with nothing before or after it. Do not retype, summarize, or explain it.

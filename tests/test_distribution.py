@@ -92,10 +92,25 @@ REQUIRED_SKILL_GATES = {
     "Close gating questions",
     "Reconcile live state",
     "Validate the record",
+    "Assess the candidate with optional Jev",
     "Render the final response tail",
 }
 
 EXPECTED_INSTALL_TARGETS = {
+    "distribution/jev.example.json": {".agent-handoff-toolkit/jev.example.json"},
+    "docs/jev-experiment.md": {".agent-handoff-toolkit/jev-experiment.md"},
+    "src/agent_handoff_toolkit/review_config.py": {
+        ".agent-handoff-toolkit/src/agent_handoff_toolkit/review_config.py"
+    },
+    "src/agent_handoff_toolkit/review_rubrics.py": {
+        ".agent-handoff-toolkit/src/agent_handoff_toolkit/review_rubrics.py"
+    },
+    "src/agent_handoff_toolkit/jev.py": {
+        ".agent-handoff-toolkit/src/agent_handoff_toolkit/jev.py"
+    },
+    "src/agent_handoff_toolkit/review.py": {
+        ".agent-handoff-toolkit/src/agent_handoff_toolkit/review.py"
+    },
     "distribution/consumer-instructions.md": {"AGENTS.md", "CLAUDE.md"},
     "LICENSE": {".agent-handoff-toolkit/LICENSE"},
     "docs/agent-handoff/contract.md": {"docs/agent-handoff/contract.md"},
@@ -152,6 +167,108 @@ METADATA_RE = re.compile(
     r"^```json agent-handoff-metadata\n(?P<metadata>.*?)\n```$",
     re.DOTALL | re.MULTILINE,
 )
+
+SCRATCH_COPY_IGNORE = shutil.ignore_patterns(
+    ".git",
+    "build",
+    "dist",
+    "*.egg-info",
+    "__pycache__",
+    ".env",
+    "jev.json",
+    ".superpowers",
+)
+
+
+class JevDistributionTests(unittest.TestCase):
+    def test_installed_review_from_unrelated_cwd(self):
+        from test_records import make_v2_audit
+        from agent_handoff_toolkit import render_record
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            consumer = root / "consumer"
+            consumer.mkdir()
+            (consumer / ".git").mkdir()
+            install_copy_artifacts(consumer)
+            runtime = (
+                consumer / ".agent-handoff-toolkit" / "src" / "agent_handoff_toolkit"
+            )
+            self.assertFalse((runtime / "manifest.py").exists())
+            for name in (
+                "review.py",
+                "review_config.py",
+                "review_rubrics.py",
+                "jev.py",
+            ):
+                self.assertTrue((runtime / name).is_file())
+            candidate = consumer / "candidate.md"
+            runner = consumer / ".agent-handoff-toolkit" / "runner.py"
+            env = dict(os.environ, PYTHONPATH="", GIT_CEILING_DIRECTORIES=str(root))
+            for enabled, expected_status, expected_exit in (
+                (False, "disabled", 0),
+                (True, "fail", 1),
+            ):
+                if enabled:
+                    (consumer / ".agent-handoff-toolkit" / "jev.json").write_text(
+                        '{"enabled":true}'
+                    )
+                    candidate.write_text(
+                        render_record(make_v2_audit()), encoding="utf-8"
+                    )
+                result = subprocess.run(
+                    [sys.executable, str(runner), "review", str(candidate)],
+                    cwd=root,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, expected_exit, result.stderr)
+                self.assertEqual(json.loads(result.stdout)["status"], expected_status)
+
+    def test_credential_files_excluded_from_scratch_and_manifest(self):
+        self.assertIn(".env", SCRATCH_COPY_IGNORE("synthetic", [".env", "jev.json"]))
+        self.assertIn(
+            "jev.json", SCRATCH_COPY_IGNORE("synthetic", [".env", "jev.json"])
+        )
+        self.assertIn(".env", (ROOT / ".gitignore").read_text().splitlines())
+        targets = {
+            target
+            for artifact in load_manifest()["artifacts"]
+            for target in artifact["install"]["targets"]
+        }
+        self.assertNotIn(".env", targets)
+        self.assertNotIn(".agent-handoff-toolkit/jev.json", targets)
+
+    def test_shared_skill_review_workflow(self):
+        skill = (ROOT / "skills/agent-handoff/SKILL.md").read_text(encoding="utf-8")
+        self.assertLess(
+            skill.index("## Gate: Validate"), skill.index("## Gate: Assess")
+        )
+        self.assertLess(skill.index("## Gate: Assess"), skill.index("## Gate: Render"))
+        for phrase in (
+            "JSON status",
+            "at most two corrective reruns",
+            "independent",
+            "insufficient",
+            "never a completion audit",
+            "failed assessment",
+            "diagnostic-only",
+            "immutable authorized outcome",
+        ):
+            self.assertIn(phrase, skill)
+        guide = (ROOT / "docs/jev-experiment.md").read_text(encoding="utf-8")
+        for phrase in (
+            "JEV_API_KEY",
+            "checkout-relative",
+            "not verified",
+            "proxy",
+            "synthetic",
+            "internal",
+            "insufficient_evidence",
+            "each worktree",
+        ):
+            self.assertIn(phrase, guide)
 
 
 def load_manifest() -> dict[str, object]:
@@ -260,16 +377,16 @@ class DistributionTests(unittest.TestCase):
         manifest = load_manifest()
 
         self.assertEqual(manifest["manifest_version"], 2)
-        self.assertEqual(manifest["toolkit_version"], "1.2.4")
+        self.assertEqual(manifest["toolkit_version"], "1.3.0")
         self.assertEqual(manifest["text_hash"], "utf8-lf-sha256-v1")
         self.assertIn(
-            '__version__ = "1.2.4"',
+            '__version__ = "1.3.0"',
             (ROOT / "src/agent_handoff_toolkit/__init__.py").read_text(
                 encoding="utf-8"
             ),
         )
         self.assertIn(
-            'version = "1.2.4"',
+            'version = "1.3.0"',
             (ROOT / "pyproject.toml").read_text(encoding="utf-8"),
         )
         self.assertEqual(manifest["record_schema_version"], 2)
@@ -1419,18 +1536,18 @@ class DistributionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             consumer = Path(directory)
             result = run_source_cli(
-                "install", "--apply", target=consumer, release="v1.2.4"
+                "install", "--apply", target=consumer, release="v1.3.0"
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            check = run_source_cli("sync", "--check", target=consumer, release="v1.2.4")
+            check = run_source_cli("sync", "--check", target=consumer, release="v1.3.0")
             self.assertEqual(check.returncode, 0, check.stderr)
             state = json.loads(
                 (consumer / ".agent-handoff-toolkit/install-state.json").read_text(
                     encoding="utf-8"
                 )
             )
-            self.assertEqual(state["release"], "v1.2.4")
-            self.assertEqual(state["toolkit_version"], "1.2.4")
+            self.assertEqual(state["release"], "v1.3.0")
+            self.assertEqual(state["toolkit_version"], "1.3.0")
             self.assertEqual(state["state_version"], 1)
             self.assertEqual(state["record_schema_version"], 2)
             self.assertEqual(
@@ -1514,9 +1631,7 @@ class DistributionTests(unittest.TestCase):
             shutil.copytree(
                 ROOT,
                 previous_source,
-                ignore=shutil.ignore_patterns(
-                    ".git", "build", "dist", "*.egg-info", "__pycache__"
-                ),
+                ignore=SCRATCH_COPY_IGNORE,
             )
 
             historical_manifest = subprocess.run(
@@ -1621,11 +1736,11 @@ class DistributionTests(unittest.TestCase):
             legacy_record.write_bytes(legacy_bytes)
 
             upgraded = run_source_cli(
-                "sync", "--apply", target=consumer, release="v1.2.4"
+                "sync", "--apply", target=consumer, release="v1.3.0"
             )
             self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
             current = run_source_cli(
-                "sync", "--check", target=consumer, release="v1.2.4"
+                "sync", "--check", target=consumer, release="v1.3.0"
             )
 
             self.assertEqual(current.returncode, 0, current.stderr)
@@ -1652,8 +1767,8 @@ class DistributionTests(unittest.TestCase):
                     encoding="utf-8"
                 )
             )
-            self.assertEqual(state["release"], "v1.2.4")
-            self.assertEqual(state["toolkit_version"], "1.2.4")
+            self.assertEqual(state["release"], "v1.3.0")
+            self.assertEqual(state["toolkit_version"], "1.3.0")
             self.assertEqual(state["record_schema_version"], 2)
             installed_source = (
                 consumer / ".agent-handoff-toolkit" / "src" / "agent_handoff_toolkit"
@@ -1696,7 +1811,7 @@ class DistributionTests(unittest.TestCase):
                 json.dumps(modified), encoding="utf-8", newline="\n"
             )
             conflict = run_source_cli(
-                "sync", "--check", target=conflicted, release="v1.2.4"
+                "sync", "--check", target=conflicted, release="v1.3.0"
             )
             self.assertEqual(conflict.returncode, 2)
             self.assertIn("managed-json-modified", conflict.stdout)
@@ -1723,7 +1838,7 @@ class DistributionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             consumer = Path(directory)
             installed = run_source_cli(
-                "install", "--apply", target=consumer, release="v1.2.4"
+                "install", "--apply", target=consumer, release="v1.3.0"
             )
             self.assertEqual(installed.returncode, 0, installed.stderr)
             installed_configs = {

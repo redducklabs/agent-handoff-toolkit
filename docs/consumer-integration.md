@@ -1,17 +1,25 @@
 # Consumer integration
 
+## Optional Jev assessment
+
+Install/sync distributes a disabled example and a shared review workflow for both
+hosts. Configure project-owned settings and credentials as described in
+[Jev setup and evidence guide](jev-experiment.md). Review stays outside hooks and
+lifecycle; insufficient evidence fails assessment, unavailable never means pass,
+and a supported result establishes no semantic truth.
+
 ## Release checkout installation
 
 Run installation from an inspectable checkout of the public release rather than
 from a network downloader:
 
 ```powershell
-git clone --branch v1.2.4 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
+git clone --branch v1.3.0 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
 Set-Location agent-handoff-toolkit
-python distribution/runner.py install --target <consumer-repository> --release v1.2.4 --dry-run
-python distribution/runner.py install --target <consumer-repository> --release v1.2.4 --apply
-python distribution/runner.py sync --target <consumer-repository> --release v1.2.4 --check
-python distribution/runner.py sync --target <consumer-repository> --release v1.2.4 --apply
+python distribution/runner.py install --target <consumer-repository> --release v1.3.0 --dry-run
+python distribution/runner.py install --target <consumer-repository> --release v1.3.0 --apply
+python distribution/runner.py sync --target <consumer-repository> --release v1.3.0 --check
+python distribution/runner.py sync --target <consumer-repository> --release v1.3.0 --apply
 ```
 
 Run install and sync only in an isolated, clean Git worktree. Confirm the
@@ -234,7 +242,7 @@ Before bulk adoption, select one repository with mature handoffs and one with li
 1. Inventory local instructions, hook and skill configuration, and tracker
    conventions. Count or locate historical handoff storage only if needed to
    protect it; do not open the records.
-2. Run the v1.2.4 installer in dry-run mode from its release checkout.
+2. Run the v1.3.0 installer in dry-run mode from its release checkout.
 3. Review the proposed instruction and hook merges.
 4. Apply on a branch. Treat every record that predates this adoption as
    deprecated by policy without marking, reading, or rewriting individual files.

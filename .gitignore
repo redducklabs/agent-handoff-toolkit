@@ -5,3 +5,5 @@ build/
 dist/
 .worktrees/
 .superpowers/sdd/
+.env
+.agent-handoff-toolkit/jev.json
