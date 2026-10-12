@@ -42,7 +42,7 @@ class FileChange:
     target: Path
     relative_target: str
     before: bytes | None
-    after: bytes
+    after: bytes | None
     mode: str
 
 
@@ -280,11 +280,13 @@ def build_plan(
         for artifact in manifest.artifacts
         for relative in artifact.targets
     }
+    retired_keys = {path_collision_key(path) for path in manifest.retired_targets}
     if operation == "sync" and installed_state is not None:
         omitted = tuple(
             item
             for item in installed_state.targets
             if path_collision_key(item.target) not in manifest_targets
+            and path_collision_key(item.target) not in retired_keys
         )
         if omitted:
             return InstallPlan(
@@ -307,6 +309,41 @@ def build_plan(
     changes: list[FileChange] = []
     conflicts: list[Conflict] = []
     next_targets: list[TargetState] = []
+    for relative in manifest.retired_targets:
+        name = relative.as_posix()
+        old = previous.get(path_collision_key(relative))
+        try:
+            path = _target_path(target, relative)
+            before = _read_target(path)
+            if old is None:
+                if before is not None:
+                    raise OperationConflict(
+                        "retired-target-unowned",
+                        "retired target is not owned by the toolkit",
+                    )
+                continue
+            if old.target != name or old.mode != "copy":
+                raise OperationConflict(
+                    "retired-target-ownership",
+                    "only an exact owned copy target can be retired",
+                )
+            if before is not None:
+                if text_sha256(before) != old.installed_sha256:
+                    raise OperationConflict(
+                        "retired-target-modified",
+                        "modified retired target requires explicit reconciliation",
+                    )
+            changes.append(FileChange(path, name, before, None, "remove"))
+        except (OperationConflict, UnicodeError) as error:
+            conflicts.append(
+                Conflict(
+                    name,
+                    error.code
+                    if isinstance(error, OperationConflict)
+                    else "retired-target-modified",
+                    str(error),
+                )
+            )
     planned_targets: list[tuple[str, Path, Artifact, bytes, TargetState | None]] = []
     for artifact in manifest.artifacts:
         source_path = source / Path(*artifact.source.parts)
@@ -506,7 +543,7 @@ def _diff_text(change: FileChange) -> tuple[list[str], list[str]]:
     if change.mode != "merge-json":
         return (
             normalize_text(change.before or b"").decode("utf-8").splitlines(),
-            normalize_text(change.after).decode("utf-8").splitlines(),
+            normalize_text(change.after or b"").decode("utf-8").splitlines(),
         )
     before_json = _parse_json(change.before or b"{}", label="planned JSON before")
     after_json = _parse_json(change.after, label="planned JSON after")
@@ -1248,20 +1285,39 @@ def _atomic_remove_posix(bound: _BoundParent) -> None:
 
 
 def _atomic_remove_windows(bound: _BoundParent) -> None:
-    if not bound.target.exists():
+    _verify_bound_parent(bound)
+    before = _read_target(bound.target)
+    if before is None:
         return
     temporary = bound.parent / _temporary_name(bound.name)
+    moved = False
     try:
         _verify_bound_parent(bound)
         os.replace(bound.target, temporary)
+        moved = True
         temporary.unlink()
         _verify_bound_parent(bound)
-    except (ApplyError, OSError):
-        try:
-            temporary.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
+    except (ApplyError, OSError) as error:
+        recovery_errors = []
+        restored = not moved
+        if moved:
+            try:
+                _verify_bound_parent(bound)
+                if _read_target(bound.target) is not None:
+                    raise ApplyError(
+                        "concurrent target preserved during removal recovery"
+                    )
+                if temporary.exists():
+                    os.replace(temporary, bound.target)
+                else:
+                    _atomic_replace_windows(bound, before)
+                _verify_bound_parent(bound)
+                restored = True
+            except (ApplyError, OSError) as recovery_error:
+                recovery_errors.append(recovery_error)
+        raise _AtomicOperationError(
+            error, recovery_errors=tuple(recovery_errors), target_changed=not restored
+        ) from error
 
 
 def _atomic_remove(target: Path, target_root: Path) -> None:
@@ -1356,7 +1412,10 @@ def apply_plan(plan: InstallPlan) -> None:
     try:
         for change in plan.changes:
             _verify_change_precondition(change, plan.target_root)
-            _atomic_replace(change.target, change.after, plan.target_root)
+            if change.after is None:
+                _atomic_remove(change.target, plan.target_root)
+            else:
+                _atomic_replace(change.target, change.after, plan.target_root)
             applied.append(change)
     except (ApplyError, OSError) as error:
         if isinstance(error, _AtomicOperationError) and error.target_changed:
