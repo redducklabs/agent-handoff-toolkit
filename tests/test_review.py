@@ -19,6 +19,42 @@ from test_verification_case import verification_case  # noqa: E402
 
 
 class ReviewTests(unittest.TestCase):
+    def test_each_judgment_receives_only_its_selected_facts_in_state(self):
+        bundle = verification_case()
+        bundle["evidence"].append(
+            {"id": "unselected", "source": "unrelated", "text": "PRIVATE_OTHER_SURFACE"}
+        )
+        self.evidence.write_text(json.dumps(bundle))
+        sent = []
+
+        def transport(payload, credential, timeout):
+            sent.append(payload)
+            return json.dumps(
+                {
+                    "model": "jev-1.13.0",
+                    "answers": {ident: answer() for ident in payload["questions"]},
+                }
+            ).encode()
+
+        report = self.review(transport)
+        self.assertEqual(report["status"], "pass")
+        self.assertEqual(report["request_count"], len(sent))
+        identifiers = []
+        for payload in sent:
+            self.assertEqual(len(payload["questions"]), 1)
+            ident, question = next(iter(payload["questions"].items()))
+            identifiers.append(ident)
+            self.assertNotIn("supplied", question["instructions"])
+            self.assertNotIn("PRIVATE_OTHER_SURFACE", json.dumps(payload))
+            self.assertTrue(payload["state"])
+            if ident == "criterion-1":
+                self.assertEqual(
+                    payload["state"]["acceptance_condition"],
+                    bundle["criteria"][0]["condition"],
+                )
+                self.assertEqual(payload["state"]["evidence"], [bundle["evidence"][0]])
+        self.assertEqual(len(identifiers), len(set(identifiers)))
+
     def test_exact_accounting_does_not_fabricate_implementation_or_confidence(self):
         from test_verification_case import anchored_case
 
@@ -36,7 +72,8 @@ class ReviewTests(unittest.TestCase):
 
             def transport(payload, credential, timeout):
                 answers = {key: answer() for key in payload["questions"]}
-                answers["criterion-1"] = answer(choice)
+                if "criterion-1" in answers:
+                    answers["criterion-1"] = answer(choice)
                 return json.dumps({"model": "jev-1.13.0", "answers": answers}).encode()
 
             report = self.review(transport)
@@ -50,7 +87,8 @@ class ReviewTests(unittest.TestCase):
     def test_protocol_fault_reports_closed_validation_stage_without_payload(self):
         def transport(payload, credential, timeout):
             answers = {key: answer() for key in payload["questions"]}
-            answers["criterion-1"]["probabilities"]["supported"] = 0.2
+            if "criterion-1" in answers:
+                answers["criterion-1"]["probabilities"]["supported"] = 0.2
             return json.dumps({"model": "jev-1.13.0", "answers": answers}).encode()
 
         report = self.review(transport)
@@ -71,7 +109,8 @@ class ReviewTests(unittest.TestCase):
 
         def transport(payload, credential, timeout):
             answers = {key: answer() for key in payload["questions"]}
-            answers["coverage-unit-req-0"] = answer("supported", 0.6)
+            if "coverage-unit-req-0" in answers:
+                answers["coverage-unit-req-0"] = answer("supported", 0.6)
             return json.dumps({"model": "jev-1.13.0", "answers": answers}).encode()
 
         report = self.review(transport)
@@ -83,7 +122,8 @@ class ReviewTests(unittest.TestCase):
     def test_coverage_gap_does_not_claim_missing_implementation(self):
         def transport(payload, credential, timeout):
             answers = {key: answer() for key in payload["questions"]}
-            answers["criteria-coverage"] = answer("deficient")
+            if "criteria-coverage" in answers:
+                answers["criteria-coverage"] = answer("deficient")
             return json.dumps({"model": "jev-1.13.0", "answers": answers}).encode()
 
         report = self.review(transport)
@@ -117,7 +157,8 @@ class ReviewTests(unittest.TestCase):
         def transport(payload, credential, timeout):
             sent.extend(payload["questions"])
             answers = {key: answer() for key in payload["questions"]}
-            answers["criterion-1"] = answer("deficient", 0.445)
+            if "criterion-1" in answers:
+                answers["criterion-1"] = answer("deficient", 0.445)
             return json.dumps({"model": "jev-1.13.0", "answers": answers}).encode()
 
         report = self.review(transport)
@@ -140,7 +181,8 @@ class ReviewTests(unittest.TestCase):
 
         def transport(payload, credential, timeout):
             answers = {key: answer() for key in payload["questions"]}
-            answers["criterion-1"] = answer("deficient")
+            if "criterion-1" in answers:
+                answers["criterion-1"] = answer("deficient")
             return json.dumps({"model": "jev-1.13.0", "answers": answers}).encode()
 
         report = self.review(transport)
@@ -159,7 +201,7 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(report["status"], "inconclusive")
         self.assertEqual(report["reasons"][0]["code"], "missing-discovery")
 
-    def test_large_case_batches_without_losing_child_findings(self):
+    def test_large_case_isolates_judgments_without_losing_child_findings(self):
         # Distinct obligations must remain separate, even when paths are shared.
         bundle = verification_case()
         bundle["criteria"] = []
@@ -204,8 +246,8 @@ class ReviewTests(unittest.TestCase):
 
         report = self.review(transport)
         self.assertEqual(report["status"], "fail")
-        self.assertEqual(report["request_count"], 3)
-        self.assertTrue(all(len(batch) <= 21 for batch in batches))
+        self.assertEqual(report["request_count"], 50)
+        self.assertTrue(all(len(batch) == 1 for batch in batches))
         self.assertEqual(
             report["implementation"]["features"][-1]["state"], "work-remains"
         )
@@ -239,7 +281,8 @@ class ReviewTests(unittest.TestCase):
 
         def transport(payload, credential, timeout):
             answers = {key: answer() for key in payload["questions"]}
-            answers["component-unit1"] = answer("deficient")
+            if "component-unit1" in answers:
+                answers["component-unit1"] = answer("deficient")
             return json.dumps({"model": "jev-1.13.0", "answers": answers}).encode()
 
         report = self.review(transport)
@@ -290,7 +333,8 @@ class ReviewTests(unittest.TestCase):
     def test_unknown_work_cannot_be_reported_as_implemented(self):
         def transport(payload, credential, timeout):
             answers = {key: answer() for key in payload["questions"]}
-            answers["criterion-1"] = answer("deficient", 0.445)
+            if "criterion-1" in answers:
+                answers["criterion-1"] = answer("deficient", 0.445)
             return json.dumps({"model": "jev-1.13.0", "answers": answers}).encode()
 
         report = self.review(transport)
@@ -391,14 +435,15 @@ class ReviewTests(unittest.TestCase):
 
         def transport(payload, credential, timeout):
             answers = {key: answer() for key in payload["questions"]}
-            answers["criteria-coverage"].update(
-                probabilities={
-                    "supported": 0.9333333333333333,
-                    "deficient": 0.0666666666666667,
-                    "insufficient_evidence": 0.0,
-                },
-                confidence=0.9,
-            )
+            if "criteria-coverage" in answers:
+                answers["criteria-coverage"].update(
+                    probabilities={
+                        "supported": 0.9333333333333333,
+                        "deficient": 0.0666666666666667,
+                        "insufficient_evidence": 0.0,
+                    },
+                    confidence=0.9,
+                )
             return json.dumps({"model": "jev-1.13.0", "answers": answers}).encode()
 
         report = self.review(transport)
@@ -410,14 +455,15 @@ class ReviewTests(unittest.TestCase):
 
         def transport(payload, credential, timeout):
             answers = {key: answer() for key in payload["questions"]}
-            answers["criteria-coverage"].update(
-                probabilities={
-                    "supported": 0.94,
-                    "deficient": 0.06,
-                    "insufficient_evidence": 0.0,
-                },
-                confidence=0.92,
-            )
+            if "criteria-coverage" in answers:
+                answers["criteria-coverage"].update(
+                    probabilities={
+                        "supported": 0.94,
+                        "deficient": 0.06,
+                        "insufficient_evidence": 0.0,
+                    },
+                    confidence=0.92,
+                )
             return json.dumps({"model": "jev-1.13.0", "answers": answers}).encode()
 
         report = self.review(transport)
@@ -427,14 +473,15 @@ class ReviewTests(unittest.TestCase):
     def test_wire_rounding_cannot_raise_confidence_above_floor(self):
         def transport(payload, credential, timeout):
             answers = {key: answer() for key in payload["questions"]}
-            answers["criteria-coverage"].update(
-                probabilities={
-                    "supported": 0.86,
-                    "deficient": 0.14,
-                    "insufficient_evidence": 0.0,
-                },
-                confidence=0.8,
-            )
+            if "criteria-coverage" in answers:
+                answers["criteria-coverage"].update(
+                    probabilities={
+                        "supported": 0.86,
+                        "deficient": 0.14,
+                        "insufficient_evidence": 0.0,
+                    },
+                    confidence=0.8,
+                )
             return json.dumps({"model": "jev-1.13.0", "answers": answers}).encode()
 
         report = self.review(transport)
@@ -461,7 +508,8 @@ class ReviewTests(unittest.TestCase):
 
             def transport(payload, credential, timeout):
                 answers = {name: answer() for name in payload["questions"]}
-                answers[key] = answer(choice, confidence)
+                if key in answers:
+                    answers[key] = answer(choice, confidence)
                 return json.dumps({"model": "jev-1.13.0", "answers": answers}).encode()
 
             report = self.review(transport)

@@ -5,7 +5,7 @@ import re
 
 from .review_config import ReviewInputError, strict_object
 
-RUBRIC_VERSION = "jev-implementation-v4"
+RUBRIC_VERSION = "jev-implementation-v5"
 VERDICTS = ("supported", "deficient", "insufficient_evidence")
 IDENTIFIER = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,63}\Z")
 

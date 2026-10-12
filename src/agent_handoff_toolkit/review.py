@@ -110,8 +110,8 @@ def review_record(
 
         state = project_state(record, bundle)
         questions = build_questions(state)
-        # Every question carries only its resolved evidence. Split bounded batteries
-        # without retrying requests or feeding model judgments into later questions.
+        # Give each unique judgment only its selected facts in the API's state.
+        # Isolation avoids sibling evidence leakage; no retry or judgment feedback.
         reduced = {"answers": {}}
         unique = {}
         signatures = {}
@@ -122,17 +122,30 @@ def review_record(
                 signatures[signature] = ident
                 unique[ident] = question
             sources[ident] = signatures[signature]
-        entries = list(unique.items())
         started = time.monotonic()
         request_count = 0
-        for offset in range(0, len(entries), 21):
-            batch = dict(entries[offset : offset + 21])
+        for ident, question in unique.items():
+            instructions = question["instructions"]
+            isolated = {
+                ident: {
+                    **question,
+                    "instructions": {
+                        key: value
+                        for key, value in instructions.items()
+                        if key != "supplied"
+                    },
+                }
+            }
             raw_response = (post_json if transport is None else transport)(
-                {"model": config["model"], "state": {}, "questions": batch},
+                {
+                    "model": config["model"],
+                    "state": instructions["supplied"],
+                    "questions": isolated,
+                },
                 credential,
                 config["timeout_seconds"],
             )
-            validated = validate_response(raw_response, batch)
+            validated = validate_response(raw_response, isolated)
             if "model" in reduced and reduced["model"] != validated["model"]:
                 raise ReviewUnavailable("response-schema")
             reduced["model"] = validated["model"]

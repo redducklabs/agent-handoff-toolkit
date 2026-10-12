@@ -143,7 +143,7 @@ Otherwise the candidate's nearest `.git` determines the checkout, respecting
 valid schema-v2 records only and never scans historical handoffs. Disabled review
 reads no candidate, evidence or credential.
 
-Questions directly attach relevant conditions and resolved evidence. A semantic
+Questions select relevant conditions and resolved evidence. A semantic
 coverage question assesses whether conditions cover the authorized outcome;
 exact file-path accounting belongs to code, not a model judgment.
 Component/condition judgments are combined in code; no holistic completion verdict
@@ -188,9 +188,10 @@ compact reports.
 
 ## Wire contract and evaluation
 
-Requests use Choice at `https://api.typesafe.ai/v1/systemone`, at most 21 questions
-per batch, no redirects/retries. Questions contain selected evidence; state is empty
-to exclude unrelated context. Answers exactly match requested IDs and verdicts
+Requests use Choice at `https://api.typesafe.ai/v1/systemone`, one unique question
+per request, no redirects/retries. Its exact selected facts enter the API's `state`;
+task, policy and criteria remain in the question. No sibling or unrelated evidence
+enters that request. Answers exactly match requested IDs and verdicts
 before aggregation. Byte-identical questions share one judgment, with
 `judgment_sources` recording reuse; an exactly matching criterion condition and
 ordered evidence selection supplies its component judgment too. Different
@@ -202,8 +203,8 @@ Answers use verdicts
 1e-6. Confidence follows `(3 * max_probability - 1) / 2`, allowing two-decimal
 rounding of 0.0125 plus 1e-6. Conservative reduction prevents upward rounding from
 crossing the floor. Response cap is 256 KiB; unknown response fields are discarded.
-All batches validate and agree on actual model; a partial fault is unavailable.
-Socket timeout is not a total deadline. Rubric `jev-implementation-v4` defaults to
+All requests validate and agree on actual model; a partial fault is unavailable.
+Socket timeout is not a total deadline. Rubric `jev-implementation-v5` defaults to
 model `jev-1.13.0`.
 Response-schema failures include only a closed validation stage (envelope,
 answer-shape, probabilities, or confidence), never response content. Validation
@@ -248,6 +249,31 @@ runtime evidence supported the clean case; the next assessment stopped on an
 invalid probability sum. Keep every uncertain and unavailable result. Fresh
 qualification and reliable STS validation remain pending; do not release or
 update other consumers on the strength of one successful diagnostic run.
+
+The subsequent frozen version-4 run assessed all 40 cases: all 16 preregistered
+critical gaps were localized at the unchanged floor, no false defects were
+reported, and all eight insufficient cases were inconclusive. Only 13 of 16 clean
+cases were supported, so it also failed qualification. Later independent diagnosis
+found an overbroad input-domain assurance in one synthetic clean case; preserve
+its frozen label and result rather than restricting its requirement after scoring.
+
+A reviewed diagnostic moved unchanged selected facts into `state` and isolated
+each question. Two opened clean cases became supported, two sampled gaps remained
+deficient, and missing proof remained inconclusive. The case with the domain caveat
+stayed uncertain. That carrier-and-isolation diagnostic is not fresh qualification.
+Version 5 uses this input boundary and still requires a new independently labeled
+qualification run and STS validation. It increases requests and latency: each
+unique question makes one sequential call; a maximum-size version-3 continuation
+can require 115 calls. The configured timeout applies to socket operations, not
+an overall assessment deadline. Any fault withholds the whole assessment; no
+partial verdict is used.
+
+The version-5 STS diagnostic matched all seven frozen labels without a service
+fault and localized each controlled gap. Actual ephemeral Claude Code and Codex
+then invoked the installed unreleased candidate: each supported the clean STS
+copy, rejected the serializer gap, and kept missing proof inconclusive. These
+opened cases establish compatibility and diagnostic progress, not fresh accuracy
+qualification. The new unseen version-5 comparison remains pending.
 
 See TypeSafe's [citation verification](https://docs.typesafe.ai/cookbooks/citation_check),
 [decomposed verification](https://docs.typesafe.ai/cookbooks/sde_cascade),
