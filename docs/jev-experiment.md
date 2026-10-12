@@ -1,194 +1,216 @@
-# Optional Jev assessment experiment
+# Optional Jev implementation assessment
 
-Jev provides voluntary advice about newly authored audits and continuations,
-outside hooks and lifecycle enforcement. Pass means supported by supplied
-evidence, **not verified** semantic truth. Unclear goals, deficient work,
-insufficient evidence and low confidence fail assessment. Unavailable never means
-pass. Existing structural validation and canonical terminal responses still apply.
+Jev assesses whether supplied evidence supports implemented behavior, shows work
+remaining, or cannot establish either. It is voluntary advice outside hooks and
+lifecycle enforcement. It does not prove code correctness or authorize completion.
+The same CLI and author workflow apply to Claude Code and Codex.
 
-## Setup
+## Machine-local setup
 
-Copy the installed `.agent-handoff-toolkit/jev.example.json` to project-owned
-`.agent-handoff-toolkit/jev.json`, then set `enabled` to `true` in the active
-file. Edit active configuration, not the managed example: editing the example
-causes sync conflicts. Install/sync never owns active configuration or credentials.
-Provide active configuration in each worktree: copy it there or commit the nonsecret
-settings if project policy permits. An ignored active file does not automatically
-appear in linked worktrees; its absence deliberately disables review.
-Missing configuration means disabled; malformed configuration is an error even
-when disabled. Omitted fields take these defaults:
+Copy `.agent-handoff-toolkit/jev.example.json` to ignored
+`.agent-handoff-toolkit/jev.json` and set `enabled` to true. Keep enablement,
+credential location and active settings machine-local; never commit or copy them
+between machines. Missing configuration disables review. Install/sync owns the
+example, never active configuration or credentials. Configure each checkout
+independently. Defaults:
 
 ```json
 {
   "enabled": false,
-  "credential": {
-    "variable": "JEV_API_KEY",
-    "source": "environment-or-file",
-    "file": ".env"
-  },
+  "credential": {"variable": "JEV_API_KEY", "source": "environment-or-file", "file": ".env"},
   "model": "jev-1.13.0",
   "timeout_seconds": 10,
   "minimum_confidence": 0.8
 }
 ```
 
-Credential sources are `environment`, `file`, and `environment-or-file`.
-The last gives a nonempty environment value precedence, falling back only when
-absent/empty. Customize `variable` with an `[A-Za-z_][A-Za-z0-9_]*` name and
-`file` with an absolute or checkout-relative path. Linked worktrees should use
-environment credentials or an explicitly configured absolute file; the toolkit
-never searches another worktree for keys. Ignore your selected credential file
-in Git before storing a key and exclude it from scratch copies. This repository
-ignores `.env` and excludes it and active `jev.json` from scratch checkout copies.
-No credential value appears here; configure keys through your secret manager or
-process environment. Never put secrets or customer data into assessment evidence.
+Credential sources are `environment`, `file`, or `environment-or-file`; the last
+uses a nonempty environment value first. Absolute or checkout-relative credential
+paths are allowed; worktrees never search another checkout for keys. Ignore the
+credential file before storing a key. Dotenv reads only the selected assignment,
+without execution, interpolation, environment mutation or escape expansion.
+Optional export, BOM, CRLF, matching quotes and comments are supported; duplicate,
+empty or malformed selected assignments are unavailable. Bearer values must be
+visible ASCII. Credentials never enter evidence or reports.
 
-Only the selected dotenv assignment is parsed, without shell execution,
-interpolation, escape expansion or environment mutation. Blank lines, comments,
-optional `export`, CRLF, and matching single/double quotes are supported.
-An optional UTF-8 BOM in credential files is accepted.
-Unquoted inline comments start after whitespace; after a closing quote allow only
-whitespace or a comment. Duplicate, empty and malformed selected assignments are
-unavailable. Unrelated malformed lines are not evaluated. Bearer characters must
-be visible ASCII (0x21–0x7E).
+Unknown fields, duplicate JSON keys, invalid UTF-8, boolean numeric values and
+nonfinite numbers are errors. Config is capped at 16 KiB, credential files at
+64 KiB. Timeout is greater than zero and at most 30 seconds; confidence is [0,1].
+Model names match `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`. The process needs network and
+credential visibility; urllib honors proxy environment variables. A connection
+error does not establish a sandbox failure.
 
-Unknown configuration fields, nested duplicate JSON keys, invalid UTF-8,
-nonfinite numbers and boolean numeric values are rejected. Config is capped at
-16 KiB, credential files at 64 KiB. Timeout must be greater than zero and at most
-30 seconds; confidence is in [0,1]. Model IDs match
-`[A-Za-z0-9][A-Za-z0-9._-]{0,127}`.
+## Construct a verification case
 
-The process running review needs network access and selected credential visibility.
-Depending on local Codex sandbox or Claude Code permission settings, configure
-those capabilities for that process. A connection error alone does not establish
-a sandbox failure. urllib honors proxy environment variables, including `HTTPS_PROXY`.
+Start with the immutable authorized outcome and explicit user decisions. Discover
+affected files, callers, alternate paths, configuration and tests through repository
+inspection, rather than treating the changed-file list as exhaustive. Account for
+unchanged/shared implementations. Do not invent deployment or approval gates.
 
-## Prepare evidence and review
-
-Derive observable acceptance criteria from the immutable authorized outcome and
-governing project requirements. Never weaken/redefine the goal to obtain a pass.
-Prepare temporary UTF-8 evidence outside the repository; delete it after review.
-This synthetic example shows the exact schema:
+Write sanitized evidence in a temporary file outside the repository. Supply relevant
+implementation excerpts and specific observed checks with their sources. Passing
+tests support only exercised behavior. Author assertions are not trusted proof.
+Exclude credentials, customer/provider records, tax IDs, full prompts, replies,
+transcripts and raw logs. Version-2 example:
 
 ```json
 {
-  "criteria": [{
-    "id": "acceptance-1",
-    "condition": "The installed review command runs.",
-    "evidence_ids": ["observation-1"]
-  }],
-  "evidence": [{
-    "id": "observation-1",
-    "source": "local verification of synthetic installation",
-    "text": "Installed command returned disabled with exit zero."
-  }]
+  "case_version": 2,
+  "criteria": [{"id": "validation", "condition": "Both handlers reject empty input.",
+    "evidence_ids": ["inspection"], "claim": "implemented"}],
+  "evidence": [
+    {"id": "inspection", "source": "sanitized inspection and behavior checks",
+     "text": "Both handlers call validate_input; empty-input checks pass on both paths."},
+    {"id": "discovery", "source": "entry-point search",
+     "text": "The web and API handlers are the two entry points; both are in handlers.py."}
+  ],
+  "features": [{"id": "input-validation", "requirement": "Reject empty input on both handlers.",
+    "criterion_ids": ["validation"], "discovery_evidence_ids": ["discovery"],
+    "required_paths": ["handlers.py"],
+    "components": [{"id": "handlers", "path": "handlers.py",
+      "condition": "Both handlers apply empty-input validation.",
+      "evidence_ids": ["inspection"], "claim": "implemented"}]}],
+  "files": []
 }
 ```
 
-Only the shown fields are allowed. IDs match `[A-Za-z][A-Za-z0-9_-]{0,63}` and
-are unique within each list. Maximums: 16 criteria, 32 evidence entries, 32 unique
-resolved references per criterion, 1000 characters per condition/source, 8000 per
-text, and 64 KiB for the entire evidence file. Wrong types, unknown fields,
-duplicate IDs/references, unresolved references and excessive limits are errors.
-Missing evidence, empty lists, blank conditions/source/text, and audit criteria
-without references fail locally before credentials are read. Future continuation
-criteria may lack references; overall evidence must support current claims and
-the next action, not future completion.
+Each condition belongs to exactly one feature. Shared paths may serve several
+features, but feature/component IDs are unique. Claims are `implemented` or
+`pending`. Components grant no lifecycle authority. Non-code features may have no
+components, but still need acceptance conditions and discovery observations.
+`required_paths` records the explicit inventory obtained from those observations.
+Code checks that each inventoried file is represented by a component. Unaccounted
+locations make the case inconclusive; they do not prove absent implementation.
+An empty inventory is appropriate for a non-code feature. Inventory honesty and
+completeness remain the author's responsibility and require independent inspection.
+
+Optional `files` entries are `{"path":"handlers.py","sha256":"<64 lowercase hex>"}`.
+These bind evidence to exact local bytes. Stale/missing/oversized files make
+assessment inconclusive before credentials are read. Paths must name a component
+and be checkout-relative POSIX paths without traversal; symlink escapes are
+rejected. Each bound file is capped at 1 MiB. Hashing uploads neither contents nor
+hashes, and does not prove supplied excerpts are truthful.
+
+Limits: 16 criteria/features, 32 components total, 32 evidence entries, 32 resolved
+references per list, 64 KiB evidence file. IDs match
+`[A-Za-z][A-Za-z0-9_-]{0,63}`; conditions/requirements/source are at most 1000
+characters, evidence text 8000, paths 240. Unknown fields, duplicate ownership or
+references, unresolved references and wrong types are errors. Missing audit proof
+is inconclusive. Future pending conditions may lack proof in a continuation.
+Legacy `{criteria,evidence}` remains readable without explicit claims or hierarchy.
+
+## Run and interpret
 
 ```text
 python .agent-handoff-toolkit/runner.py review handoffs/<new-record>.md --evidence <temporary-evidence.json>
 ```
 
-`--project-root <checkout>` explicitly selects settings. Otherwise the nearest
-`.git` file/directory above the candidate determines the checkout, respecting
-`GIT_CEILING_DIRECTORIES`, independently of the invoking cwd. Non-checkout
-candidates need an explicit root. Enabled review accepts valid schema-v2 records
-only and never scans historical handoffs. Disabled returns zero without checking
-candidate or evidence paths.
+`--project-root <checkout>` selects machine-local settings and file bindings.
+Otherwise the candidate's nearest `.git` determines the checkout, respecting
+`GIT_CEILING_DIRECTORIES`, independently of invoking cwd. Enabled review accepts
+valid schema-v2 records only and never scans historical handoffs. Disabled review
+reads no candidate, evidence or credential.
 
-When enabled with locally sufficient evidence, selected root goals, scope
-definitions/progress, narrative, verification, next action/prompt, and supplied
-evidence text/locators **leave the machine** for TypeSafe. Goal wording may
-originate in user prompts, including `Track:` declarations. Full prompts, replies
-and transcripts are not collected. Locators do not trigger file uploads.
-Authorization HMACs, lineage identifiers/digests, credential configuration and
-environment contents are excluded. Payloads/raw responses are never stored;
-reports expose only fixed reasons, digests, actual model and validated answers.
+Questions directly attach relevant conditions and resolved evidence. A semantic
+coverage question assesses whether conditions cover the authorized outcome;
+exact file-path accounting belongs to code, not a model judgment.
+Component/condition judgments are combined in code; no holistic completion verdict
+overrides individual findings. Code owns references, hashes, ownership and
+aggregation. Jev cannot discover an omitted file without a supplied clue.
 
-## Interpret JSON status
-
-| Status | Exit | Author action |
+| Status | Exit | Interpretation |
 | --- | --- | --- |
-| `pass` | 0 | All judgments supported at the floor; continue deterministic checks. |
-| `disabled` | 0 | No assessment attempted; add no routine notice. |
-| `fail` | 1 | Inspect each finding, improve work or gather proof, reassess. |
-| `unavailable` | 1 | No substantive judgment; add one risk sentence and validate/render normally. |
+| `pass` | 0 | Current claims/coverage supported; continue deterministic checks. |
+| `inconclusive` | 1 | Missing evidence or uncertainty; inspect or gather proof. |
+| `fail` | 1 | Confident contrary evidence; inspect localized work or claim. |
+| `disabled` | 0 | No assessment attempted. |
+| `unavailable` | 1 | Service/runtime failure, no substantive assessment. |
 | `error` | 2 | Correct configuration, candidate or evidence input. |
 
-Branch on JSON status, never exit alone. `credential-missing` identifies absent
-selected credentials; `credential-read`/`credential-format` identify source
-problems; `connection`/`timeout` identify transport faults; `internal` identifies
-a toolkit defect, not a presumed outage. Other fixed codes distinguish redirect,
-authentication, rate-limit, server/HTTP and invalid response size/JSON/schema.
-Underlying exception or remote response text never appears in feedback.
+Read `implementation.state`: `implemented`, `work-remains`, or `cannot-determine`.
+A confident contrary child keeps its feature unfinished; uncertainty prevents
+supported completion. Negative and positive answers below the floor are uncertain.
+In a continuation, explicitly pending findings appear under `progress`, not defect
+`reasons`. It can pass while implementation work remains; continue implementing.
+Claimed-implemented components still need proof. Legacy continuation criteria
+default to pending; version-2 cases declare claims explicitly. Continuations also
+check whether progress claims agree with recorded verification and whether a
+decision could change the first action. These checks do not require pending
+implementation to be finished.
 
-Fixed shared questions assess goal clarity, criteria coverage, evidence
-specificity and scope alignment. Audits assess each criterion using positional
-IDs `criterion-1` through `criterion-16`, mapped locally to criterion IDs, plus
-root completion. Completed children never establish parent completion.
-Continuations assess next action, hidden gates and remaining-work consistency;
-unfinished authorized work is expected. Fixed instructions treat state as data
-and ignore embedded instructions; this does not guarantee adversarial resistance.
+Reports contain fixed messages, IDs/paths/evidence references, digests, validated
+model/answers, implementation summaries, elapsed time and request count. No evidence
+text, generated reasoning, credential settings, raw responses or transcripts.
+Relevant outcome, decisions, remaining-work descriptions, action and selected
+evidence leave the machine. Authorization HMACs and lineage IDs are excluded.
+There are no implicit source uploads.
 
-Verdicts are `supported`, `deficient`, `insufficient_evidence`. Non-supported
-judgments stay failed even with low confidence; supported judgments below the
-floor fail as `low-confidence`. Static remediation replaces generated explanations.
-After at most two corrective reruns, independently examine remaining findings.
-Confirmed unfinished work continues or receives an executable continuation,
-never an audit. Unresolved ambiguity/proof remains failed. Defensible classifier
-disagreement gets one risk sentence while retaining the failed assessment.
-Advice belongs outside factual verification, metadata and the final response.
-On unavailable review, add one risk sentence; do not rerun for that diagnostic-only
-edit or loop on outages. Substantive candidate/evidence changes need reassessment.
-Candidate digests use toolkit record normalization; evidence digests cover exact
-bytes. Neither proves truth, and acceptance is never cached in lifecycle state.
+Keep advice outside factual verification, metadata and renderer-owned responses.
+Confirmed unfinished work means continue or write an executable continuation, never
+an audit. Independently inspect classifier disagreement; retain the assessment and
+explain defensible disagreement as one risk sentence. After at most two substantive
+corrective reruns, inspect remaining findings rather than looping. On unavailable
+review add one risk sentence and validate/render normally; do not retry a diagnostic
+edit. No result is cached as authority. Delete your temporary evidence; retain only
+compact reports.
 
-## API contract and evaluation
+## Wire contract and evaluation
 
-One POST to `https://api.typesafe.ai/v1/systemone` sends model, structured state
-and Choice questions with `instructions` and an option-to-description `criteria`
-map. No retries or redirects. Responses require a valid actual model, exactly
-the requested question IDs, Choice type, allowed verdict, full probability map
-and confidence. Numbers are finite in [0,1], with maximum-probability selected
-choice (ties allowed). Confidence must agree with the documented three-option
-Choice formula `(3 * maximum_probability - 1) / 2` within a rounding bound of
-`0.0125` plus numeric tolerance `1e-6`. Two-decimal probability rounding can
-contribute `1.5 * 0.005`, and confidence rounding another `0.005`; discrepancies
-outside that bound remain unavailable. The reported assessment confidence is
-the lower of the returned confidence and the formula applied to the returned
-probabilities (clamped at zero) when they differ beyond numeric tolerance, so
-upward rounding cannot raise it above the configured floor. Numerically coherent
-confidence is retained to avoid floating-point threshold errors. Probability
-sums retain tolerance `1e-6`.
-Unknown envelope/answer fields are discarded. The 256 KiB
-response cap also applies to injected transports. Socket-operation timeout does
-not guarantee a strict total elapsed deadline; no background request continues.
+Requests use Choice at `https://api.typesafe.ai/v1/systemone`, at most 21 questions
+per batch, no redirects/retries. Questions contain selected evidence; state is empty
+to exclude unrelated context. Answers exactly match requested IDs and verdicts
+before aggregation. Byte-identical questions share one judgment, with
+`judgment_sources` recording reuse; an exactly matching criterion condition and
+ordered evidence selection supplies its component judgment too. Different
+conditions or evidence remain separate. Select enough related code and observed
+inputs/results for each question to stand alone; evidence attached elsewhere is
+not implicit context. This reuse never selects the more favorable answer.
+Answers use verdicts
+`supported`, `deficient`, `insufficient_evidence`. Probability-sum tolerance is
+1e-6. Confidence follows `(3 * max_probability - 1) / 2`, allowing two-decimal
+rounding of 0.0125 plus 1e-6. Conservative reduction prevents upward rounding from
+crossing the floor. Response cap is 256 KiB; unknown response fields are discarded.
+All batches validate and agree on actual model; a partial fault is unavailable.
+Socket timeout is not a total deadline. Rubric `jev-implementation-v2` defaults to
+model `jev-1.13.0`.
 
-Rubric: `jev-assessment-v1`; default pinned model: `jev-1.13.0`. Probability-sum
-tolerance `1e-6` and at most 21 questions are toolkit policies, not vendor guarantees.
-See [API](https://docs.typesafe.ai/api), [models](https://docs.typesafe.ai/models),
-[confidence](https://docs.typesafe.ai/confidence) and
-[model limitations](https://docs.typesafe.ai/model-jaggedness/jev-1.13).
+Live evaluation requires explicit opt-in:
 
-Offline synthetic tests establish neither semantic accuracy nor live compatibility.
-Explicitly opt in to a synthetic-only compatibility smoke check by setting
-`AHK_JEV_LIVE_SMOKE=1` and `JEV_API_KEY` in the process environment, then running
-`python -m unittest discover -s tests -p test_jev_live.py -v`. No live request runs
-without opt-in. This tests response compatibility, not accuracy.
+```text
+python -m agent_handoff_toolkit review-evaluate tests/fixtures/jev-evaluation.json --partition development --project-root <configured-checkout> --live
+```
 
-For separate evaluation, label synthetic completion/handoff cases before running
-the pinned model/rubric. Include vague goals, missing proof, failed conditions,
-unfinished review/UAT/rollout, child/parent confusion and misleading embedded
-instructions. Compare with author self-review; measure false alarms, misses,
-latency and cost. Keep labels independent of answers and report sample size and
-limitations. Do not claim semantic accuracy until evaluation actually runs.
+Freeze independent labels before model answers; keep related mutations in one
+partition. Freeze the evaluator before opening `held-out` results; do not tune on
+them. Measure detected/missed/unresolved defects, false defects, unsupported
+completion, inconclusive coverage, unavailable calls and elapsed time. Cost is
+explicitly unknown when billing usage is unavailable. Outages stop the run without
+retry. Catalogs contain synthetic record/evidence objects; labels are never sent.
+
+Initial qualification: 16 defective, 16 clean and 8 insufficient cases; detect every
+planted defect, at most one false defect, support at least 15 clean cases, no
+unsupported completion or unsupported defect on insufficient evidence, all eight
+insufficient cases correctly inconclusive, and no unassessed cases. Report sample size and limitations;
+synthetic cases do not establish representative real-world accuracy. Compare
+old/new on sanitized STS engineering cases and controlled defects before updating
+other consumers. Exercise both hosts and option-order/context sensitivity. Ordinary
+tests and opt-in `AHK_JEV_LIVE_SMOKE=1` checks establish compatibility, not accuracy.
+Never weaken outcome or labels to obtain qualification.
+
+This candidate is not qualified for rollout. Two frozen held-out runs each caught
+all 16 planted gaps without a definite false defect and classified all eight
+insufficient cases as inconclusive, but supported only 12 and 10 of 16 clean
+cases respectively. Independent inspection found some incomplete acceptance
+conditions and evidence selections, alongside unresolved model uncertainty.
+An independently authored replacement catalog stopped on its first request with
+a connection failure and provides no assessment result. Keep those failed and
+unassessed runs; do not reinterpret abstention as successful verification.
+Ephemeral Claude Code and Codex invocations each exercised clean, defective and
+insufficient synthetic cases successfully. That establishes compatibility only;
+live STS qualification and release remain pending.
+
+See TypeSafe's [citation verification](https://docs.typesafe.ai/cookbooks/citation_check),
+[decomposed verification](https://docs.typesafe.ai/cookbooks/sde_cascade),
+[confidence](https://docs.typesafe.ai/confidence),
+[repeatability experiment](https://docs.typesafe.ai/cookbooks/consistency_choice_cookbook)
+and [model limitations](https://docs.typesafe.ai/model-jaggedness/jev-1.13).

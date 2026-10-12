@@ -23,6 +23,7 @@ class ReviewCliTests(unittest.TestCase):
             ("pass", 0),
             ("disabled", 0),
             ("fail", 1),
+            ("inconclusive", 1),
             ("unavailable", 1),
             ("error", 2),
         ):
@@ -68,7 +69,7 @@ class ReviewCliTests(unittest.TestCase):
             with contextlib.redirect_stdout(output):
                 code = main(["review", str(candidate), "--project-root", directory])
             self.assertEqual(code, 1)
-            self.assertEqual(json.loads(output.getvalue())["status"], "fail")
+            self.assertEqual(json.loads(output.getvalue())["status"], "inconclusive")
 
     def test_provider_import_blocker_leaves_existing_commands_and_hooks_operational(
         self,

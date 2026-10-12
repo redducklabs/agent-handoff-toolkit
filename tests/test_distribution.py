@@ -97,6 +97,12 @@ REQUIRED_SKILL_GATES = {
 }
 
 EXPECTED_INSTALL_TARGETS = {
+    "src/agent_handoff_toolkit/verification_case.py": {
+        ".agent-handoff-toolkit/src/agent_handoff_toolkit/verification_case.py"
+    },
+    "src/agent_handoff_toolkit/review_evaluation.py": {
+        ".agent-handoff-toolkit/src/agent_handoff_toolkit/review_evaluation.py"
+    },
     "distribution/jev.example.json": {".agent-handoff-toolkit/jev.example.json"},
     "docs/jev-experiment.md": {".agent-handoff-toolkit/jev-experiment.md"},
     "src/agent_handoff_toolkit/review_config.py": {
@@ -200,6 +206,8 @@ class JevDistributionTests(unittest.TestCase):
                 "review_config.py",
                 "review_rubrics.py",
                 "jev.py",
+                "verification_case.py",
+                "review_evaluation.py",
             ):
                 self.assertTrue((runtime / name).is_file())
             candidate = consumer / "candidate.md"
@@ -207,7 +215,7 @@ class JevDistributionTests(unittest.TestCase):
             env = dict(os.environ, PYTHONPATH="", GIT_CEILING_DIRECTORIES=str(root))
             for enabled, expected_status, expected_exit in (
                 (False, "disabled", 0),
-                (True, "fail", 1),
+                (True, "inconclusive", 1),
             ):
                 if enabled:
                     (consumer / ".agent-handoff-toolkit" / "jev.json").write_text(
@@ -241,34 +249,17 @@ class JevDistributionTests(unittest.TestCase):
         self.assertNotIn(".agent-handoff-toolkit/jev.json", targets)
 
     def test_shared_skill_review_workflow(self):
-        skill = (ROOT / "skills/agent-handoff/SKILL.md").read_text(encoding="utf-8")
-        self.assertLess(
-            skill.index("## Gate: Validate"), skill.index("## Gate: Assess")
-        )
-        self.assertLess(skill.index("## Gate: Assess"), skill.index("## Gate: Render"))
-        for phrase in (
-            "JSON status",
-            "at most two corrective reruns",
-            "independent",
-            "insufficient",
-            "never a completion audit",
-            "failed assessment",
-            "diagnostic-only",
-            "immutable authorized outcome",
-        ):
-            self.assertIn(phrase, skill)
-        guide = (ROOT / "docs/jev-experiment.md").read_text(encoding="utf-8")
-        for phrase in (
-            "JEV_API_KEY",
-            "checkout-relative",
-            "not verified",
-            "proxy",
-            "synthetic",
-            "internal",
-            "insufficient_evidence",
-            "each worktree",
-        ):
-            self.assertIn(phrase, guide)
+        # Author behavior is pressure-tested separately. Installation must supply
+        # the same tested instructions to both hosts, without fragile prose greps.
+        with tempfile.TemporaryDirectory() as directory:
+            consumer = Path(directory)
+            install_copy_artifacts(consumer)
+            expected = (ROOT / "skills/agent-handoff/SKILL.md").read_bytes()
+            for relative in (
+                ".agents/skills/agent-handoff/SKILL.md",
+                ".claude/skills/agent-handoff/SKILL.md",
+            ):
+                self.assertEqual((consumer / relative).read_bytes(), expected)
 
 
 def load_manifest() -> dict[str, object]:

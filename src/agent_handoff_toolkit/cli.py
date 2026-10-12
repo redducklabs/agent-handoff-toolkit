@@ -43,6 +43,18 @@ def _parser() -> argparse.ArgumentParser:
     review.add_argument("--evidence", type=Path)
     review.add_argument("--project-root", type=Path)
 
+    evaluate = subparsers.add_parser(
+        "review-evaluate", help="opt-in labeled Jev evaluation"
+    )
+    evaluate.add_argument("catalog", type=Path)
+    evaluate.add_argument("--project-root", type=Path, required=True)
+    evaluate.add_argument(
+        "--partition", choices=("development", "held-out"), required=True
+    )
+    evaluate.add_argument(
+        "--live", action="store_true", help="explicitly authorize network assessment"
+    )
+
     render = subparsers.add_parser("render", help="render JSON data as Markdown")
     render.add_argument("record", type=Path)
     render.add_argument("--output", type=Path)
@@ -505,6 +517,31 @@ def main(argv: Sequence[str] | None = None) -> int:
         report = review_record(args.record, args.evidence, args.project_root)
         sys.stdout.write(json.dumps(report, ensure_ascii=False, sort_keys=True) + "\n")
         return report_exit_code(report)
+
+    if args.command == "review-evaluate":
+        from .review_evaluation import evaluate_catalog
+        from .review_config import ReviewInputError
+
+        try:
+            report = evaluate_catalog(
+                args.catalog, args.project_root, args.partition, live=args.live
+            )
+        except ReviewInputError as error:
+            report = {"status": "error", "code": str(error)}
+            sys.stdout.write(json.dumps(report) + "\n")
+            return 2
+        except (ValueError, OSError):
+            sys.stdout.write(
+                json.dumps({"status": "error", "code": "evaluation-schema"}) + "\n"
+            )
+            return 2
+        except Exception:
+            sys.stdout.write(
+                json.dumps({"status": "unavailable", "code": "internal"}) + "\n"
+            )
+            return 1
+        sys.stdout.write(json.dumps(report, ensure_ascii=False, sort_keys=True) + "\n")
+        return 0 if report["qualified"] else 1
 
     if args.command == "hook":
         published = False

@@ -109,6 +109,11 @@ Read `.agent-handoff-toolkit/jev-experiment.md` for setup and the evidence schem
 When enabled, derive observable acceptance criteria from the immutable authorized outcome;
 prepare explicit supporting evidence in a temporary file outside the repository,
 then delete it after review. Never weaken the goal or criteria to obtain a pass.
+Use the version-2 verification case for feature implementation: discover affected
+files and callers through repository searches, account for unchanged shared code,
+and link each feature, component and acceptance condition to relevant evidence.
+Changing every listed file is not a requirement; implementing the behavior is.
+Declare each current implementation claim as `implemented` or `pending`.
 Selected goals, narrative and evidence leave the machine; full prompts/transcripts
 are not collected. Do not include secrets or customer data.
 
@@ -116,21 +121,26 @@ are not collected. Do not include secrets or customer data.
 python .agent-handoff-toolkit/runner.py review <record-path> --evidence <temporary-evidence.json>
 ```
 
-Inspect JSON status, not exit alone: fail and unavailable both exit 1. Disabled
+Inspect JSON status, not exit alone: fail, inconclusive and unavailable exit 1. Disabled
 adds no routine notice. Error requires correcting local input/configuration.
 Pass means supported by supplied evidence, never mechanically verified truth.
 Keep results outside factual verification, metadata and the renderer-owned terminal
 response; optional advice never changes lifecycle authority.
 
-For fail, inspect every finding, gather missing proof or improve deficient work
-and the candidate, then reassess. Continuations need evidence for current claims
-and next action; future criteria may lack proof of completion.
+Read `implementation.state`: `implemented`, `work-remains`, or `cannot-determine`.
+This describes supplied implementation evidence, not mechanically proven truth.
+For fail, inspect each localized finding and improve the work or unsupported claim.
+For inconclusive, gather evidence or independently inspect the affected condition.
+Low-confidence answers of either sign are uncertain, never definite defects.
+An honest continuation may pass while `implementation.state` is `work-remains`;
+its `progress` findings describe pending implementation, not defects in the record.
+Continue that work. Future conditions may lack proof; a completion audit cannot.
 After at most two corrective reruns, independently examine remaining findings.
 Confirmed unfinished work means keep working or create an executable continuation,
-never a completion audit. Unresolved goal ambiguity or insufficient evidence stays
-a failed assessment. Suspected classifier errors require independent examination
+never a completion audit. Unresolved ambiguity or insufficient evidence remains
+inconclusive. Suspected classifier errors require independent examination
 of the actual criterion and evidence; defensible disagreement gets one risk
-sentence while retaining failure and following the deterministic contract.
+sentence while retaining the reported assessment and following the deterministic contract.
 
 For unavailable, add one short risk sentence and validate/render normally without
 another review for that diagnostic-only edit. Never loop on outages. Internal

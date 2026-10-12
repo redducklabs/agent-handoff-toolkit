@@ -15,9 +15,203 @@ from agent_handoff_toolkit.lineage import record_digest  # noqa: E402
 from agent_handoff_toolkit.review_config import ReviewUnavailable  # noqa: E402
 from test_records import make_v2_audit, make_v2_continuation  # noqa: E402
 from test_review_rubrics import evidence_bundle, answer  # noqa: E402
+from test_verification_case import verification_case  # noqa: E402
 
 
 class ReviewTests(unittest.TestCase):
+    def test_identical_component_and_criterion_share_one_judgment(self):
+        bundle = verification_case()
+        criterion = bundle["criteria"][0]
+        component = bundle["features"][0]["components"][0]
+        component["condition"] = criterion["condition"]
+        component["evidence_ids"] = criterion["evidence_ids"][:]
+        self.evidence.write_text(json.dumps(bundle))
+        sent = []
+
+        def transport(payload, credential, timeout):
+            sent.extend(payload["questions"])
+            answers = {key: answer() for key in payload["questions"]}
+            answers["criterion-1"] = answer("deficient", 0.445)
+            return json.dumps({"model": "jev-1.13.0", "answers": answers}).encode()
+
+        report = self.review(transport)
+        self.assertNotIn("component-unit1", sent)
+        self.assertEqual(
+            report["answers"]["component-unit1"], report["answers"]["criterion-1"]
+        )
+        self.assertEqual(report["implementation"]["state"], "cannot-determine")
+        self.assertEqual(report["status"], "inconclusive")
+
+    def test_reused_pending_judgment_does_not_excuse_implemented_component(self):
+        self.record.write_text(render_record(make_v2_continuation()), encoding="utf-8")
+        bundle = verification_case()
+        criterion = bundle["criteria"][0]
+        criterion["claim"] = "pending"
+        component = bundle["features"][0]["components"][0]
+        component["condition"] = criterion["condition"]
+        component["evidence_ids"] = criterion["evidence_ids"][:]
+        self.evidence.write_text(json.dumps(bundle))
+
+        def transport(payload, credential, timeout):
+            answers = {key: answer() for key in payload["questions"]}
+            answers["criterion-1"] = answer("deficient")
+            return json.dumps({"model": "jev-1.13.0", "answers": answers}).encode()
+
+        report = self.review(transport)
+        self.assertEqual(report["status"], "fail")
+        self.assertEqual(report["judgment_sources"]["component-unit1"], "criterion-1")
+        self.assertEqual(report["reasons"][0]["component_id"], "unit1")
+        self.assertEqual(report["progress"][0]["criterion_id"], criterion["id"])
+
+    def test_missing_discovery_is_inconclusive_before_network(self):
+        bundle = verification_case()
+        bundle["features"][0]["discovery_evidence_ids"] = []
+        self.evidence.write_text(json.dumps(bundle))
+        report = self.review(
+            lambda *args: self.fail("missing discovery reached network")
+        )
+        self.assertEqual(report["status"], "inconclusive")
+        self.assertEqual(report["reasons"][0]["code"], "missing-discovery")
+
+    def test_large_case_batches_without_losing_child_findings(self):
+        # Distinct obligations must remain separate, even when paths are shared.
+        bundle = verification_case()
+        bundle["criteria"] = []
+        bundle["features"] = []
+        for index in range(16):
+            bundle["criteria"].append(
+                {
+                    "id": f"c{index}",
+                    "condition": f"Validate criterion {index}.",
+                    "evidence_ids": ["e1"],
+                    "claim": "implemented",
+                }
+            )
+            bundle["features"].append(
+                {
+                    "id": f"f{index}",
+                    "requirement": "Validate input.",
+                    "criterion_ids": [f"c{index}"],
+                    "discovery_evidence_ids": ["e1"],
+                    "required_paths": ["shared.py"],
+                    "components": [
+                        {
+                            "id": f"unit{index}-{child}",
+                            "path": "shared.py",
+                            "condition": f"Validate component {index}-{child}.",
+                            "evidence_ids": ["e1"],
+                            "claim": "implemented",
+                        }
+                        for child in range(2)
+                    ],
+                }
+            )
+        self.evidence.write_text(json.dumps(bundle))
+        batches = []
+
+        def transport(payload, credential, timeout):
+            batches.append(list(payload["questions"]))
+            answers = {key: answer() for key in payload["questions"]}
+            if "component-unit15-1" in answers:
+                answers["component-unit15-1"] = answer("deficient")
+            return json.dumps({"model": "jev-1.13.0", "answers": answers}).encode()
+
+        report = self.review(transport)
+        self.assertEqual(report["status"], "fail")
+        self.assertEqual(report["request_count"], 3)
+        self.assertTrue(all(len(batch) <= 21 for batch in batches))
+        self.assertEqual(
+            report["implementation"]["features"][-1]["state"], "work-remains"
+        )
+        calls = 0
+
+        def failing_later_batch(payload, credential, timeout):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise ReviewUnavailable("connection")
+            return transport(payload, credential, timeout)
+
+        partial = self.review(failing_later_batch)
+        self.assertEqual(partial["status"], "unavailable")
+        for withheld in ("answers", "implementation", "judgment_sources"):
+            self.assertNotIn(withheld, partial)
+
+    def test_distinct_component_proof_keeps_its_own_negative_judgment(self):
+        bundle = verification_case()
+        component = bundle["features"][0]["components"][0]
+        component["condition"] = bundle["criteria"][0]["condition"]
+        bundle["evidence"].append(
+            {
+                "id": "current-gap",
+                "source": "different caller",
+                "text": "The batch caller bypasses validation.",
+            }
+        )
+        component["evidence_ids"] = ["current-gap"]
+        self.evidence.write_text(json.dumps(bundle))
+
+        def transport(payload, credential, timeout):
+            answers = {key: answer() for key in payload["questions"]}
+            answers["component-unit1"] = answer("deficient")
+            return json.dumps({"model": "jev-1.13.0", "answers": answers}).encode()
+
+        report = self.review(transport)
+        self.assertEqual(report["status"], "fail")
+        self.assertEqual(
+            report["judgment_sources"]["component-unit1"], "component-unit1"
+        )
+        self.assertEqual(report["implementation"]["state"], "work-remains")
+
+    def test_hierarchical_report_localizes_unfinished_component_without_source_text(
+        self,
+    ):
+        self.evidence.write_text(json.dumps(verification_case()))
+
+        def transport(payload, credential, timeout):
+            answers = {key: answer() for key in payload["questions"]}
+            if "component-unit1" in answers:
+                answers["component-unit1"] = answer("deficient")
+            return json.dumps({"model": "jev-1.13.0", "answers": answers}).encode()
+
+        report = self.review(transport)
+        self.assertEqual(report["status"], "fail")
+        self.assertEqual(report["implementation"]["state"], "work-remains")
+        feature = report["implementation"]["features"][0]
+        self.assertEqual(feature["state"], "work-remains")
+        self.assertEqual(feature["components"][0]["path"], "handler.py")
+        self.assertNotIn("Both entry points call", json.dumps(report))
+
+    def test_honest_pending_continuation_does_not_raise_defect_alarm(self):
+        self.record.write_text(render_record(make_v2_continuation()), encoding="utf-8")
+        bundle = verification_case()
+        bundle["criteria"][0]["claim"] = "pending"
+        bundle["features"][0]["components"][0]["claim"] = "pending"
+        self.evidence.write_text(json.dumps(bundle))
+
+        def transport(payload, credential, timeout):
+            answers = {key: answer() for key in payload["questions"]}
+            for key in ("criterion-1", "component-unit1"):
+                if key in answers:
+                    answers[key] = answer("deficient")
+            return json.dumps({"model": "jev-1.13.0", "answers": answers}).encode()
+
+        report = self.review(transport)
+        self.assertEqual(report["status"], "pass")
+        self.assertEqual(report["implementation"]["state"], "work-remains")
+        self.assertEqual(report["progress"][0]["code"], "deficient")
+
+    def test_unknown_work_cannot_be_reported_as_implemented(self):
+        def transport(payload, credential, timeout):
+            answers = {key: answer() for key in payload["questions"]}
+            answers["criterion-1"] = answer("deficient", 0.445)
+            return json.dumps({"model": "jev-1.13.0", "answers": answers}).encode()
+
+        report = self.review(transport)
+        self.assertEqual(report["status"], "inconclusive")
+        self.assertEqual(report["implementation"]["state"], "cannot-determine")
+        self.assertEqual(report_exit_code(report), 1)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -71,7 +265,7 @@ class ReviewTests(unittest.TestCase):
             "agent_handoff_toolkit.review.resolve_credential",
             side_effect=AssertionError("credential read"),
         ):
-            self.assertEqual(self.review(evidence=False)["status"], "fail")
+            self.assertEqual(self.review(evidence=False)["status"], "inconclusive")
             bundle = evidence_bundle()
             bundle["criteria"].append(
                 {
@@ -82,7 +276,7 @@ class ReviewTests(unittest.TestCase):
             )
             self.evidence.write_text(json.dumps(bundle))
             result = self.review()
-            self.assertEqual(result["status"], "fail")
+            self.assertEqual(result["status"], "inconclusive")
             self.assertEqual(result["reasons"][0]["criterion_id"], "missing-proof")
 
     def test_audit_pass_and_input_digests(self):
@@ -111,7 +305,7 @@ class ReviewTests(unittest.TestCase):
 
         def transport(payload, credential, timeout):
             answers = {key: answer() for key in payload["questions"]}
-            answers["goal-clarity"].update(
+            answers["criteria-coverage"].update(
                 probabilities={
                     "supported": 0.9333333333333333,
                     "deficient": 0.0666666666666667,
@@ -123,14 +317,14 @@ class ReviewTests(unittest.TestCase):
 
         report = self.review(transport)
         self.assertEqual(report["status"], "pass")
-        self.assertEqual(report["answers"]["goal-clarity"]["confidence"], 0.9)
+        self.assertEqual(report["answers"]["criteria-coverage"]["confidence"], 0.9)
 
     def test_rounded_probability_formula_hits_floor_without_binary_drift(self):
         self.config.write_text('{"enabled":true,"minimum_confidence":0.91}')
 
         def transport(payload, credential, timeout):
             answers = {key: answer() for key in payload["questions"]}
-            answers["goal-clarity"].update(
+            answers["criteria-coverage"].update(
                 probabilities={
                     "supported": 0.94,
                     "deficient": 0.06,
@@ -142,12 +336,12 @@ class ReviewTests(unittest.TestCase):
 
         report = self.review(transport)
         self.assertEqual(report["status"], "pass")
-        self.assertEqual(report["answers"]["goal-clarity"]["confidence"], 0.91)
+        self.assertEqual(report["answers"]["criteria-coverage"]["confidence"], 0.91)
 
     def test_wire_rounding_cannot_raise_confidence_above_floor(self):
         def transport(payload, credential, timeout):
             answers = {key: answer() for key in payload["questions"]}
-            answers["goal-clarity"].update(
+            answers["criteria-coverage"].update(
                 probabilities={
                     "supported": 0.86,
                     "deficient": 0.14,
@@ -158,17 +352,25 @@ class ReviewTests(unittest.TestCase):
             return json.dumps({"model": "jev-1.13.0", "answers": answers}).encode()
 
         report = self.review(transport)
-        self.assertEqual(report["status"], "fail")
+        self.assertEqual(report["status"], "inconclusive")
         self.assertEqual(report["reasons"][0]["code"], "low-confidence")
-        self.assertEqual(report["reasons"][0]["question_id"], "goal-clarity")
-        self.assertAlmostEqual(report["answers"]["goal-clarity"]["confidence"], 0.79)
+        self.assertEqual(report["reasons"][0]["question_id"], "criteria-coverage")
+        self.assertAlmostEqual(
+            report["answers"]["criteria-coverage"]["confidence"], 0.79
+        )
 
     def test_substantive_and_confidence_failures(self):
-        for key, choice, confidence, expected in (
-            ("root-completion", "deficient", 0.95, "deficient"),
-            ("criterion-1", "insufficient_evidence", 0.95, "insufficient-evidence"),
-            ("goal-clarity", "deficient", 0.95, "deficient"),
-            ("scope-alignment", "supported", 0.1, "low-confidence"),
+        for key, choice, confidence, expected, status in (
+            ("criterion-1", "deficient", 0.95, "deficient", "fail"),
+            (
+                "criterion-1",
+                "insufficient_evidence",
+                0.95,
+                "insufficient-evidence",
+                "inconclusive",
+            ),
+            ("criteria-coverage", "deficient", 0.95, "deficient", "fail"),
+            ("criteria-coverage", "supported", 0.1, "low-confidence", "inconclusive"),
         ):
 
             def transport(payload, credential, timeout):
@@ -177,7 +379,7 @@ class ReviewTests(unittest.TestCase):
                 return json.dumps({"model": "jev-1.13.0", "answers": answers}).encode()
 
             report = self.review(transport)
-            self.assertEqual(report["status"], "fail")
+            self.assertEqual(report["status"], status)
             self.assertEqual(report["reasons"][0]["code"], expected)
             if key == "criterion-1":
                 self.assertEqual(report["reasons"][0]["criterion_id"], "acceptance-1")

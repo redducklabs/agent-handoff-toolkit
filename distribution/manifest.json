@@ -9,13 +9,23 @@
   "text_hash": "utf8-lf-sha256-v1",
   "artifacts": [
     {
+      "source": "src/agent_handoff_toolkit/verification_case.py",
+      "sha256": "a7199cd3af22f7fbb63d955f9fb4d897d86d556ab8dbab4b51d087218134be2c",
+      "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/src/agent_handoff_toolkit/verification_case.py"]}
+    },
+    {
+      "source": "src/agent_handoff_toolkit/review_evaluation.py",
+      "sha256": "ca9d24ae07adf7eb54e4792388aaa6a59a43ecfeab8f0cfa69100f2ab7920f07",
+      "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/src/agent_handoff_toolkit/review_evaluation.py"]}
+    },
+    {
       "source": "src/agent_handoff_toolkit/review_config.py",
       "sha256": "b3057276a70b6bc499a2c08a9c88c524310447465c68404b7b2d4c80318e8ee5",
       "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/src/agent_handoff_toolkit/review_config.py"]}
     },
     {
       "source": "src/agent_handoff_toolkit/review_rubrics.py",
-      "sha256": "527e7518175d067257cf41bf2afbd87b2641283c92729895928ce1c6036f34a5",
+      "sha256": "8c19e9dd3507a9dc5f65e1dc4d3769188376ffe06782f41b9e56931bf65ed190",
       "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/src/agent_handoff_toolkit/review_rubrics.py"]}
     },
     {
@@ -25,7 +35,7 @@
     },
     {
       "source": "src/agent_handoff_toolkit/review.py",
-      "sha256": "a62c065a603cb0771303897a8839cab849c6eaa05b15b2bd5c36d52f58cee0b6",
+      "sha256": "489282ad33a72893cae9ba2a09cd3bccab3f9520235db818e0c90a957384fff3",
       "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/src/agent_handoff_toolkit/review.py"]}
     },
     {
@@ -35,7 +45,7 @@
     },
     {
       "source": "docs/jev-experiment.md",
-      "sha256": "75f6d91b625802eb372a35b9fca2239225952caccf33affedadc213774fbc5ce",
+      "sha256": "659a132dee3f77762e47c11854ab48fd32afbb29b28497612b026310b93a9a94",
       "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/jev-experiment.md"]}
     },
     {
@@ -97,7 +107,7 @@
     },
     {
       "source": "skills/agent-handoff/SKILL.md",
-      "sha256": "f6ded1b16bb33a7573e3e55d5b8690f36e5fbb10cc69b138bde8e04b62f8a704",
+      "sha256": "63b61928134e3d531f3705f697c0ad1a787075d21a1be30af5637404bc047798",
       "install": {
         "mode": "copy",
         "transform": "none",
@@ -220,7 +230,7 @@
     },
     {
       "source": "src/agent_handoff_toolkit/cli.py",
-      "sha256": "b958030d78d14b4df7cd0a1adf30d1a89e5b5cc7110a2f76aa01b12a7b7860b0",
+      "sha256": "5f73ff9c3b1156af4b969d59969cfad2ff5dce9b48b513682f68c95392b9be60",
       "install": {
         "mode": "copy",
         "transform": "none",
