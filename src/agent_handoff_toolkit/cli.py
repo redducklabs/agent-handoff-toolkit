@@ -36,13 +36,6 @@ def _parser() -> argparse.ArgumentParser:
     validate = subparsers.add_parser("validate", help="validate a Markdown record")
     validate.add_argument("record", type=Path)
 
-    review = subparsers.add_parser(
-        "review", help="assess a new record with optional Jev"
-    )
-    review.add_argument("record", type=Path)
-    review.add_argument("--evidence", type=Path)
-    review.add_argument("--project-root", type=Path)
-
     render = subparsers.add_parser("render", help="render JSON data as Markdown")
     render.add_argument("record", type=Path)
     render.add_argument("--output", type=Path)
@@ -498,13 +491,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     if arguments and arguments[0] == "lifecycle":
         return _lifecycle_main(arguments[1:])
     args = _parser().parse_args(argv)
-
-    if args.command == "review":
-        from .review import review_record, report_exit_code
-
-        report = review_record(args.record, args.evidence, args.project_root)
-        sys.stdout.write(json.dumps(report, ensure_ascii=False, sort_keys=True) + "\n")
-        return report_exit_code(report)
 
     if args.command == "hook":
         published = False

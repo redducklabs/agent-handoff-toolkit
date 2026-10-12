@@ -61,6 +61,7 @@ class Manifest:
     python_command: str
     minimum_python: str
     artifacts: tuple[Artifact, ...]
+    retired_targets: tuple[PurePosixPath, ...] = ()
 
     @property
     def release(self) -> str:
@@ -271,7 +272,8 @@ def load_manifest(source_root: Path) -> Manifest:
             "runtime",
             "text_hash",
             "artifacts",
-        },
+        }
+        | ({"retired_targets"} if "retired_targets" in manifest else set()),
         label="manifest",
     )
     if _require_int(manifest["manifest_version"], label="manifest version") != 2:
@@ -304,10 +306,24 @@ def load_manifest(source_root: Path) -> Manifest:
     ]
     if len(set(targets)) != len(targets):
         raise ManifestError("target collision")
+    retired_value = manifest.get("retired_targets", [])
+    if not isinstance(retired_value, list) or len(retired_value) > 64:
+        raise ManifestError("retired targets must be an array of at most 64 paths")
+    retired = tuple(
+        validate_relative_path(value, kind="retired target") for value in retired_value
+    )
+    retired_keys = [path_collision_key(value) for value in retired]
+    if len(set(retired_keys)) != len(retired_keys) or set(retired_keys).intersection(
+        targets
+    ):
+        raise ManifestError("retired target collision")
+    if ".agent-handoff-toolkit/install-state.json" in retired_keys:
+        raise ManifestError("cannot retire installed ownership state")
     return Manifest(
         toolkit_version,
         record_schema_version,
         python_command,
         minimum_python,
         artifacts,
+        retired,
     )

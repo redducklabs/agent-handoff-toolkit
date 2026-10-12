@@ -1,12 +1,12 @@
 # Consumer integration
 
-## Optional Jev assessment
+## Retired experimental assessment
 
-Install/sync distributes a disabled example and a shared review workflow for both
-hosts. Configure project-owned settings and credentials as described in
-[Jev setup and evidence guide](jev-experiment.md). Review stays outside hooks and
-lifecycle; insufficient evidence fails assessment, unavailable never means pass,
-and a supported result establishes no semantic truth.
+The optional Jev assessment has been removed. Sync explicitly retires its six
+unchanged toolkit-owned files. Modified or unowned files require reconciliation;
+local credential files and settings remain untouched and are no longer read.
+The experimental `review` command is no longer available. Deterministic record
+validation, rendering and lifecycle enforcement remain available for both hosts.
 
 ## Release checkout installation
 
@@ -14,12 +14,12 @@ Run installation from an inspectable checkout of the public release rather than
 from a network downloader:
 
 ```powershell
-git clone --branch v1.3.1 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
+git clone --branch v1.4.0 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
 Set-Location agent-handoff-toolkit
-python distribution/runner.py install --target <consumer-repository> --release v1.3.1 --dry-run
-python distribution/runner.py install --target <consumer-repository> --release v1.3.1 --apply
-python distribution/runner.py sync --target <consumer-repository> --release v1.3.1 --check
-python distribution/runner.py sync --target <consumer-repository> --release v1.3.1 --apply
+python distribution/runner.py install --target <consumer-repository> --release v1.4.0 --dry-run
+python distribution/runner.py install --target <consumer-repository> --release v1.4.0 --apply
+python distribution/runner.py sync --target <consumer-repository> --release v1.4.0 --check
+python distribution/runner.py sync --target <consumer-repository> --release v1.4.0 --apply
 ```
 
 Run install and sync only in an isolated, clean Git worktree. Confirm the
@@ -242,7 +242,7 @@ Before bulk adoption, select one repository with mature handoffs and one with li
 1. Inventory local instructions, hook and skill configuration, and tracker
    conventions. Count or locate historical handoff storage only if needed to
    protect it; do not open the records.
-2. Run the v1.3.1 installer in dry-run mode from its release checkout.
+2. Run the v1.4.0 installer in dry-run mode from its release checkout.
 3. Review the proposed instruction and hook merges.
 4. Apply on a branch. Treat every record that predates this adoption as
    deprecated by policy without marking, reading, or rewriting individual files.

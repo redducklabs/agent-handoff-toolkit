@@ -271,10 +271,6 @@ A session enforces nothing until it registers a root.
 
 ## Enforcement boundary
 
-Optional Jev review is voluntary advice outside hooks and lifecycle enforcement:
-insufficient evidence fails assessment, unavailable never means pass, and pass
-establishes no semantic truth; see `.agent-handoff-toolkit/jev-experiment.md`.
-
 The validator enforces record type, section shape, scope consistency, lineage,
 verification classifications, empty gates, and actionable fields. It does not mechanically prove
 that facts are true, scope interpretation is correct, all source code was inspected,
