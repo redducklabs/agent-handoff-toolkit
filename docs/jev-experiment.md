@@ -302,6 +302,20 @@ a consistent winner and confidence. Do not infer missing mass or normalize it
 locally to increase confidence. Keep strict validation and the qualification bar;
 release and consumer adoption remain on hold.
 
+A subsequent approved yes/no feasibility test used two native Noul propositions
+per selected judgment: whether observations establish satisfaction, and whether
+they establish a concrete deficiency. Local classification required agreement
+between both probabilities at a binary confidence floor of 0.8, with an additional
+0.01 probability guard; conflicting or neither-supported propositions remained
+inconclusive. This is not Choice confidence and does not establish calibration.
+The first six opened diagnostic cases were all inconclusive. One reviewed
+plain-text serialization correction preserved every condition/subject, meaning,
+task, policy and selected fact. It localized one of two critical gaps, supported
+neither of two clean cases, and correctly kept both missing-proof cases inconclusive.
+All responses were valid. Both attempts are retained and earn no qualification
+credit. No fresh qualification set was spent on this unresolved candidate and no
+native-Noul production evaluator or consumer update was implemented.
+
 See TypeSafe's [citation verification](https://docs.typesafe.ai/cookbooks/citation_check),
 [decomposed verification](https://docs.typesafe.ai/cookbooks/sde_cascade),
 [confidence](https://docs.typesafe.ai/confidence),
