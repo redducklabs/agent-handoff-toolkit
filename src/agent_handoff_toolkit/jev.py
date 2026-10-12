@@ -105,16 +105,18 @@ def validate_response(raw: bytes, questions: dict) -> dict:
         choice = answer.get("choice")
         probabilities = answer.get("probabilities")
         confidence = answer.get("confidence")
-        if (
-            answer.get("type") != "choice"
-            or choice not in VERDICTS
-            or not isinstance(probabilities, dict)
-            or set(probabilities) != set(VERDICTS)
-            or not all(probability(value) for value in probabilities.values())
-            or abs(sum(probabilities.values()) - 1) > PROBABILITY_TOLERANCE
-            or probabilities[choice] < max(probabilities.values())
-        ):
-            reject_schema("probabilities")
+        if answer.get("type") != "choice":
+            reject_schema("probabilities", "answer-type")
+        if choice not in VERDICTS:
+            reject_schema("probabilities", "choice-option")
+        if not isinstance(probabilities, dict) or set(probabilities) != set(VERDICTS):
+            reject_schema("probabilities", "probability-options")
+        if not all(probability(value) for value in probabilities.values()):
+            reject_schema("probabilities", "probability-value")
+        if abs(sum(probabilities.values()) - 1) > PROBABILITY_TOLERANCE:
+            reject_schema("probabilities", "probability-sum")
+        if probabilities[choice] < max(probabilities.values()):
+            reject_schema("probabilities", "choice-maximum")
         if not probability(confidence):
             reject_schema("confidence")
         # Evaluate the decimal wire probability exactly before converting back
@@ -140,7 +142,9 @@ def validate_response(raw: bytes, questions: dict) -> dict:
     return {"model": model, "answers": reduced}
 
 
-def reject_schema(stage):
+def reject_schema(stage, rule=None):
     error = ReviewUnavailable("response-schema")
     error.validation_stage = stage
+    if rule is not None:
+        error.validation_rule = rule
     raise error

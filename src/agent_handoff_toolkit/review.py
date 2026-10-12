@@ -261,6 +261,16 @@ def review_record(
             "confidence",
         ):
             report["reasons"][0]["validation_stage"] = stage
+            rule = getattr(error, "validation_rule", None)
+            if stage == "probabilities" and rule in (
+                "answer-type",
+                "choice-option",
+                "probability-options",
+                "probability-value",
+                "probability-sum",
+                "choice-maximum",
+            ):
+                report["reasons"][0]["validation_rule"] = rule
     except Exception:
         # Automatic lifecycle boundaries are untouched; this explicit optional command
         # also redacts internal defects rather than echoing arbitrary exception text.

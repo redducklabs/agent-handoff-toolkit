@@ -94,7 +94,19 @@ class ReviewTests(unittest.TestCase):
         report = self.review(transport)
         self.assertEqual(report["status"], "unavailable")
         self.assertEqual(report["reasons"][0].get("validation_stage"), "probabilities")
+        self.assertEqual(report["reasons"][0].get("validation_rule"), "probability-sum")
         self.assertNotIn("answers", report)
+
+    def test_protocol_diagnostic_rejects_untrusted_rule_content(self):
+        def transport(payload, credential, timeout):
+            error = ReviewUnavailable("response-schema")
+            error.validation_stage = "probabilities"
+            error.validation_rule = "PRIVATE_RESPONSE_OR_CREDENTIAL"
+            raise error
+
+        report = self.review(transport)
+        self.assertNotIn("validation_rule", report["reasons"][0])
+        self.assertNotIn("PRIVATE_RESPONSE_OR_CREDENTIAL", json.dumps(report))
 
     def test_one_uncertain_anchored_unit_prevents_supported_completion(self):
         from test_verification_case import anchored_case

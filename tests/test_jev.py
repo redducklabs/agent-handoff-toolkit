@@ -25,6 +25,54 @@ QUESTIONS = {"goal-clarity": {"type": "choice"}}
 
 
 class ResponseTests(unittest.TestCase):
+    def test_probability_rejections_identify_exact_closed_rule(self):
+        variants = (
+            ("answer-type", {"type": "noul"}),
+            ("choice-option", {"choice": "UNKNOWN_OPTION"}),
+            ("probability-options", {"probabilities": {"PRIVATE_OPTION": 1}}),
+            (
+                "probability-value",
+                {
+                    "probabilities": {
+                        "supported": "PRIVATE_VALUE",
+                        "deficient": 0,
+                        "insufficient_evidence": 0,
+                    }
+                },
+            ),
+            (
+                "probability-sum",
+                {
+                    "probabilities": {
+                        "supported": 0.81,
+                        "deficient": 0.09,
+                        "insufficient_evidence": 0.09,
+                    }
+                },
+            ),
+            (
+                "choice-maximum",
+                {
+                    "probabilities": {
+                        "supported": 0.49,
+                        "deficient": 0.50,
+                        "insufficient_evidence": 0.01,
+                    }
+                },
+            ),
+        )
+        for expected, update in variants:
+            with self.subTest(expected=expected):
+                data = json.loads(WIRE)
+                data["answers"]["goal-clarity"].update(update)
+                with self.assertRaises(ReviewUnavailable) as caught:
+                    validate_response(json.dumps(data).encode(), QUESTIONS)
+                self.assertEqual(str(caught.exception), "response-schema")
+                self.assertEqual(caught.exception.validation_stage, "probabilities")
+                self.assertEqual(
+                    getattr(caught.exception, "validation_rule", None), expected
+                )
+
     def test_rounded_wire_confidence_is_accepted_conservatively(self):
         for probabilities, confidence, expected in (
             (

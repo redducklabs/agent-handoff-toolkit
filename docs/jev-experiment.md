@@ -208,7 +208,10 @@ Socket timeout is not a total deadline. Rubric `jev-implementation-v5` defaults 
 model `jev-1.13.0`.
 Response-schema failures include only a closed validation stage (envelope,
 answer-shape, probabilities, or confidence), never response content. Validation
-tolerances and the configured confidence floor are unchanged.
+tolerances and the configured confidence floor are unchanged. Probability failures
+also carry one closed `validation_rule`: `answer-type`, `choice-option`,
+`probability-options`, `probability-value`, `probability-sum`, or `choice-maximum`.
+These name the exact failed check without retaining answer content.
 
 Live evaluation requires explicit opt-in:
 
@@ -280,9 +283,24 @@ The fourth assessment was unavailable and 36 cases were not attempted. This is
 an incomplete, unqualified run; unattempted critical seeds are not counted as
 misses or detections. Preserve it without normalizing responses, relaxing the
 confidence floor or retrying until passing. A provider response-contract
-correction is needed before dependable qualification can proceed; the rejected
-response's exact probability subcondition is unknown because raw payloads are
-not retained. Release and consumer adoption remain on hold.
+correction is needed before dependable qualification can proceed; that original
+rejected response's exact probability subcondition is unknown because raw payloads
+are not retained. A later bounded, one-pass diagnostic reproduced a response whose
+decimal probability total was exactly 0.99. Its JSON, option keys, value domain
+and selected maximum were valid; this was a wire-level discrepancy rather than
+client floating-point error. The previously failed case returned valid probabilities
+on one diagnostic replay, so the fault is intermittent. Diagnostic replays do not
+replace frozen qualification results or earn qualification credit.
+
+The Choice guide says the sum is 1, while the official
+[OpenAPI schema](https://api.typesafe.ai/openapi.json) says approximately 1 without
+an error bound or rounding rule. Two-decimal output is consistent with rounding,
+but the private server's transformation is not established. A sanitized
+[upstream report](https://github.com/typesafe-ai/typesafe-sdk-python/issues/15#issuecomment-6131524262)
+asks for exact precision rules and a normalized higher-precision distribution with
+a consistent winner and confidence. Do not infer missing mass or normalize it
+locally to increase confidence. Keep strict validation and the qualification bar;
+release and consumer adoption remain on hold.
 
 See TypeSafe's [citation verification](https://docs.typesafe.ai/cookbooks/citation_check),
 [decomposed verification](https://docs.typesafe.ai/cookbooks/sde_cascade),
