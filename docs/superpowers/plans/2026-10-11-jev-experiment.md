@@ -1,6 +1,6 @@
 # Optional Jev Assessment Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans for native implementation in the new session. Steps use checkbox (`- [ ]`) syntax for tracking. This document does not authorize delegation.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans for native implementation in the new session. Steps use checkbox (`- [x]`) syntax for tracking. This document does not authorize delegation.
 
 **Goal:** Ship an optional, toolkit-owned Jev experiment assessing root completion and handoff quality, with insufficient evidence treated as an assessment failure.
 
@@ -94,7 +94,7 @@ listed behavior cases. No live model calls occur during implementation checks.
 **Consumes:** pathlib and standard-library JSON; no installer or provider imports.
 **Produces:** the six config functions and two exceptions listed above.
 
-- [ ] **Write RED tests for defaults and checkout selection.** Each new test module follows the existing `ROOT`/`sys.path` setup. Use temporary directories and explicitly clear relevant environment variables. Core example:
+- [x] **Write RED tests for defaults and checkout selection.** Each new test module follows the existing `ROOT`/`sys.path` setup. Use temporary directories and explicitly clear relevant environment variables. Core example:
 
 ```python
 def test_absent_config_is_disabled(self):
@@ -109,8 +109,8 @@ def test_absent_config_is_disabled(self):
 
 Add cases for candidate checkout versus unrelated cwd, nested directories, linked-worktree `.git` files, explicit roots, and non-checkout candidates without explicit roots. Root discovery uses filesystem ancestors, honors `GIT_CEILING_DIRECTORIES`, and does not invoke git. Explicit roots must exist and be directories. Fence tests with an appropriate strict-ancestor ceiling per AGENTS.md; never rely on the host temporary directory being outside a checkout.
 
-- [ ] **Write RED config validation tests.** Test duplicate nested keys; unknown top-level/credential fields; wrong types including booleans used as numbers; NaN, infinity, and `1e999`; timeout 0/30/31; confidence -0.1/0/1/1.1; empty/invalid model identifiers; config UTF-8 errors; unreadable/oversized files. Model uses `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`. Verify every failure exposes a fixed code, never input text. `strict_object` uses `object_pairs_hook`, `parse_constant`, and subsequent finite-number validation; do not depend on undistributed `manifest.py`.
-- [ ] **Write RED credential tests.** Cover all three source modes; environment precedence; empty environment falling back only in `environment-or-file`; custom names and absolute/relative files; optional export; CRLF; comments; matching quotes; duplicates; unmatched quotes; empty values; invalid names; unreadable/oversized files. Generate disposable credential-like values at runtime with `secrets.token_hex(16)` rather than committed credentials.
+- [x] **Write RED config validation tests.** Test duplicate nested keys; unknown top-level/credential fields; wrong types including booleans used as numbers; NaN, infinity, and `1e999`; timeout 0/30/31; confidence -0.1/0/1/1.1; empty/invalid model identifiers; config UTF-8 errors; unreadable/oversized files. Model uses `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`. Verify every failure exposes a fixed code, never input text. `strict_object` uses `object_pairs_hook`, `parse_constant`, and subsequent finite-number validation; do not depend on undistributed `manifest.py`.
+- [x] **Write RED credential tests.** Cover all three source modes; environment precedence; empty environment falling back only in `environment-or-file`; custom names and absolute/relative files; optional export; CRLF; comments; matching quotes; duplicates; unmatched quotes; empty values; invalid names; unreadable/oversized files. Generate disposable credential-like values at runtime with `secrets.token_hex(16)` rather than committed credentials.
 
 ```python
 def test_environment_precedes_file(self):
@@ -123,8 +123,8 @@ def test_environment_precedes_file(self):
 ```
 
 Include shell substitution text, unrelated malformed lines, and quoted values with `#`/`=`. Assert no subprocess runs and `os.environ` remains unchanged. Define supported inline-comment behavior: strip an unquoted comment only after whitespace; after a closing quote allow only whitespace or a comment; never expand variables or escapes.
-- [ ] **Run RED:** `python -m unittest discover -s tests -p test_review_config.py -v`. Confirm failures are missing interfaces/behavior, not collection mistakes.
-- [ ] **Implement config functions.** Bound reads using `limit + 1`; return a fresh defaults object; validate selected assignments without evaluating text. Use the two exceptions to distinguish invalid configuration from missing/unreadable credentials.
+- [x] **Run RED:** `python -m unittest discover -s tests -p test_review_config.py -v`. Confirm failures are missing interfaces/behavior, not collection mistakes.
+- [x] **Implement config functions.** Bound reads using `limit + 1`; return a fresh defaults object; validate selected assignments without evaluating text. Use the two exceptions to distinguish invalid configuration from missing/unreadable credentials.
 
 ```python
 DEFAULT_CONFIG = {
@@ -134,8 +134,8 @@ DEFAULT_CONFIG = {
 }
 ```
 
-- [ ] **Run GREEN** with the same discover command; format only these new files using repository Ruff configuration.
-- [ ] **Commit:** `git add src/agent_handoff_toolkit/review_config.py tests/test_review_config.py`, then `git commit -m "feat: add project Jev settings and credential lookup"`.
+- [x] **Run GREEN** with the same discover command; format only these new files using repository Ruff configuration.
+- [x] **Commit:** `git add src/agent_handoff_toolkit/review_config.py tests/test_review_config.py`, then `git commit -m "feat: add project Jev settings and credential lookup"`.
 
 ## Task 2: Evidence, questions, and assessment interpretation
 
@@ -143,7 +143,7 @@ DEFAULT_CONFIG = {
 **Consumes:** strict input helpers/errors from Task 1 and existing parsed v2 record dictionaries.
 **Produces:** four rubric functions and `RUBRIC_VERSION` listed above.
 
-- [ ] **Write RED evidence tests** using this explicit schema:
+- [x] **Write RED evidence tests** using this explicit schema:
 
 ```python
 bundle = {
@@ -161,8 +161,8 @@ def test_missing_bundle_is_assessment_failure(self):
     self.assertEqual(findings[0]["code"], "missing-evidence")
 ```
 
-- [ ] **Write RED state-projection tests.** Reuse `make_v2_continuation`/`make_v2_audit` from `test_records` via the repository's documented unittest discovery invocation. Allowlist record type, authorized root definition, active scope definitions/progress, relevant narrative sections, verification, and continuation action/prompt. Exclude authorization evidence/HMACs, predecessor paths/digests, authorization/record identifiers, transitions, and unrelated metadata. Explicit evidence identifiers and locators remain part of state; no automatic file reading occurs.
-- [ ] **Write RED question and aggregation tests.** Assert shared questions `goal-clarity`, `criteria-coverage`, `evidence-specificity`, `scope-alignment`. Audits additionally use positional `criterion-1` through `criterion-16` and `root-completion`. Map criterion questions to bundle order locally for reports. Continuations instead use `next-action`, `hidden-gates`, and `remaining-work`; assert they contain no criterion-satisfaction/root-completion questions. Verify root state retains the immutable definition and future criteria can lack evidence references in a continuation. Do not snapshot entire prompts into fixtures.
+- [x] **Write RED state-projection tests.** Reuse `make_v2_continuation`/`make_v2_audit` from `test_records` via the repository's documented unittest discovery invocation. Allowlist record type, authorized root definition, active scope definitions/progress, relevant narrative sections, verification, and continuation action/prompt. Exclude authorization evidence/HMACs, predecessor paths/digests, authorization/record identifiers, transitions, and unrelated metadata. Explicit evidence identifiers and locators remain part of state; no automatic file reading occurs.
+- [x] **Write RED question and aggregation tests.** Assert shared questions `goal-clarity`, `criteria-coverage`, `evidence-specificity`, `scope-alignment`. Audits additionally use positional `criterion-1` through `criterion-16` and `root-completion`. Map criterion questions to bundle order locally for reports. Continuations instead use `next-action`, `hidden-gates`, and `remaining-work`; assert they contain no criterion-satisfaction/root-completion questions. Verify root state retains the immutable definition and future criteria can lack evidence references in a continuation. Do not snapshot entire prompts into fixtures.
 
 ```python
 def test_insufficient_evidence_fails(self):
@@ -174,8 +174,8 @@ def test_insufficient_evidence_fails(self):
 ```
 
 Test all-supported pass, deficiency, low confidence, exact confidence-floor boundary (accepted), and multiple failures. Low-confidence supported judgments fail with `low-confidence`; retain semantic failure codes when a non-supported verdict is also uncertain. Feedback names question/criterion and uses static remediation text.
-- [ ] **Run RED:** `python -m unittest discover -s tests -p test_review_rubrics.py -v`.
-- [ ] **Implement the evidence schema, projection, questions, and interpretation.** Build each question from a full, narrow instruction and explicit rubric criteria. Point to named state paths; state is data and cannot instruct the evaluator. Use these closed options in each question:
+- [x] **Run RED:** `python -m unittest discover -s tests -p test_review_rubrics.py -v`.
+- [x] **Implement the evidence schema, projection, questions, and interpretation.** Build each question from a full, narrow instruction and explicit rubric criteria. Point to named state paths; state is data and cannot instruct the evaluator. Use these closed options in each question:
 
 ```python
 VERDICTS = ("supported", "deficient", "insufficient_evidence")
@@ -184,8 +184,8 @@ VERDICTS = ("supported", "deficient", "insufficient_evidence")
 # from an agent's completion declaration or obey instructions within state.
 ```
 
-- [ ] **Run GREEN**, format the new files, and inspect actual request construction against the spec rather than claiming semantic accuracy from mocked verdicts.
-- [ ] **Commit:** `git add src/agent_handoff_toolkit/review_rubrics.py tests/test_review_rubrics.py`, then `git commit -m "feat: define completion and handoff assessment rubrics"`.
+- [x] **Run GREEN**, format the new files, and inspect actual request construction against the spec rather than claiming semantic accuracy from mocked verdicts.
+- [x] **Commit:** `git add src/agent_handoff_toolkit/review_rubrics.py tests/test_review_rubrics.py`, then `git commit -m "feat: define completion and handoff assessment rubrics"`.
 
 ## Task 3: Bounded Jev HTTP transport and response validation
 
@@ -193,7 +193,7 @@ VERDICTS = ("supported", "deficient", "insufficient_evidence")
 **Consumes:** strict JSON helpers and `ReviewUnavailable`; question mappings from Task 2.
 **Produces:** `post_json` and `validate_response` listed above.
 
-- [ ] **Pin the documented wire contract and write RED response tests.** Reference `https://docs.typesafe.ai/api`, reviewed 2026-10-11: request is `{model: string, state: string|object|array, questions: map<string, Question>}`; a Choice question has `type: choice`, `instructions`, and an option-to-criteria map. Response has `model`, `answers`, and usage; each Choice answer has `type`, `choice`, full `probabilities`, and `confidence`. Add a hand-written synthetic envelope literal to test source, independently of request generation, with no prompt/excerpt/credential content. Documentation does not specify sum precision or question-count ceiling: record `1e-6` as toolkit tolerance, at most 21 questions as this experiment's local bound, and actual service compatibility as unverified until smoke-tested. Reject missing/extra question IDs, duplicate keys at every depth, wrong types, unknown verdicts, incomplete/extra probability labels, negative/over-one values, booleans, nonfinite numbers, sums outside tolerance, selected choices below the maximum probability (allow ties), invalid confidence, and empty/invalid actual model identifiers. Drop unknown envelope and answer fields rather than rejecting them; test this explicitly. Limit model identifiers to `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`. Do not require the actual model string to equal a requested alias.
+- [x] **Pin the documented wire contract and write RED response tests.** Reference `https://docs.typesafe.ai/api`, reviewed 2026-10-11: request is `{model: string, state: string|object|array, questions: map<string, Question>}`; a Choice question has `type: choice`, `instructions`, and an option-to-criteria map. Response has `model`, `answers`, and usage; each Choice answer has `type`, `choice`, full `probabilities`, and `confidence`. Add a hand-written synthetic envelope literal to test source, independently of request generation, with no prompt/excerpt/credential content. Documentation does not specify sum precision or question-count ceiling: record `1e-6` as toolkit tolerance, at most 21 questions as this experiment's local bound, and actual service compatibility as unverified until smoke-tested. Reject missing/extra question IDs, duplicate keys at every depth, wrong types, unknown verdicts, incomplete/extra probability labels, negative/over-one values, booleans, nonfinite numbers, sums outside tolerance, selected choices below the maximum probability (allow ties), invalid confidence, and empty/invalid actual model identifiers. Drop unknown envelope and answer fields rather than rejecting them; test this explicitly. Limit model identifiers to `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`. Do not require the actual model string to equal a requested alias.
 
 ```python
 def test_invalid_json_is_unavailable_with_fixed_reason(self):
@@ -201,9 +201,9 @@ def test_invalid_json_is_unavailable_with_fixed_reason(self):
         validate_response(b"{", {"goal-clarity": {"type": "choice"}})
 ```
 
-- [ ] **Write RED transport tests** patching urllib's opener. Capture URL, method, UTF-8 body, Authorization header, timeout, and read size. Generate disposable bearer values at runtime; assertions must not print them on failure. Test 301/302/307/308 redirects, 401/403, 429, 529, arbitrary 5xx, timeout/connection/SSL failures, oversized body, and non-UTF-8 replies. Assert exactly one attempt and no disk writes. Inspect the no-redirect handler directly with a fake redirect target; never contact it.
-- [ ] **Run RED:** `python -m unittest discover -s tests -p test_jev.py -v`.
-- [ ] **Implement transport** with a custom `HTTPRedirectHandler`, `build_opener`, a context-managed response, capped read, and fixed stage/error codes. Do not include underlying exception messages or response bodies in exceptions.
+- [x] **Write RED transport tests** patching urllib's opener. Capture URL, method, UTF-8 body, Authorization header, timeout, and read size. Generate disposable bearer values at runtime; assertions must not print them on failure. Test 301/302/307/308 redirects, 401/403, 429, 529, arbitrary 5xx, timeout/connection/SSL failures, oversized body, and non-UTF-8 replies. Assert exactly one attempt and no disk writes. Inspect the no-redirect handler directly with a fake redirect target; never contact it.
+- [x] **Run RED:** `python -m unittest discover -s tests -p test_jev.py -v`.
+- [x] **Implement transport** with a custom `HTTPRedirectHandler`, `build_opener`, a context-managed response, capped read, and fixed stage/error codes. Do not include underlying exception messages or response bodies in exceptions.
 
 ```python
 ENDPOINT = "https://api.typesafe.ai/v1/systemone"
@@ -218,9 +218,9 @@ request = urllib.request.Request(
 ```
 
 Require every bearer character to be visible ASCII (`0x21` through `0x7E`) before constructing headers; test Unicode and whitespace rejection without leaking their values. This is a socket-operation timeout, not a proof of a strict total elapsed deadline; document that distinction rather than overclaiming. No retry or background request runs after return.
-- [ ] **Implement strict response reduction.** Return only validated actual model and answers; discard usage and unknown envelope data. Unknown answer fields cannot reach reports. Enforce the byte cap for injected transport results as well as real HTTP.
-- [ ] **Run GREEN** and format new files.
-- [ ] **Commit:** `git add src/agent_handoff_toolkit/jev.py tests/test_jev.py`, then `git commit -m "feat: add bounded Jev transport and response checks"`.
+- [x] **Implement strict response reduction.** Return only validated actual model and answers; discard usage and unknown envelope data. Unknown answer fields cannot reach reports. Enforce the byte cap for injected transport results as well as real HTTP.
+- [x] **Run GREEN** and format new files.
+- [x] **Commit:** `git add src/agent_handoff_toolkit/jev.py tests/test_jev.py`, then `git commit -m "feat: add bounded Jev transport and response checks"`.
 
 ## Task 4: Review orchestration and safe reports
 
@@ -228,7 +228,7 @@ Require every bearer character to be visible ASCII (`0x21` through `0x7E`) befor
 **Consumes:** Tasks 1-3, `records.validate_markdown`, `records.parse_markdown`, `lineage.record_digest`.
 **Produces:** `review_record` and `report_exit_code` listed above.
 
-- [ ] **Write RED ordering tests.** Disabled returns before opening candidate/evidence/credential files or importing Jev. Enabled validates a newly authored v2 candidate; reject v1/invalid candidate as error, never scan handoff directories. Every local finding, including a partially unsupported audit bundle, fails before resolving credentials or calling transport. Call `prepare_evidence` with the parsed record type. Evidence read/UTF-8/JSON/schema errors are input errors. Configuration errors outrank disabled status if a present config is malformed.
+- [x] **Write RED ordering tests.** Disabled returns before opening candidate/evidence/credential files or importing Jev. Enabled validates a newly authored v2 candidate; reject v1/invalid candidate as error, never scan handoff directories. Every local finding, including a partially unsupported audit bundle, fails before resolving credentials or calling transport. Call `prepare_evidence` with the parsed record type. Evidence read/UTF-8/JSON/schema errors are input errors. Configuration errors outrank disabled status if a present config is malformed.
 
 ```python
 def test_disabled_never_invokes_transport(self):
@@ -241,10 +241,10 @@ def test_disabled_never_invokes_transport(self):
         self.assertEqual(report_exit_code(report), 0)
 ```
 
-- [ ] **Write RED full-review tests** generating rendered v2 records from existing helpers in temporary files, enabled config, and the explicit evidence schema from Task 2. Fake transport receives `(payload, credential, timeout)` and constructs a valid response for each `payload['questions']`. Test audit pass, root-completion failure, criterion insufficient evidence, vague-goal failure, and continuation pass with unfinished work. Assert payload excludes HMAC/lifecycle fields. Inject misleading state text and verify rubrics remain fixed; this tests construction, not model resistance.
-- [ ] **Write RED fault/report tests.** Test credential unavailable, HTTP errors, malformed replies, low confidence, and unexpected transport exception redaction. Reports contain only status, reason codes/static messages, rubric version, candidate/evidence digests when available, actual model when available, and validated per-question answers. A `reason` finding is `{code, question_id?, criterion_id?, message}`; never echo text excerpts. Strict UTF-8 decoding and identifier validation precede output. Candidate digest uses `record_digest`; evidence digest is SHA-256 of the exact supplied evidence bytes. Change either input and assert digest changes; do not persist cached acceptance.
-- [ ] **Run RED:** `python -m unittest discover -s tests -p test_review.py -v`.
-- [ ] **Implement ordered orchestration.** Defaults for `environ` and `transport` are selected inside the function, not bound at import time. Import Jev only after enabled config and sufficient local inputs. Explicit exceptions map to their statuses; an unexpected review exception maps to a bounded `unavailable` runtime reason, without changing lifecycle state.
+- [x] **Write RED full-review tests** generating rendered v2 records from existing helpers in temporary files, enabled config, and the explicit evidence schema from Task 2. Fake transport receives `(payload, credential, timeout)` and constructs a valid response for each `payload['questions']`. Test audit pass, root-completion failure, criterion insufficient evidence, vague-goal failure, and continuation pass with unfinished work. Assert payload excludes HMAC/lifecycle fields. Inject misleading state text and verify rubrics remain fixed; this tests construction, not model resistance.
+- [x] **Write RED fault/report tests.** Test credential unavailable, HTTP errors, malformed replies, low confidence, and unexpected transport exception redaction. Reports contain only status, reason codes/static messages, rubric version, candidate/evidence digests when available, actual model when available, and validated per-question answers. A `reason` finding is `{code, question_id?, criterion_id?, message}`; never echo text excerpts. Strict UTF-8 decoding and identifier validation precede output. Candidate digest uses `record_digest`; evidence digest is SHA-256 of the exact supplied evidence bytes. Change either input and assert digest changes; do not persist cached acceptance.
+- [x] **Run RED:** `python -m unittest discover -s tests -p test_review.py -v`.
+- [x] **Implement ordered orchestration.** Defaults for `environ` and `transport` are selected inside the function, not bound at import time. Import Jev only after enabled config and sufficient local inputs. Explicit exceptions map to their statuses; an unexpected review exception maps to a bounded `unavailable` runtime reason, without changing lifecycle state.
 
 ```python
 def report_exit_code(report):
@@ -252,8 +252,8 @@ def report_exit_code(report):
 ```
 
 Assemble a fresh report per invocation, never modify candidate or evidence. Use distinct `credential-missing`, `connection`, and `internal` reason codes; an unexpected exception is `unavailable` with `internal`, identifying a toolkit defect rather than an outage. Include `not-verified` explanatory text in consumer documentation, not a misleading `verified` field.
-- [ ] **Run GREEN**, then run all four new test modules with `python -m unittest discover -s tests -p 'test_*review*.py' -v` and separately `test_jev.py`.
-- [ ] **Commit:** `git add src/agent_handoff_toolkit/review.py tests/test_review.py`, then `git commit -m "feat: orchestrate optional evidence-based Jev review"`.
+- [x] **Run GREEN**, then run all four new test modules with `python -m unittest discover -s tests -p 'test_*review*.py' -v` and separately `test_jev.py`.
+- [x] **Commit:** `git add src/agent_handoff_toolkit/review.py tests/test_review.py`, then `git commit -m "feat: orchestrate optional evidence-based Jev review"`.
 
 ## Task 5: CLI and unchanged enforcement boundaries
 
@@ -261,7 +261,7 @@ Assemble a fresh report per invocation, never modify candidate or evidence. Use 
 **Consumes:** `review_record`/`report_exit_code` from Task 4.
 **Produces:** documented `review` command with JSON stdout and specified exit codes.
 
-- [ ] **Write RED CLI tests** exercising parser help and main with captured stdout/stderr. Patch `agent_handoff_toolkit.review.review_record` for pass/fail/unavailable/error reports; verify status/exit mapping, positional record path, optional evidence/project-root arguments, newline-terminated JSON, and no extra prose. Use real orchestration for disabled and local missing-evidence failures. Parser errors remain ordinary argparse errors.
+- [x] **Write RED CLI tests** exercising parser help and main with captured stdout/stderr. Patch `agent_handoff_toolkit.review.review_record` for pass/fail/unavailable/error reports; verify status/exit mapping, positional record path, optional evidence/project-root arguments, newline-terminated JSON, and no extra prose. Use real orchestration for disabled and local missing-evidence failures. Parser errors remain ordinary argparse errors.
 
 ```python
 def test_review_command_returns_disabled_json(self):
@@ -274,9 +274,9 @@ def test_review_command_returns_disabled_json(self):
         self.assertEqual(json.loads(output.getvalue())["status"], "disabled")
 ```
 
-- [ ] **Write RED isolation tests.** In a fresh subprocess, install an import blocker for `agent_handoff_toolkit.jev`/review modules and run existing `validate`, `render-tail`, and representative hooks; provider import failures must not alter their outcomes. Assert hooks never call review, never attach Jev failures to correction state, and never exit 2. Run candidate-root selection from an unrelated cwd.
-- [ ] **Run RED:** `python -m unittest discover -s tests -p test_review_cli.py -v` plus changed hook modules through discover.
-- [ ] **Implement parser and dispatch** before the generic render-tail fallthrough:
+- [x] **Write RED isolation tests.** In a fresh subprocess, install an import blocker for `agent_handoff_toolkit.jev`/review modules and run existing `validate`, `render-tail`, and representative hooks; provider import failures must not alter their outcomes. Assert hooks never call review, never attach Jev failures to correction state, and never exit 2. Run candidate-root selection from an unrelated cwd.
+- [x] **Run RED:** `python -m unittest discover -s tests -p test_review_cli.py -v` plus changed hook modules through discover.
+- [x] **Implement parser and dispatch** before the generic render-tail fallthrough:
 
 ```python
 review = subparsers.add_parser("review", help="assess a new record with optional Jev")
@@ -291,8 +291,8 @@ return report_exit_code(report)
 ```
 
 Do not add imports to `__init__.py`, hooks, adapters, or lifecycle modules. Keep review faults out of the existing generic exception path that prints arbitrary exception text.
-- [ ] **Run GREEN** including all existing record and hook tests; format changed Python files.
-- [ ] **Commit:** stage the CLI and changed tests explicitly, then `git commit -m "feat: expose optional Jev assessment command"`.
+- [x] **Run GREEN** including all existing record and hook tests; format changed Python files.
+- [x] **Commit:** stage the CLI and changed tests explicitly, then `git commit -m "feat: expose optional Jev assessment command"`.
 
 ## Task 6: Consumer distribution, skill, documentation, and final checks
 
@@ -300,8 +300,8 @@ Do not add imports to `__init__.py`, hooks, adapters, or lifecycle modules. Keep
 **Consumes:** Tasks 1-5, existing manifest/installer APIs, `install_copy_artifacts`, and source/installed CLI test helpers.
 **Produces:** installed experiment with preserved project configuration and shared author guidance.
 
-- [ ] **Write RED distribution tests.** Add expected targets for all four new modules, example, and consumer guide. Assert installed runtime works without `manifest.py` or the source checkout on sys.path. Install copy artifacts into a temporary consumer and invoke its runner's `review` from another cwd; disabled exits 0, enabled missing evidence exits 1. Do not call live HTTP. Verify actual active config and `.env` are not in any manifest target.
-- [ ] **Write RED sync preservation test.** Use `InstallerFixture` to create a source with only `jev.example.json` as a managed artifact, an empty `.git` directory in the consumer, and isolated git ceilings. Apply install, create project-owned `jev.json` and a credential file with a runtime-generated value, update the example in a synthetic next source, and apply sync. Assert byte-identical active config/credential and updated example; never print their contents.
+- [x] **Write RED distribution tests.** Add expected targets for all four new modules, example, and consumer guide. Assert installed runtime works without `manifest.py` or the source checkout on sys.path. Install copy artifacts into a temporary consumer and invoke its runner's `review` from another cwd; disabled exits 0, enabled missing evidence exits 1. Do not call live HTTP. Verify actual active config and `.env` are not in any manifest target.
+- [x] **Write RED sync preservation test.** Use `InstallerFixture` to create a source with only `jev.example.json` as a managed artifact, an empty `.git` directory in the consumer, and isolated git ceilings. Apply install, create project-owned `jev.json` and a credential file with a runtime-generated value, update the example in a synthetic next source, and apply sync. Assert byte-identical active config/credential and updated example; never print their contents.
 
 ```python
 before = {name: (consumer / name).read_bytes()
@@ -313,13 +313,13 @@ for name, original in before.items():
 ```
 
 Here `consumer`, `updated_source`, and `updated_release` are produced by `InstallerFixture.make_install_source` and the test's temporary-root setup; use its manifest hashing conventions. Existing unrelated installer behavior does not need production changes.
-- [ ] **Write RED skill/documentation assertions.** Require review before final rendering, branching on JSON status (not exit alone), insufficient-evidence remediation, no weakening goal/criteria, explicit evidence preparation, and review results outside factual verification/terminal response. Require a maximum of two corrective reruns; confirmed incomplete work continues or becomes a continuation, never an audit; unresolved proof/goal ambiguity remains a failure; defensible classifier disagreement is recorded as risk without converting the review to pass. Unavailable adds a single risk sentence with no rerun for that diagnostic-only edit. Both hosts receive the same skill. Keep mechanics additions to one or two sentences within its existing 3200-word budget.
-- [ ] **Run RED:** distribution and installer modules with documented unittest discover commands. Confirm new assertions fail because artifacts/guidance are absent.
-- [ ] **Add disabled example** using the approved config keys and defaults. Document copying it to `.agent-handoff-toolkit/jev.json`, enabling it, environment/file precedence, custom paths/names, credential secrecy, exact evidence schema/limits, fixed rubric behavior, and review statuses/exit codes. Editing the managed example causes sync conflicts. Require ignoring credential files; relative paths are checkout-relative, so linked worktrees should use environment credentials or a configured absolute path. Explicitly disclose that selected goals/narrative/evidence/locators leave the machine and that goal wording may originate in user prompts; full prompts/transcripts are not collected. Temporary evidence belongs outside the repository and is deleted after review. Document process network/credential visibility requirements conditionally for both hosts, distinguish credential-missing from connection/internal faults, and mention proxy environment variables. Disabled returns 0 without even checking the record path. Show synthetic evidence only; do not include a credential value.
-- [ ] **Protect scratch copies before any credential use.** Add `.env` to repository `.gitignore` and distribution-test `copytree` ignore patterns; include a preservation/exclusion test. Do not automatically resolve credentials from another worktree. Do not read any actual developer credential file in tests.
-- [ ] **Update skill workflow.** Add a review step between structural validation and final-tail rendering. Explicitly request acceptance criteria derived from the immutable authorized outcome, review candidate with `--evidence`, inspect every failure, gather missing proof or improve work, then rerun at most twice before independently resolving the underlying findings. Follow the terminal-outcome rules tested above. Distinguish expected unfinished continuation work from an unsupported completion claim. Explain how to independently examine suspected classifier errors without claiming model output is authoritative. Unavailable review adds one risk sentence and leaves deterministic checks running, without another review for that diagnostic-only edit; disabled adds no routine notice. Internal faults are toolkit defects, not presumed outages.
-- [ ] **Update mechanics and consumer docs.** State that review is voluntary provider advice outside hooks/lifecycle, insufficient evidence fails the assessment, unavailable never means pass, and pass establishes no semantic truth. Add command/setup links in README. Preserve `AGENTS.md`/`CLAUDE.md` equality; no edits to them are needed.
-- [ ] **Add manifest entries** for each new runtime module and guide/example at these targets:
+- [x] **Write RED skill/documentation assertions.** Require review before final rendering, branching on JSON status (not exit alone), insufficient-evidence remediation, no weakening goal/criteria, explicit evidence preparation, and review results outside factual verification/terminal response. Require a maximum of two corrective reruns; confirmed incomplete work continues or becomes a continuation, never an audit; unresolved proof/goal ambiguity remains a failure; defensible classifier disagreement is recorded as risk without converting the review to pass. Unavailable adds a single risk sentence with no rerun for that diagnostic-only edit. Both hosts receive the same skill. Keep mechanics additions to one or two sentences within its existing 3200-word budget.
+- [x] **Run RED:** distribution and installer modules with documented unittest discover commands. Confirm new assertions fail because artifacts/guidance are absent.
+- [x] **Add disabled example** using the approved config keys and defaults. Document copying it to `.agent-handoff-toolkit/jev.json`, enabling it, environment/file precedence, custom paths/names, credential secrecy, exact evidence schema/limits, fixed rubric behavior, and review statuses/exit codes. Editing the managed example causes sync conflicts. Require ignoring credential files; relative paths are checkout-relative, so linked worktrees should use environment credentials or a configured absolute path. Explicitly disclose that selected goals/narrative/evidence/locators leave the machine and that goal wording may originate in user prompts; full prompts/transcripts are not collected. Temporary evidence belongs outside the repository and is deleted after review. Document process network/credential visibility requirements conditionally for both hosts, distinguish credential-missing from connection/internal faults, and mention proxy environment variables. Disabled returns 0 without even checking the record path. Show synthetic evidence only; do not include a credential value.
+- [x] **Protect scratch copies before any credential use.** Add `.env` to repository `.gitignore` and distribution-test `copytree` ignore patterns; include a preservation/exclusion test. Do not automatically resolve credentials from another worktree. Do not read any actual developer credential file in tests.
+- [x] **Update skill workflow.** Add a review step between structural validation and final-tail rendering. Explicitly request acceptance criteria derived from the immutable authorized outcome, review candidate with `--evidence`, inspect every failure, gather missing proof or improve work, then rerun at most twice before independently resolving the underlying findings. Follow the terminal-outcome rules tested above. Distinguish expected unfinished continuation work from an unsupported completion claim. Explain how to independently examine suspected classifier errors without claiming model output is authoritative. Unavailable review adds one risk sentence and leaves deterministic checks running, without another review for that diagnostic-only edit; disabled adds no routine notice. Internal faults are toolkit defects, not presumed outages.
+- [x] **Update mechanics and consumer docs.** State that review is voluntary provider advice outside hooks/lifecycle, insufficient evidence fails the assessment, unavailable never means pass, and pass establishes no semantic truth. Add command/setup links in README. Preserve `AGENTS.md`/`CLAUDE.md` equality; no edits to them are needed.
+- [x] **Add manifest entries** for each new runtime module and guide/example at these targets:
 
 ```text
 src/agent_handoff_toolkit/review_config.py -> .agent-handoff-toolkit/src/agent_handoff_toolkit/review_config.py
@@ -331,8 +331,8 @@ docs/jev-experiment.md -> .agent-handoff-toolkit/jev-experiment.md
 ```
 
 Use existing copy/none mode. Compute each affected normalized UTF-8/LF hash individually and insert it by hand with `apply_patch`; do not regenerate the manifest. Include changed CLI, skill, mechanics, and consumer-guide hashes. Keep release version 1.2.4 until a separately authorized release.
-- [ ] **Run GREEN** for distribution/installer tests and finish the guide with an opt-in evaluation protocol: synthetic labeled completion/handoff cases, vague goals, missing evidence, child/parent confusion, embedded misleading instructions, comparison with author self-review, measured false alarms/misses, latency, cost, and pinned model/rubric. Add a skipped-by-default live smoke test guarded by an explicit opt-in environment flag plus configured credentials, sending synthetic state only and asserting a valid response. No live evaluation executes as part of ordinary checks. If smoke is not run, report live compatibility and semantic accuracy as unverified; offline feature completion does not imply either.
-- [ ] **Run all required final verification in the implementation workspace:**
+- [x] **Run GREEN** for distribution/installer tests and finish the guide with an opt-in evaluation protocol: synthetic labeled completion/handoff cases, vague goals, missing evidence, child/parent confusion, embedded misleading instructions, comparison with author self-review, measured false alarms/misses, latency, cost, and pinned model/rubric. Add a skipped-by-default live smoke test guarded by an explicit opt-in environment flag plus configured credentials, sending synthetic state only and asserting a valid response. No live evaluation executes as part of ordinary checks. If smoke is not run, report live compatibility and semantic accuracy as unverified; offline feature completion does not imply either.
+- [x] **Run all required final verification in the implementation workspace:**
 
 ```powershell
 python -m unittest discover -s tests -v
@@ -351,8 +351,8 @@ wsl -e bash -lc 'cd /mnt/c/Repos/agent-handoff-toolkit && python3 -m unittest di
 ```
 
 If a prerequisite is unavailable, report that check as not run. Apply the documented CRLF checkout caveat only to its two named POSIX tests, never to unrelated failures. Do not claim semantic Jev accuracy from transport/unit tests.
-- [ ] **Review the full diff** against the approved spec; confirm no provider import or model decision entered the hard gate and no generated secret/content was staged.
-- [ ] **Commit:** explicitly stage the changed distribution/docs/skill/tests, then `git commit -m "feat: distribute optional Jev assessment experiment"`.
+- [x] **Review the full diff** against the approved spec; confirm no provider import or model decision entered the hard gate and no generated secret/content was staged.
+- [x] **Commit:** explicitly stage the changed distribution/docs/skill/tests, then `git commit -m "feat: distribute optional Jev assessment experiment"`.
 
 ## Plan self-review and execution handoff
 

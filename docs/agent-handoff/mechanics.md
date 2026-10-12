@@ -1,12 +1,8 @@
 # Agent handoff mechanics
 
-This document is normative for the formats and enforcement the toolkit applies.
-It is the reference for tooling, tests, and anyone diagnosing a blocked session.
-An author writing a record needs `contract.md`; the validator enforces
-everything below, so an author does not reproduce it from memory.
-
-It states what the toolkit does; the reasoning lives in the toolkit
-repository's `docs/design/mechanics-rationale.md`, which is not distributed.
+These normative formats and enforcement rules support tooling and diagnosis.
+Authors read `contract.md`; validation enforces these formats. Rationale lives in
+the undistributed `docs/design/mechanics-rationale.md`.
 
 ## Metadata block forms
 
@@ -269,18 +265,20 @@ can error: any failure produces no message.
   is below 80%. It is never sent at `Stop`, which has no non-blocking model
   channel.
 
-**The guarantee this supports.** The toolkit does not guarantee that work
-needing a handoff produces one. It guarantees that declared tracked work
-follows the lifecycle, and it reports undeclared work that ends unfinished. A
-session enforces nothing until it registers a root.
+**The guarantee.** The toolkit does not guarantee that work needing a handoff produces one.
+Declared tracked work follows the lifecycle; undeclared unfinished work is reported.
+A session enforces nothing until it registers a root.
 
 ## Enforcement boundary
 
+Optional Jev review is voluntary advice outside hooks and lifecycle enforcement:
+insufficient evidence fails assessment, unavailable never means pass, and pass
+establishes no semantic truth; see `.agent-handoff-toolkit/jev-experiment.md`.
+
 The validator enforces record type, section shape, scope consistency, lineage,
-verification classifications, empty gates, and actionable field presence. It does
-not mechanically prove that recorded facts are true, arbitrary natural-language
-scope interpretation is correct, all source code was inspected, tracker hierarchy
-is current, or completion is semantically true. The skill requires those checks;
+verification classifications, empty gates, and actionable fields. It does not mechanically prove
+that facts are true, scope interpretation is correct, all source code was inspected,
+tracker hierarchy is current, or completion is semantically true. The skill requires those checks;
 tooling must not claim otherwise.
 
 No model call is required for enforcement. Deterministic lifecycle state, lineage,

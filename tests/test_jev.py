@@ -49,6 +49,12 @@ class ResponseTests(unittest.TestCase):
         with self.assertRaisesRegex(ReviewUnavailable, "^response-size$"):
             validate_response(b" " * (MAX_RESPONSE_BYTES + 1), QUESTIONS)
 
+    def test_huge_probability_integer_is_schema_fault(self):
+        data = json.loads(WIRE)
+        data["answers"]["goal-clarity"]["probabilities"]["supported"] = 10**400
+        with self.assertRaisesRegex(ReviewUnavailable, "^response-schema$"):
+            validate_response(json.dumps(data).encode(), QUESTIONS)
+
     def test_response_schema(self):
         variants = []
         for key, values in (

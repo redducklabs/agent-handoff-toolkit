@@ -1,6 +1,6 @@
 {
   "manifest_version": 2,
-  "toolkit_version": "1.2.4",
+  "toolkit_version": "1.3.0",
   "record_schema_version": 2,
   "runtime": {
     "python_command": "python",
@@ -8,6 +8,36 @@
   },
   "text_hash": "utf8-lf-sha256-v1",
   "artifacts": [
+    {
+      "source": "src/agent_handoff_toolkit/review_config.py",
+      "sha256": "3abb08794918756f978a4e96b2143722253cf60445f2ca93a49f14620c56b564",
+      "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/src/agent_handoff_toolkit/review_config.py"]}
+    },
+    {
+      "source": "src/agent_handoff_toolkit/review_rubrics.py",
+      "sha256": "719aa17500230a31767dccc1b9280a2e467d6c96d43076b1de3da87fa7806d79",
+      "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/src/agent_handoff_toolkit/review_rubrics.py"]}
+    },
+    {
+      "source": "src/agent_handoff_toolkit/jev.py",
+      "sha256": "801f1bd2420f357c83cef4147c4bebfba1daa0674469eb3d326eed45fed094b8",
+      "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/src/agent_handoff_toolkit/jev.py"]}
+    },
+    {
+      "source": "src/agent_handoff_toolkit/review.py",
+      "sha256": "a62c065a603cb0771303897a8839cab849c6eaa05b15b2bd5c36d52f58cee0b6",
+      "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/src/agent_handoff_toolkit/review.py"]}
+    },
+    {
+      "source": "distribution/jev.example.json",
+      "sha256": "bc5addb5df4f2bb956bc5b025a3fcf7073807f8c8ff9f7f99059593e4f07cff7",
+      "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/jev.example.json"]}
+    },
+    {
+      "source": "docs/jev-experiment.md",
+      "sha256": "a7dc255019ebe7f2637a45748943ef18911b83bf29fe9565d9c48b9632470d9f",
+      "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/jev-experiment.md"]}
+    },
     {
       "source": "distribution/consumer-instructions.md",
       "sha256": "b97148181d8722710db0cae02e98cb56caf2a4486ad7e966aa8de5ff2812fdc9",
@@ -45,7 +75,7 @@
     },
     {
       "source": "docs/agent-handoff/mechanics.md",
-      "sha256": "1d8d356b4367ce6082b6f4a8927ecf8898fd396f390ddaa4cf06eb31d77e24de",
+      "sha256": "938dc5d8b307a5e1b8c5a3d213a95c63f62f134d3ce91cd24a0f8a50abee7b63",
       "install": {
         "mode": "copy",
         "transform": "none",
@@ -56,7 +86,7 @@
     },
     {
       "source": "docs/consumer-integration.md",
-      "sha256": "a7b631b624a580b47f822f19868d44280808e06d90c6c6723663901e201562af",
+      "sha256": "2f7e5f42c76c9ae9070b5a5d2eab987c2d28462a10955bcf9a18c4dd5843931b",
       "install": {
         "mode": "copy",
         "transform": "none",
@@ -67,7 +97,7 @@
     },
     {
       "source": "skills/agent-handoff/SKILL.md",
-      "sha256": "2358d377f4c2dd8fbc968aa3deba5cb63ee6cb93ccd2c3069b351d9329560c61",
+      "sha256": "f6ded1b16bb33a7573e3e55d5b8690f36e5fbb10cc69b138bde8e04b62f8a704",
       "install": {
         "mode": "copy",
         "transform": "none",
@@ -168,7 +198,7 @@
     },
     {
       "source": "src/agent_handoff_toolkit/__init__.py",
-      "sha256": "bf7a8c63f210bf29e5f7cc3ed523845daddc67503501149f8658d499fd45e59b",
+      "sha256": "613e00b57dc50a2b8c6c1158e94b949bb81961de04529dcaf280b048e96697b3",
       "install": {
         "mode": "copy",
         "transform": "none",
@@ -190,7 +220,7 @@
     },
     {
       "source": "src/agent_handoff_toolkit/cli.py",
-      "sha256": "54016b159571fb4e087680b27169346f5f173135a2de3dee0661b0f88b23b7ae",
+      "sha256": "b958030d78d14b4df7cd0a1adf30d1a89e5b5cc7110a2f76aa01b12a7b7860b0",
       "install": {
         "mode": "copy",
         "transform": "none",
@@ -201,7 +231,7 @@
     },
     {
       "source": "src/agent_handoff_toolkit/acceptance.py",
-      "sha256": "e4c3b371553fa42da60e665236a41cc456dbf0504b25542652f90f23a7238a4a",
+      "sha256": "a8ffe38d05918cdbc2894103785c6d74454a6268dc2a46a4e1d922b6590073c2",
       "install": {
         "mode": "copy",
         "transform": "none",

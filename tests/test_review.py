@@ -13,7 +13,7 @@ from agent_handoff_toolkit.review import review_record, report_exit_code  # noqa
 from agent_handoff_toolkit import render_record  # noqa: E402
 from agent_handoff_toolkit.lineage import record_digest  # noqa: E402
 from agent_handoff_toolkit.review_config import ReviewUnavailable  # noqa: E402
-from test_records import make_v2_audit, make_v2_continuation, load_fixture  # noqa: E402
+from test_records import make_v2_audit, make_v2_continuation  # noqa: E402
 from test_review_rubrics import evidence_bundle, answer  # noqa: E402
 
 
@@ -142,8 +142,11 @@ class ReviewTests(unittest.TestCase):
         self.evidence.write_text(json.dumps(evidence_bundle()))
         self.record.write_text("invalid")
         self.assertEqual(self.review()["status"], "error")
-        v1 = load_fixture("completion-audit.json")
-        v1["schema_version"] = 1
+        v1 = render_record(make_v2_audit()).replace(
+            '"schema_version": 2', '"schema_version": 1'
+        )
+        self.record.write_text(v1, encoding="utf-8")
+        self.assertEqual(self.review()["status"], "error")
         # A missing/invalid v2 candidate must fail before network access.
         self.record.unlink()
         self.assertEqual(self.review()["status"], "error")

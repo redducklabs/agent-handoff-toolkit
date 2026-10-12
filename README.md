@@ -6,7 +6,15 @@ This repository provides a shared contract, deterministic validation and renderi
 
 ## Status
 
-Version 1.2.4 fixes a regression from the 1.2.1 comment rule. Inside
+Version 1.3.0 adds an optional Jev assessment experiment for newly authored
+completion audits and continuations. Project-owned settings and credentials
+enable fixed toolkit rubrics over explicit evidence; insufficient proof fails
+assessment and service faults remain separate. The shared author workflow reviews
+before final rendering. Hooks and deterministic lifecycle enforcement remain
+provider-independent. Offline tests do not establish live compatibility or model
+accuracy; evaluation is opt-in.
+
+Version 1.2.4 fixed a regression from the 1.2.1 comment rule. Inside
 arithmetic, a parameter expansion or `[[`, a `#` after a blank or `(` is
 not a comment, but the interception masked the rest of the line, so
 `echo $((# $(python <runner> lifecycle inspect)))` hid an invocation the
@@ -327,16 +335,16 @@ disposable consumer can be installed from a verified local release source.
 
 ## Consumer installation
 
-Check out the public v1.2.4 release, inspect the proposed changes, then apply
+Check out the public v1.3.0 release, inspect the proposed changes, then apply
 them from that checkout:
 
 ```powershell
-git clone --branch v1.2.4 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
+git clone --branch v1.3.0 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
 Set-Location agent-handoff-toolkit
-python distribution/runner.py install --target <consumer-repository> --release v1.2.4 --dry-run
-python distribution/runner.py install --target <consumer-repository> --release v1.2.4 --apply
-python distribution/runner.py sync --target <consumer-repository> --release v1.2.4 --check
-python distribution/runner.py sync --target <consumer-repository> --release v1.2.4 --apply
+python distribution/runner.py install --target <consumer-repository> --release v1.3.0 --dry-run
+python distribution/runner.py install --target <consumer-repository> --release v1.3.0 --apply
+python distribution/runner.py sync --target <consumer-repository> --release v1.3.0 --check
+python distribution/runner.py sync --target <consumer-repository> --release v1.3.0 --apply
 ```
 
 Run install and sync only in an isolated, clean Git worktree with no concurrent
@@ -358,6 +366,10 @@ workflow there.
 The hooks and lifecycle commands run `python`, which must resolve to Python 3.11 or newer on every machine that uses the consumer repository. `install` and `sync` check this with the `PATH` of the shell that runs them and report `launcher-unavailable` instead of installing hooks that cannot start. Hosts launched another way, such as from a desktop shortcut, can see a different `PATH`. macOS, Debian and Ubuntu install only `python3` by default; make `python` resolve to it, for example by adding the `libexec/bin` directory of the installed Homebrew Python, such as `/opt/homebrew/opt/python@3.13/libexec/bin`, to `PATH`. On Windows, `python` must be a real interpreter rather than the Microsoft Store alias.
 
 ## Development
+
+Optional completion and handoff assessment is available through
+`python -m agent_handoff_toolkit review <record> --evidence <evidence.json>`.
+See [Jev setup, evidence and evaluation](docs/jev-experiment.md).
 
 ```powershell
 python -m unittest discover -s tests -v
