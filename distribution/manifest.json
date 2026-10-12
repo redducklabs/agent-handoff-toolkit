@@ -1,6 +1,6 @@
 {
   "manifest_version": 2,
-  "toolkit_version": "1.3.0",
+  "toolkit_version": "1.3.1",
   "record_schema_version": 2,
   "runtime": {
     "python_command": "python",
@@ -20,7 +20,7 @@
     },
     {
       "source": "src/agent_handoff_toolkit/jev.py",
-      "sha256": "fea90750dfbb4b250694e5867021338d8e312d13ef39d71b3df8b5c1d366c960",
+      "sha256": "5dede551a8d5a3f6230b68a9bfe016c79d0060cd3ba6a978f176cc8a1735b5f5",
       "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/src/agent_handoff_toolkit/jev.py"]}
     },
     {
@@ -35,7 +35,7 @@
     },
     {
       "source": "docs/jev-experiment.md",
-      "sha256": "4357dab2d5821e9a61232f5e3d6e2fb6e5464a06c6a15dc5e95ffc38b3cf41f2",
+      "sha256": "75f6d91b625802eb372a35b9fca2239225952caccf33affedadc213774fbc5ce",
       "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/jev-experiment.md"]}
     },
     {
@@ -86,7 +86,7 @@
     },
     {
       "source": "docs/consumer-integration.md",
-      "sha256": "2f7e5f42c76c9ae9070b5a5d2eab987c2d28462a10955bcf9a18c4dd5843931b",
+      "sha256": "642053a07b713bb59a3a820ec3ec0ce0fa5ab2638ed73ead4c17f32d83d96529",
       "install": {
         "mode": "copy",
         "transform": "none",
@@ -198,7 +198,7 @@
     },
     {
       "source": "src/agent_handoff_toolkit/__init__.py",
-      "sha256": "613e00b57dc50a2b8c6c1158e94b949bb81961de04529dcaf280b048e96697b3",
+      "sha256": "38d4088034b6836baae795e764b874aad6ccba9ed8e7bbb711ae6330500422f4",
       "install": {
         "mode": "copy",
         "transform": "none",
@@ -231,7 +231,7 @@
     },
     {
       "source": "src/agent_handoff_toolkit/acceptance.py",
-      "sha256": "a8ffe38d05918cdbc2894103785c6d74454a6268dc2a46a4e1d922b6590073c2",
+      "sha256": "c889b1b08532fc299dd1c60d8ac262530e4165ff348abf5ffd6eca5c0b043382",
       "install": {
         "mode": "copy",
         "transform": "none",

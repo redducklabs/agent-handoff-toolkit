@@ -6,7 +6,14 @@ This repository provides a shared contract, deterministic validation and renderi
 
 ## Status
 
-Version 1.3.0 adds an optional Jev assessment experiment for newly authored
+Version 1.3.1 accepts bounded rounding in Jev's serialized probabilities and
+confidence without allowing rounding to inflate an assessment above its
+confidence floor. The shared review command applies the same validation for
+Claude Code and Codex; deterministic hooks and lifecycle policy are unchanged.
+Live response compatibility was checked on a completion audit, which does not
+establish semantic accuracy.
+
+Version 1.3.0 added an optional Jev assessment experiment for newly authored
 completion audits and continuations. Project-owned settings and credentials
 enable fixed toolkit rubrics over explicit evidence; insufficient proof fails
 assessment and service faults remain separate. The shared author workflow reviews
@@ -335,16 +342,16 @@ disposable consumer can be installed from a verified local release source.
 
 ## Consumer installation
 
-Check out the public v1.3.0 release, inspect the proposed changes, then apply
+Check out the public v1.3.1 release, inspect the proposed changes, then apply
 them from that checkout:
 
 ```powershell
-git clone --branch v1.3.0 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
+git clone --branch v1.3.1 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
 Set-Location agent-handoff-toolkit
-python distribution/runner.py install --target <consumer-repository> --release v1.3.0 --dry-run
-python distribution/runner.py install --target <consumer-repository> --release v1.3.0 --apply
-python distribution/runner.py sync --target <consumer-repository> --release v1.3.0 --check
-python distribution/runner.py sync --target <consumer-repository> --release v1.3.0 --apply
+python distribution/runner.py install --target <consumer-repository> --release v1.3.1 --dry-run
+python distribution/runner.py install --target <consumer-repository> --release v1.3.1 --apply
+python distribution/runner.py sync --target <consumer-repository> --release v1.3.1 --check
+python distribution/runner.py sync --target <consumer-repository> --release v1.3.1 --apply
 ```
 
 Run install and sync only in an isolated, clean Git worktree with no concurrent

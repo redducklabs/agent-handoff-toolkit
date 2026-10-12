@@ -106,6 +106,63 @@ class ReviewTests(unittest.TestCase):
         self.assertNotEqual(old["candidate_digest"], new["candidate_digest"])
         self.assertNotEqual(old["evidence_digest"], new["evidence_digest"])
 
+    def test_float_noise_does_not_lower_coherent_confidence_below_floor(self):
+        self.config.write_text('{"enabled":true,"minimum_confidence":0.9}')
+
+        def transport(payload, credential, timeout):
+            answers = {key: answer() for key in payload["questions"]}
+            answers["goal-clarity"].update(
+                probabilities={
+                    "supported": 0.9333333333333333,
+                    "deficient": 0.0666666666666667,
+                    "insufficient_evidence": 0.0,
+                },
+                confidence=0.9,
+            )
+            return json.dumps({"model": "jev-1.13.0", "answers": answers}).encode()
+
+        report = self.review(transport)
+        self.assertEqual(report["status"], "pass")
+        self.assertEqual(report["answers"]["goal-clarity"]["confidence"], 0.9)
+
+    def test_rounded_probability_formula_hits_floor_without_binary_drift(self):
+        self.config.write_text('{"enabled":true,"minimum_confidence":0.91}')
+
+        def transport(payload, credential, timeout):
+            answers = {key: answer() for key in payload["questions"]}
+            answers["goal-clarity"].update(
+                probabilities={
+                    "supported": 0.94,
+                    "deficient": 0.06,
+                    "insufficient_evidence": 0.0,
+                },
+                confidence=0.92,
+            )
+            return json.dumps({"model": "jev-1.13.0", "answers": answers}).encode()
+
+        report = self.review(transport)
+        self.assertEqual(report["status"], "pass")
+        self.assertEqual(report["answers"]["goal-clarity"]["confidence"], 0.91)
+
+    def test_wire_rounding_cannot_raise_confidence_above_floor(self):
+        def transport(payload, credential, timeout):
+            answers = {key: answer() for key in payload["questions"]}
+            answers["goal-clarity"].update(
+                probabilities={
+                    "supported": 0.86,
+                    "deficient": 0.14,
+                    "insufficient_evidence": 0.0,
+                },
+                confidence=0.8,
+            )
+            return json.dumps({"model": "jev-1.13.0", "answers": answers}).encode()
+
+        report = self.review(transport)
+        self.assertEqual(report["status"], "fail")
+        self.assertEqual(report["reasons"][0]["code"], "low-confidence")
+        self.assertEqual(report["reasons"][0]["question_id"], "goal-clarity")
+        self.assertAlmostEqual(report["answers"]["goal-clarity"]["confidence"], 0.79)
+
     def test_substantive_and_confidence_failures(self):
         for key, choice, confidence, expected in (
             ("root-completion", "deficient", 0.95, "deficient"),
