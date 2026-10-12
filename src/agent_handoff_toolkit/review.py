@@ -87,7 +87,14 @@ def review_record(
         if raw is not None:
             report["evidence_digest"] = hashlib.sha256(raw).hexdigest()
         bundle, findings = prepare_evidence(
-            raw, record["record_type"], project_root=root
+            raw,
+            record["record_type"],
+            project_root=root,
+            root_outcome=next(
+                scope["scope_definition"]["outcome"]
+                for scope in record["active_scopes"]
+                if scope["highest_authorized"]
+            ),
         )
         if findings:
             report.update(
@@ -155,6 +162,17 @@ def review_record(
                 for c in feature["components"]
                 if c["claim"] == "pending"
             }
+            pending_criteria = {
+                c["id"]
+                for c in bundle["criteria"]
+                if c.get("claim", "pending") == "pending"
+            }
+            progress_questions |= {
+                f"feature-implementation-{feature['id']}"
+                for feature in bundle.get("features", [])
+                if pending_criteria.intersection(feature["criterion_ids"])
+                or any(c["claim"] == "pending" for c in feature["components"])
+            }
         status, findings = summarize_answers(
             {
                 key: value
@@ -173,6 +191,16 @@ def review_record(
         )
         for finding in findings + progress:
             question = finding["question_id"]
+            if question == "criteria-coverage" or question.startswith("coverage-unit-"):
+                if question.startswith("coverage-unit-"):
+                    finding["requirement_id"] = question.removeprefix("coverage-unit-")
+                if finding["code"] == "deficient":
+                    finding.update(
+                        code="criteria-inadequate",
+                        message="Correct the acceptance-condition coverage without changing the authorized requirement; this finding does not establish missing implementation.",
+                    )
+            elif question.startswith("feature-implementation-"):
+                finding["feature_id"] = question.removeprefix("feature-implementation-")
             if question.startswith("criterion-"):
                 finding["criterion_id"] = bundle["criteria"][
                     int(question.removeprefix("criterion-")) - 1
@@ -212,6 +240,14 @@ def review_record(
             else "unavailable",
             reasons=[{"code": code, "message": MESSAGES[code]}],
         )
+        stage = getattr(error, "validation_stage", None)
+        if code == "response-schema" and stage in (
+            "envelope",
+            "answer-shape",
+            "probabilities",
+            "confidence",
+        ):
+            report["reasons"][0]["validation_stage"] = stage
     except Exception:
         # Automatic lifecycle boundaries are untouched; this explicit optional command
         # also redacts internal defects rather than echoing arbitrary exception text.

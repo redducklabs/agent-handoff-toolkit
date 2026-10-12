@@ -13,6 +13,91 @@ from agent_handoff_toolkit.review_rubrics import prepare_evidence
 from agent_handoff_toolkit.review_config import ReviewInputError
 
 
+def anchored_case():
+    bundle = verification_case()
+    bundle["case_version"] = 3
+    sources = {
+        "root": "Validate inputs on both entry points.",
+        f"feature:{bundle['features'][0]['id']}": bundle["features"][0]["requirement"],
+    }
+    bundle["requirements"] = [
+        {
+            "id": f"req-{index}",
+            "source": source,
+            "start": 0,
+            "end": len(value),
+            "quote": value,
+            "criterion_ids": ["c1"],
+        }
+        for index, (source, value) in enumerate(sources.items())
+    ]
+    return bundle
+
+
+class AnchoredRequirementTests(unittest.TestCase):
+    def test_v3_criteria_bound_is_32_and_prior_bound_stays_16(self):
+        for version, count, accepted in ((3, 32, True), (3, 33, False), (2, 17, False)):
+            bundle = anchored_case()
+            bundle["case_version"] = version
+            if version == 2:
+                del bundle["requirements"]
+            original = bundle["criteria"][0]
+            bundle["criteria"] = [dict(original, id=f"c{i}") for i in range(count)]
+            bundle["features"][0]["criterion_ids"] = [
+                c["id"] for c in bundle["criteria"]
+            ]
+            if version == 3:
+                for unit in bundle["requirements"]:
+                    unit["criterion_ids"] = ["c0"]
+            with self.subTest(version=version, count=count):
+                if accepted:
+                    prepare_evidence(
+                        json.dumps(bundle).encode(),
+                        "completion-audit",
+                        root_outcome="Validate inputs on both entry points.",
+                    )
+                else:
+                    with self.assertRaises(ReviewInputError):
+                        prepare_evidence(
+                            json.dumps(bundle).encode(),
+                            "completion-audit",
+                            root_outcome="Validate inputs on both entry points.",
+                        )
+
+    def test_accepts_full_source_anchored_requirement_inventory(self):
+        self.assertIn("root_outcome", inspect.signature(prepare_evidence).parameters)
+        bundle = anchored_case()
+        _, findings = prepare_evidence(
+            json.dumps(bundle).encode(),
+            "completion-audit",
+            root_outcome="Validate inputs on both entry points.",
+        )
+        self.assertEqual(findings, [])
+
+    def test_source_alteration_gaps_and_unknown_mappings_are_rejected(self):
+        self.assertIn("root_outcome", inspect.signature(prepare_evidence).parameters)
+        for change in ("quote", "gap", "source", "mapping", "missing-feature"):
+            bundle = anchored_case()
+            unit = bundle["requirements"][0]
+            if change == "quote":
+                unit["quote"] = "A weaker requirement."
+            elif change == "gap":
+                unit["end"] -= 1
+                unit["quote"] = unit["quote"][:-1]
+            elif change == "source":
+                unit["source"] = "feature:unknown"
+            elif change == "mapping":
+                unit["criterion_ids"] = ["unknown"]
+            else:
+                bundle["requirements"].pop()
+            with self.subTest(change=change), self.assertRaises(ReviewInputError):
+                prepare_evidence(
+                    json.dumps(bundle).encode(),
+                    "completion-audit",
+                    root_outcome="Validate inputs on both entry points.",
+                )
+
+
 def verification_case():
     return {
         "case_version": 2,

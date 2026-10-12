@@ -10,7 +10,7 @@
   "artifacts": [
     {
       "source": "src/agent_handoff_toolkit/verification_case.py",
-      "sha256": "a7199cd3af22f7fbb63d955f9fb4d897d86d556ab8dbab4b51d087218134be2c",
+      "sha256": "61327e213687857b86cd25bbb984d663ebb334dfe79ef8388864730852626a56",
       "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/src/agent_handoff_toolkit/verification_case.py"]}
     },
     {
@@ -25,17 +25,17 @@
     },
     {
       "source": "src/agent_handoff_toolkit/review_rubrics.py",
-      "sha256": "8c19e9dd3507a9dc5f65e1dc4d3769188376ffe06782f41b9e56931bf65ed190",
+      "sha256": "c7c6111e1ea5425f97524e1acda63eee97dfd84dce193e59c5d9131fce0d9c0a",
       "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/src/agent_handoff_toolkit/review_rubrics.py"]}
     },
     {
       "source": "src/agent_handoff_toolkit/jev.py",
-      "sha256": "5dede551a8d5a3f6230b68a9bfe016c79d0060cd3ba6a978f176cc8a1735b5f5",
+      "sha256": "c328ce3773bf6a53305b64472cfdcac24ad55dab68b56a5c8515d74207ef7c26",
       "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/src/agent_handoff_toolkit/jev.py"]}
     },
     {
       "source": "src/agent_handoff_toolkit/review.py",
-      "sha256": "489282ad33a72893cae9ba2a09cd3bccab3f9520235db818e0c90a957384fff3",
+      "sha256": "92d2769752a39b78771fd3787316309cc294050afe87b70ff7e6a834d0025a8d",
       "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/src/agent_handoff_toolkit/review.py"]}
     },
     {
@@ -45,7 +45,7 @@
     },
     {
       "source": "docs/jev-experiment.md",
-      "sha256": "659a132dee3f77762e47c11854ab48fd32afbb29b28497612b026310b93a9a94",
+      "sha256": "c05eab8fa7658b81e7a6b9b3f41410a37d6662dcdd7fcfafced43b2dbc144a11",
       "install": {"mode": "copy", "transform": "none", "targets": [".agent-handoff-toolkit/jev-experiment.md"]}
     },
     {
@@ -107,7 +107,7 @@
     },
     {
       "source": "skills/agent-handoff/SKILL.md",
-      "sha256": "63b61928134e3d531f3705f697c0ad1a787075d21a1be30af5637404bc047798",
+      "sha256": "858861ce6a653157452e5d7911f475cc453d53e2edcdddf0175ba59b6a03d537",
       "install": {
         "mode": "copy",
         "transform": "none",

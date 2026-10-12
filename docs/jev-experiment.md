@@ -91,7 +91,39 @@ and be checkout-relative POSIX paths without traversal; symlink escapes are
 rejected. Each bound file is capped at 1 MiB. Hashing uploads neither contents nor
 hashes, and does not prove supplied excerpts are truthful.
 
-Limits: 16 criteria/features, 32 components total, 32 evidence entries, 32 resolved
+For detailed coverage, use `case_version: 3` with an additional `requirements`
+list. Each unit has `id`, `source` (`root` or `feature:<id>`), integer `start` and
+`end` character offsets, the exact source `quote`, and mapped `criterion_ids`.
+Anchor root units to the candidate's unchanged authorized outcome and feature
+units to the corresponding requirement. Every source must be accounted for by
+contiguous, non-overlapping spans from zero to its full length. Split meaningful
+obligations and retain their qualifiers; include enough conditions to cover each.
+Up to 32 units are allowed, with root text bounded to 8000 characters. Exact
+anchors prove text accounting only, never semantic completeness; independently
+inspect the decomposition and its evidence. Legacy and version-2 inputs remain
+readable and use their original coverage question.
+
+Optional unit `feature_ids` explicitly selects definitions needed to interpret
+references. Unrelated feature definitions are excluded. Whole-source units may
+map an acceptance condition that is an exact copy of the entire source. Only
+that identical whole-source correspondence is accounted for locally, without a
+model equivalence question. Its criterion still receives an independent semantic
+implementation assessment with every mapped source context. Fragments and
+paraphrases retain semantic coverage checks. Reports identify `exact-text` versus
+`model` provenance; local accounting invents no answer, probability or confidence.
+Exact text never proves implementation or semantic correctness.
+
+Each feature's full requirement is also assessed against its explicitly selected
+criterion/component evidence. A narrow passing condition cannot hide a different
+unfinished part of that requirement. Coverage findings concern the verification
+case: `accounted` (text correspondence), `covered` (model-supported inventory),
+`inadequate`, or `cannot-determine`. They do not alone prove a code
+defect. `behavior_state` records behavior judgments; overall `state` remains
+`cannot-determine` when coverage does not support completion, unless concrete
+behavior evidence already establishes `work-remains`.
+
+Limits: 16 criteria for legacy/version-2 inputs, 32 for version-3; 16 features,
+32 components total, 32 evidence entries, 32 resolved
 references per list, 64 KiB evidence file. IDs match
 `[A-Za-z][A-Za-z0-9_-]{0,63}`; conditions/requirements/source are at most 1000
 characters, evidence text 8000, paths 240. Unknown fields, duplicate ownership or
@@ -171,8 +203,11 @@ Answers use verdicts
 rounding of 0.0125 plus 1e-6. Conservative reduction prevents upward rounding from
 crossing the floor. Response cap is 256 KiB; unknown response fields are discarded.
 All batches validate and agree on actual model; a partial fault is unavailable.
-Socket timeout is not a total deadline. Rubric `jev-implementation-v2` defaults to
+Socket timeout is not a total deadline. Rubric `jev-implementation-v4` defaults to
 model `jev-1.13.0`.
+Response-schema failures include only a closed validation stage (envelope,
+answer-shape, probabilities, or confidence), never response content. Validation
+tolerances and the configured confidence floor are unchanged.
 
 Live evaluation requires explicit opt-in:
 
@@ -197,17 +232,22 @@ other consumers. Exercise both hosts and option-order/context sensitivity. Ordin
 tests and opt-in `AHK_JEV_LIVE_SMOKE=1` checks establish compatibility, not accuracy.
 Never weaken outcome or labels to obtain qualification.
 
-This candidate is not qualified for rollout. Two frozen held-out runs each caught
-all 16 planted gaps without a definite false defect and classified all eight
-insufficient cases as inconclusive, but supported only 12 and 10 of 16 clean
-cases respectively. Independent inspection found some incomplete acceptance
-conditions and evidence selections, alongside unresolved model uncertainty.
-An independently authored replacement catalog stopped on its first request with
-a connection failure and provides no assessment result. Keep those failed and
-unassessed runs; do not reinterpret abstention as successful verification.
-Ephemeral Claude Code and Codex invocations each exercised clean, defective and
-insufficient synthetic cases successfully. That establishes compatibility only;
-live STS qualification and release remain pending.
+This candidate is not qualified for rollout. Preserved earlier held-out runs
+detected 16, 16 and 15 of 16 planted gaps and supported 12, 10 and 14 of 16 clean
+cases respectively. All eight insufficient cases were inconclusive in each run,
+with no definite false defects. None meets the unchanged qualification bar.
+Independent inspection found incomplete conditions or evidence in some packets,
+alongside model uncertainty. A connection failure also stopped an earlier attempt.
+
+The revised whole-source accounting and direct evidence approach matched all
+seven independently labeled STS diagnostic cases once: supported implementation,
+five controlled gaps, and missing proof. Repeated actual Claude Code and Codex
+invocations confirmed installed-command compatibility but exposed model-field
+uncertainty and invalid probability responses. Complementary AST and effective
+runtime evidence supported the clean case; the next assessment stopped on an
+invalid probability sum. Keep every uncertain and unavailable result. Fresh
+qualification and reliable STS validation remain pending; do not release or
+update other consumers on the strength of one successful diagnostic run.
 
 See TypeSafe's [citation verification](https://docs.typesafe.ai/cookbooks/citation_check),
 [decomposed verification](https://docs.typesafe.ai/cookbooks/sde_cascade),

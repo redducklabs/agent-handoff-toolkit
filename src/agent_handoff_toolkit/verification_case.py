@@ -48,8 +48,13 @@ def references(value, known, *, nonempty=False):
         invalid()
 
 
-def validate_case(bundle: dict, project_root: Path | None) -> list[dict]:
-    if type(bundle.get("case_version")) is not int or bundle["case_version"] != 2:
+def validate_case(
+    bundle: dict, project_root: Path | None, *, root_outcome=None
+) -> list[dict]:
+    if type(bundle.get("case_version")) is not int or bundle["case_version"] not in (
+        2,
+        3,
+    ):
         invalid()
     evidence_ids = {item["id"] for item in bundle["evidence"]}
     criterion_ids = {item["id"] for item in bundle["criteria"]}
@@ -141,6 +146,8 @@ def validate_case(bundle: dict, project_root: Path | None) -> list[dict]:
             )
     if owned != criterion_ids:
         invalid()
+    if bundle["case_version"] == 3:
+        validate_requirements(bundle, root_outcome, criterion_ids)
     seen_paths = set()
     component_paths = {c["path"] for f in features for c in f["components"]}
     for binding in files:
@@ -180,10 +187,78 @@ def validate_case(bundle: dict, project_root: Path | None) -> list[dict]:
     return findings
 
 
+def validate_requirements(bundle, root_outcome, criterion_ids):
+    text(root_outcome, 8000)
+    sources = {"root": root_outcome} | {
+        f"feature:{f['id']}": f["requirement"] for f in bundle["features"]
+    }
+    units = bundle["requirements"]
+    if not isinstance(units, list) or not 1 <= len(units) <= 32:
+        invalid()
+    ids = set()
+    intervals = {source: [] for source in sources}
+    for unit in units:
+        if not isinstance(unit, dict) or set(unit) - {"feature_ids"} != {
+            "id",
+            "source",
+            "start",
+            "end",
+            "quote",
+            "criterion_ids",
+        }:
+            invalid()
+        ident = unit["id"]
+        source = unit["source"]
+        start = unit["start"]
+        end = unit["end"]
+        if (
+            not isinstance(ident, str)
+            or not ID.fullmatch(ident)
+            or ident in ids
+            or not isinstance(source, str)
+            or source not in sources
+        ):
+            invalid()
+        ids.add(ident)
+        if (
+            type(start) is not int
+            or type(end) is not int
+            or not 0 <= start < end <= len(sources[source])
+        ):
+            invalid()
+        text(unit["quote"], 8000)
+        if unit["quote"] != sources[source][start:end]:
+            invalid()
+        references(unit["criterion_ids"], criterion_ids)
+        references(unit.get("feature_ids", []), {f["id"] for f in bundle["features"]})
+        intervals[source].append((start, end))
+    for source, spans in intervals.items():
+        position = 0
+        for start, end in sorted(spans):
+            if start != position:
+                invalid()
+            position = end
+        if position != len(sources[source]):
+            invalid()
+
+
 def implementation_state(answer: dict, floor: float) -> str:
     if answer["confidence"] < floor or answer["choice"] == "insufficient_evidence":
         return "cannot-determine"
     return "implemented" if answer["choice"] == "supported" else "work-remains"
+
+
+def exact_accounted_units(bundle):
+    """Text correspondence only; callers first validate every source partition."""
+    units = bundle.get("requirements", [])
+    criteria = {c["id"]: c["condition"] for c in bundle["criteria"]}
+    return {
+        unit["id"]
+        for unit in units
+        if unit["start"] == 0
+        and sum(other["source"] == unit["source"] for other in units) == 1
+        and any(criteria[ref] == unit["quote"] for ref in unit["criterion_ids"])
+    }
 
 
 def combine(states: list[str]) -> str:
@@ -226,16 +301,45 @@ def summarize_case(bundle: dict, answers: dict, floor: float) -> dict:
                     [criteria_by_id[ident] for ident in feature["criterion_ids"]]
                     + [c["state"] for c in components]
                     + [location_coverage]
+                    + [
+                        implementation_state(
+                            answers[f"feature-implementation-{feature['id']}"], floor
+                        )
+                    ]
                 ),
                 "location_coverage": location_coverage,
             }
         )
-    coverage = implementation_state(answers["criteria-coverage"], floor)
+    coverage_states = [
+        implementation_state(answer, floor)
+        for ident, answer in answers.items()
+        if ident == "criteria-coverage" or ident.startswith("coverage-unit-")
+    ]
+    accounted = exact_accounted_units(bundle)
+    coverage_states += ["implemented"] * len(accounted)
+    coverage = {
+        "implemented": "covered",
+        "work-remains": "inadequate",
+        "cannot-determine": "cannot-determine",
+    }[combine(coverage_states)]
+    if coverage == "covered" and accounted:
+        coverage = "accounted"
+    behavior_state = combine(
+        [c["state"] for c in criteria] + [f["state"] for f in features]
+    )
     return {
-        "state": combine(
-            [c["state"] for c in criteria] + [f["state"] for f in features] + [coverage]
-        ),
+        "state": "cannot-determine"
+        if behavior_state != "work-remains" and coverage not in ("covered", "accounted")
+        else behavior_state,
+        "behavior_state": behavior_state,
         "criteria": criteria,
         "features": features,
         "coverage": coverage,
+        "coverage_provenance": [
+            {
+                "requirement_id": unit["id"],
+                "method": "exact-text" if unit["id"] in accounted else "model",
+            }
+            for unit in bundle.get("requirements", [])
+        ],
     }

@@ -49,6 +49,97 @@ def answer(choice="supported", confidence=0.95):
 
 
 class RubricTests(unittest.TestCase):
+    def test_fragmented_qualifiers_cannot_use_exact_text_shortcut(self):
+        from test_verification_case import anchored_case
+
+        bundle = anchored_case()
+        text = "Validate every request, including retries."
+        split = text.index("including")
+        bundle["criteria"][0]["condition"] = text[:split]
+        bundle["criteria"].append(
+            dict(bundle["criteria"][0], id="c2", condition=text[split:])
+        )
+        bundle["features"][0]["criterion_ids"].append("c2")
+        bundle["requirements"][0].update(end=split, quote=text[:split])
+        bundle["requirements"].append(
+            {
+                "id": "retry",
+                "source": "root",
+                "start": split,
+                "end": len(text),
+                "quote": text[split:],
+                "criterion_ids": ["c2"],
+            }
+        )
+        record = parse_markdown(render_record(make_v2_audit()))
+        record["active_scopes"][0]["scope_definition"]["outcome"] = text
+        questions = build_questions(project_state(record, bundle))
+        self.assertIn("coverage-unit-req-0", questions)
+        self.assertIn("coverage-unit-retry", questions)
+
+    def test_only_identical_whole_source_can_skip_equivalence_question(self):
+        from test_verification_case import anchored_case
+
+        record = parse_markdown(render_record(make_v2_audit()))
+        record["active_scopes"][0]["scope_definition"]["outcome"] = (
+            "Validate inputs on both entry points."
+        )
+        bundle = anchored_case()
+        bundle["criteria"][0]["condition"] = "Validate inputs on both entry points."
+        questions = build_questions(project_state(record, bundle))
+        self.assertNotIn("coverage-unit-req-0", questions)
+        self.assertNotIn("coverage-unit-req-1", questions)
+        self.assertIn("criterion-1", questions)
+        context = questions["feature-implementation-f1"]["instructions"][
+            "supplied"
+        ].get("requirement_contexts", [])
+        self.assertTrue(
+            any(
+                item["source_context"] == bundle["features"][0]["requirement"]
+                for item in context
+            )
+        )
+        bundle["criteria"][0]["condition"] = "Validate inputs on one entry point."
+        self.assertIn(
+            "coverage-unit-req-0", build_questions(project_state(record, bundle))
+        )
+
+    def test_anchored_units_receive_exact_obligation_and_full_source_context(self):
+        from test_verification_case import anchored_case
+
+        record = parse_markdown(render_record(make_v2_audit()))
+        record["active_scopes"][0]["scope_definition"]["outcome"] = (
+            "Validate inputs on both entry points."
+        )
+        bundle = anchored_case()
+        questions = build_questions(project_state(record, bundle))
+        self.assertNotIn("criteria-coverage", questions)
+        supplied = questions["coverage-unit-req-0"]["instructions"]["supplied"]
+        self.assertEqual(supplied["referenced_feature_definitions"], [])
+        self.assertEqual(
+            supplied["requirement"], "Validate inputs on both entry points."
+        )
+        self.assertEqual(
+            supplied["source_context"], "Validate inputs on both entry points."
+        )
+        self.assertEqual(
+            supplied["mapped_conditions"], ["Both entry points use validation."]
+        )
+        for option in questions["coverage-unit-req-0"]["criteria"].values():
+            self.assertEqual(
+                option.get("subject") if isinstance(option, dict) else None,
+                "acceptance-condition coverage",
+            )
+        self.assertIn("feature-implementation-f1", questions)
+
+    def test_each_acceptance_option_names_the_actual_condition(self):
+        state = project_state(
+            parse_markdown(render_record(make_v2_audit())), evidence_bundle()
+        )
+        question = build_questions(state)["criterion-1"]
+        for option in question["criteria"].values():
+            self.assertIn("Installed command runs.", json.dumps(option))
+
     def test_coverage_receives_feature_requirement_mapping_for_referenced_goal(self):
         from test_verification_case import verification_case
 

@@ -10,7 +10,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from agent_handoff_toolkit.review import review_record, report_exit_code  # noqa: E402
-from agent_handoff_toolkit import render_record  # noqa: E402
+from agent_handoff_toolkit import render_record, parse_markdown  # noqa: E402
 from agent_handoff_toolkit.lineage import record_digest  # noqa: E402
 from agent_handoff_toolkit.review_config import ReviewUnavailable  # noqa: E402
 from test_records import make_v2_audit, make_v2_continuation  # noqa: E402
@@ -19,6 +19,92 @@ from test_verification_case import verification_case  # noqa: E402
 
 
 class ReviewTests(unittest.TestCase):
+    def test_exact_accounting_does_not_fabricate_implementation_or_confidence(self):
+        from test_verification_case import anchored_case
+
+        bundle = anchored_case()
+        outcome = parse_markdown(self.record.read_text(encoding="utf-8"))[
+            "active_scopes"
+        ][0]["scope_definition"]["outcome"]
+        bundle["criteria"][0].update(condition=outcome)
+        bundle["requirements"][0].update(quote=outcome, end=len(outcome))
+        for choice, expected in (
+            ("insufficient_evidence", "cannot-determine"),
+            ("deficient", "work-remains"),
+        ):
+            self.evidence.write_text(json.dumps(bundle))
+
+            def transport(payload, credential, timeout):
+                answers = {key: answer() for key in payload["questions"]}
+                answers["criterion-1"] = answer(choice)
+                return json.dumps({"model": "jev-1.13.0", "answers": answers}).encode()
+
+            report = self.review(transport)
+            self.assertEqual(report["implementation"]["state"], expected)
+            self.assertNotIn("coverage-unit-req-0", report["answers"])
+            self.assertEqual(
+                report["implementation"]["coverage_provenance"][0]["method"],
+                "exact-text",
+            )
+
+    def test_protocol_fault_reports_closed_validation_stage_without_payload(self):
+        def transport(payload, credential, timeout):
+            answers = {key: answer() for key in payload["questions"]}
+            answers["criterion-1"]["probabilities"]["supported"] = 0.2
+            return json.dumps({"model": "jev-1.13.0", "answers": answers}).encode()
+
+        report = self.review(transport)
+        self.assertEqual(report["status"], "unavailable")
+        self.assertEqual(report["reasons"][0].get("validation_stage"), "probabilities")
+        self.assertNotIn("answers", report)
+
+    def test_one_uncertain_anchored_unit_prevents_supported_completion(self):
+        from test_verification_case import anchored_case
+
+        bundle = anchored_case()
+        outcome = parse_markdown(self.record.read_text(encoding="utf-8"))[
+            "active_scopes"
+        ][0]["scope_definition"]["outcome"]
+        unit = bundle["requirements"][0]
+        unit.update(quote=outcome, end=len(outcome))
+        self.evidence.write_text(json.dumps(bundle))
+
+        def transport(payload, credential, timeout):
+            answers = {key: answer() for key in payload["questions"]}
+            answers["coverage-unit-req-0"] = answer("supported", 0.6)
+            return json.dumps({"model": "jev-1.13.0", "answers": answers}).encode()
+
+        report = self.review(transport)
+        self.assertEqual(report["status"], "inconclusive")
+        self.assertEqual(report["implementation"]["behavior_state"], "implemented")
+        self.assertEqual(report["implementation"]["state"], "cannot-determine")
+        self.assertEqual(report["reasons"][0]["requirement_id"], "req-0")
+
+    def test_coverage_gap_does_not_claim_missing_implementation(self):
+        def transport(payload, credential, timeout):
+            answers = {key: answer() for key in payload["questions"]}
+            answers["criteria-coverage"] = answer("deficient")
+            return json.dumps({"model": "jev-1.13.0", "answers": answers}).encode()
+
+        report = self.review(transport)
+        self.assertEqual(report["implementation"].get("behavior_state"), "implemented")
+        self.assertEqual(report["implementation"]["state"], "cannot-determine")
+        self.assertEqual(report["implementation"]["coverage"], "inadequate")
+        self.assertEqual(report["reasons"][0]["code"], "criteria-inadequate")
+
+    def test_full_feature_gap_survives_supported_narrow_criteria(self):
+        self.evidence.write_text(json.dumps(verification_case()))
+
+        def transport(payload, credential, timeout):
+            answers = {key: answer() for key in payload["questions"]}
+            for key in answers:
+                if key.startswith("feature-implementation-"):
+                    answers[key] = answer("deficient")
+            return json.dumps({"model": "jev-1.13.0", "answers": answers}).encode()
+
+        report = self.review(transport)
+        self.assertEqual(report["implementation"]["state"], "work-remains")
+
     def test_identical_component_and_criterion_share_one_judgment(self):
         bundle = verification_case()
         criterion = bundle["criteria"][0]
@@ -191,7 +277,7 @@ class ReviewTests(unittest.TestCase):
 
         def transport(payload, credential, timeout):
             answers = {key: answer() for key in payload["questions"]}
-            for key in ("criterion-1", "component-unit1"):
+            for key in ("criterion-1", "component-unit1", "feature-implementation-f1"):
                 if key in answers:
                     answers[key] = answer("deficient")
             return json.dumps({"model": "jev-1.13.0", "answers": answers}).encode()
@@ -369,7 +455,7 @@ class ReviewTests(unittest.TestCase):
                 "insufficient-evidence",
                 "inconclusive",
             ),
-            ("criteria-coverage", "deficient", 0.95, "deficient", "fail"),
+            ("criteria-coverage", "deficient", 0.95, "criteria-inadequate", "fail"),
             ("criteria-coverage", "supported", 0.1, "low-confidence", "inconclusive"),
         ):
 

@@ -93,7 +93,7 @@ def validate_response(raw: bytes, questions: dict) -> dict:
         or set(answers) != set(questions)
         or not 1 <= len(questions) <= 21
     ):
-        raise ReviewUnavailable("response-schema")
+        reject_schema("envelope")
 
     def probability(value):
         return type(value) in (int, float) and 0 <= value <= 1 and math.isfinite(value)
@@ -101,7 +101,7 @@ def validate_response(raw: bytes, questions: dict) -> dict:
     reduced = {}
     for key, answer in answers.items():
         if not isinstance(answer, dict):
-            raise ReviewUnavailable("response-schema")
+            reject_schema("answer-shape")
         choice = answer.get("choice")
         probabilities = answer.get("probabilities")
         confidence = answer.get("confidence")
@@ -113,9 +113,10 @@ def validate_response(raw: bytes, questions: dict) -> dict:
             or not all(probability(value) for value in probabilities.values())
             or abs(sum(probabilities.values()) - 1) > PROBABILITY_TOLERANCE
             or probabilities[choice] < max(probabilities.values())
-            or not probability(confidence)
         ):
-            raise ReviewUnavailable("response-schema")
+            reject_schema("probabilities")
+        if not probability(confidence):
+            reject_schema("confidence")
         # Evaluate the decimal wire probability exactly before converting back
         # to float, so e.g. 0.94 produces 0.91 at a configured 0.91 floor.
         derived_confidence = max(
@@ -125,7 +126,7 @@ def validate_response(raw: bytes, questions: dict) -> dict:
             abs(confidence - derived_confidence)
             > CONFIDENCE_ROUNDING_TOLERANCE + PROBABILITY_TOLERANCE
         ):
-            raise ReviewUnavailable("response-schema")
+            reject_schema("confidence")
         reduced[key] = {
             "type": "choice",
             "choice": choice,
@@ -137,3 +138,9 @@ def validate_response(raw: bytes, questions: dict) -> dict:
             ),
         }
     return {"model": model, "answers": reduced}
+
+
+def reject_schema(stage):
+    error = ReviewUnavailable("response-schema")
+    error.validation_stage = stage
+    raise error

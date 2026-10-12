@@ -109,9 +109,19 @@ Read `.agent-handoff-toolkit/jev-experiment.md` for setup and the evidence schem
 When enabled, derive observable acceptance criteria from the immutable authorized outcome;
 prepare explicit supporting evidence in a temporary file outside the repository,
 then delete it after review. Never weaken the goal or criteria to obtain a pass.
-Use the version-2 verification case for feature implementation: discover affected
+Use the version-3 verification case for detailed feature implementation: discover affected
 files and callers through repository searches, account for unchanged shared code,
 and link each feature, component and acceptance condition to relevant evidence.
+Anchor small coverage obligations to exact spans of the unchanged authorized
+outcome and feature requirements; account for every source and preserve qualifiers.
+Inspect semantic completeness independently: exact spans prove text accounting
+only. Assess each full feature requirement as well as its narrower conditions.
+Where feasible, copy each whole original requirement exactly into an assessed
+condition; only whole-source identity avoids a model equivalence judgment. Its
+implementation still needs proof. Preserve all mapped source contexts. This is
+evidence-case version 3; record schema and lifecycle authority remain unchanged.
+An inadequate condition inventory requires correction or more evidence; it does
+not alone establish missing code. Keep coverage and behavior findings distinct.
 Changing every listed file is not a requirement; implementing the behavior is.
 Declare each current implementation claim as `implemented` or `pending`.
 Selected goals, narrative and evidence leave the machine; full prompts/transcripts
