@@ -144,7 +144,7 @@ def resolve_credential(root: Path, config: dict, environ: Mapping[str, str]) -> 
         if settings["source"] == "environment":
             raise ReviewUnavailable("credential-missing")
     try:
-        content = read_bounded(root / settings["file"], 64 * 1024).decode("utf-8")
+        content = read_bounded(root / settings["file"], 64 * 1024).decode("utf-8-sig")
     except (ReviewInputError, UnicodeError, OSError, ValueError):
         raise ReviewUnavailable("credential-read") from None
     selected = []

@@ -42,13 +42,36 @@ def answer(choice="supported", confidence=0.95):
         "choice": choice,
         "confidence": confidence,
         "probabilities": {
-            key: 1.0 if key == choice else 0.0
+            key: (1 + 2 * confidence) / 3 if key == choice else (1 - confidence) / 3
             for key in ("supported", "deficient", "insufficient_evidence")
         },
     }
 
 
 class RubricTests(unittest.TestCase):
+    def test_repository_state_and_positional_scope_hierarchy_are_projected(self):
+        for factory, heading in (
+            (make_v2_audit, "Final repository state"),
+            (make_v2_continuation, "Repository state"),
+        ):
+            data = factory(children=("child", "grandchild"))
+            data["active_scopes"][2]["parent_scope_id"] = "child"
+            from agent_handoff_toolkit.lineage import scope_definition_digest
+
+            data["active_scopes"][2]["scope_definition_digest"] = (
+                scope_definition_digest(data["active_scopes"][2])
+            )
+            data["sections"][heading] = (
+                "Synthetic PR remains unmerged and release untagged."
+            )
+            record = parse_markdown(render_record(data))
+            state = project_state(record, evidence_bundle())
+            self.assertEqual(state["sections"][heading], data["sections"][heading])
+            self.assertEqual(
+                [scope["parent_index"] for scope in state["active_scopes"]],
+                [None, 0, 1],
+            )
+
     def prepare(self, bundle, kind="completion-audit"):
         return prepare_evidence(json.dumps(bundle).encode(), kind)
 

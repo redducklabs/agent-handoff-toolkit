@@ -386,3 +386,16 @@ conditional; no assumption that all Codex installations disable network access.
 Credential copy/ignore safety, worktree paths, root ceilings, JSON status branching,
 visible-ASCII bearer checks, model IDs, and internal-fault codes are included in
 their owning tasks. The review output itself is not stored as a transcript/log.
+
+## Execution and final implementation review
+
+All six tasks are implemented. The user's subsequent request extended delivery
+to a PR and release; version 1.3.0 replaces the original no-release constraint.
+Final implementation review prompted regression-tested fixes to include repository
+state and positional scope parents, classify HTTP protocol faults as connection
+failures, accept credential-file UTF-8 BOMs, and explain per-worktree settings.
+The official confidence documentation supplies the exact Choice formula; responses
+must now agree with that formula within the toolkit's `1e-6` tolerance, rather
+than allowing incoherent high confidence to produce a pass. Synthetic replies
+were corrected to match that documented wire contract. These checks establish
+internal consistency, not live compatibility or semantic accuracy.

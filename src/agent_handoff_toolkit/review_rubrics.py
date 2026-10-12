@@ -96,6 +96,7 @@ def prepare_evidence(raw: bytes | None, record_type: str) -> tuple[dict, list[di
 def project_state(record: dict, bundle: dict) -> dict:
     scopes = record["active_scopes"]
     root = next(scope for scope in scopes if scope["highest_authorized"])
+    indexes = {scope["scope_id"]: index for index, scope in enumerate(scopes)}
     scope_keys = (
         "scope_kind",
         "highest_authorized",
@@ -113,12 +114,18 @@ def project_state(record: dict, bundle: dict) -> dict:
         "Known risks or separately tracked follow-ups",
         "External effects",
         "User decisions",
+        "Repository state",
+        "Final repository state",
     )
     state = {
         "record_type": record["record_type"],
         "root": copy.deepcopy(root["scope_definition"]),
         "active_scopes": [
-            {key: copy.deepcopy(scope[key]) for key in scope_keys} for scope in scopes
+            {
+                **{key: copy.deepcopy(scope[key]) for key in scope_keys},
+                "parent_index": indexes.get(scope["parent_scope_id"]),
+            }
+            for scope in scopes
         ],
         "sections": {
             key: value
@@ -144,7 +151,7 @@ def build_questions(state: dict) -> dict[str, dict]:
         "goal-clarity": "state.root title/outcome describes a clear, observable immutable authorized outcome.",
         "criteria-coverage": "state.criteria operationalizes the entire state.root outcome without narrowing, expanding, or replacing it.",
         "evidence-specificity": "state.evidence and state.verification provide specific observations supporting current progress claims in state.sections and state.active_scopes; test success proves only tested conditions.",
-        "scope-alignment": "state.active_scopes and state.sections claims align with the authorized state.root; completing a child never establishes parent completion.",
+        "scope-alignment": "state.active_scopes and state.sections claims align with the authorized state.root; parent_index names the zero-based parent in active_scopes (null for root). Completing a child never establishes parent completion.",
     }
     if state["record_type"] == "completion-audit":
         for index, _criterion in enumerate(state["criteria"], 1):

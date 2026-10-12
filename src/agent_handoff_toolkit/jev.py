@@ -1,6 +1,7 @@
 """Optional single-request TypeSafe adapter; no lifecycle authority."""
 
 import json
+import http.client
 import math
 import socket
 import urllib.error
@@ -61,7 +62,7 @@ def post_json(payload: dict, credential: str, timeout: float) -> bytes:
         raise ReviewUnavailable(
             "timeout" if isinstance(error.reason, TimeoutError) else "connection"
         ) from None
-    except OSError:
+    except (OSError, http.client.HTTPException):
         raise ReviewUnavailable("connection") from None
     if len(raw) > MAX_RESPONSE_BYTES:
         raise ReviewUnavailable("response-size")
@@ -109,6 +110,8 @@ def validate_response(raw: bytes, questions: dict) -> dict:
             or abs(sum(probabilities.values()) - 1) > PROBABILITY_TOLERANCE
             or probabilities[choice] < max(probabilities.values())
             or not probability(confidence)
+            or abs(confidence - (3 * max(probabilities.values()) - 1) / 2)
+            > PROBABILITY_TOLERANCE
         ):
             raise ReviewUnavailable("response-schema")
         reduced[key] = {

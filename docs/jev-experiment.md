@@ -12,6 +12,9 @@ Copy the installed `.agent-handoff-toolkit/jev.example.json` to project-owned
 `.agent-handoff-toolkit/jev.json`, then set `enabled` to `true` in the active
 file. Edit active configuration, not the managed example: editing the example
 causes sync conflicts. Install/sync never owns active configuration or credentials.
+Provide active configuration in each worktree: copy it there or commit the nonsecret
+settings if project policy permits. An ignored active file does not automatically
+appear in linked worktrees; its absence deliberately disables review.
 Missing configuration means disabled; malformed configuration is an error even
 when disabled. Omitted fields take these defaults:
 
@@ -43,6 +46,7 @@ process environment. Never put secrets or customer data into assessment evidence
 Only the selected dotenv assignment is parsed, without shell execution,
 interpolation, escape expansion or environment mutation. Blank lines, comments,
 optional `export`, CRLF, and matching single/double quotes are supported.
+An optional UTF-8 BOM in credential files is accepted.
 Unquoted inline comments start after whitespace; after a closing quote allow only
 whitespace or a comment. Duplicate, empty and malformed selected assignments are
 unavailable. Unrelated malformed lines are not evaluated. Bearer characters must
@@ -156,7 +160,9 @@ and Choice questions with `instructions` and an option-to-description `criteria`
 map. No retries or redirects. Responses require a valid actual model, exactly
 the requested question IDs, Choice type, allowed verdict, full probability map
 and confidence. Numbers are finite in [0,1], with maximum-probability selected
-choice (ties allowed). Unknown envelope/answer fields are discarded. The 256 KiB
+choice (ties allowed). Confidence must agree with the documented three-option
+Choice formula `(3 * maximum_probability - 1) / 2` within toolkit tolerance `1e-6`.
+Unknown envelope/answer fields are discarded. The 256 KiB
 response cap also applies to injected transports. Socket-operation timeout does
 not guarantee a strict total elapsed deadline; no background request continues.
 

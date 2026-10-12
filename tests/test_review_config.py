@@ -125,6 +125,7 @@ class ConfigTests(unittest.TestCase):
             value = secrets.token_hex(16)
             with patch("subprocess.run", side_effect=AssertionError("executed")):
                 for content, expected in [
+                    ("\ufeffJEV_API_KEY=" + value, value),
                     (
                         "bad unrelated line\r\nexport JEV_API_KEY="
                         + value
@@ -135,7 +136,7 @@ class ConfigTests(unittest.TestCase):
                     ("JEV_API_KEY='literal#=text'", "literal#=text"),
                     ("JEV_API_KEY=x#y", "x#y"),
                 ]:
-                    (root / ".env").write_text(content)
+                    (root / ".env").write_text(content, encoding="utf-8")
                     before = dict(os.environ)
                     self.assertTrue(resolve_credential(root, config, {}) == expected)
                     self.assertEqual(dict(os.environ), before)

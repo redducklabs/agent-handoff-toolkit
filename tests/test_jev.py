@@ -1,4 +1,5 @@
 import json
+import http.client
 from pathlib import Path
 import secrets
 import socket
@@ -19,11 +20,22 @@ from agent_handoff_toolkit.jev import (  # noqa: E402
 from agent_handoff_toolkit.review_config import ReviewUnavailable  # noqa: E402
 
 # Independently handwritten contract from https://docs.typesafe.ai/api (2026-10-11).
-WIRE = b'{"model":"jev-1.13.0","answers":{"goal-clarity":{"type":"choice","choice":"supported","probabilities":{"supported":0.9,"deficient":0.1,"insufficient_evidence":0.0},"confidence":0.8}},"usage":{"input_tokens":1,"output_tokens":1}}'
+WIRE = b'{"model":"jev-1.13.0","answers":{"goal-clarity":{"type":"choice","choice":"supported","probabilities":{"supported":0.9,"deficient":0.1,"insufficient_evidence":0.0},"confidence":0.85}},"usage":{"input_tokens":1,"output_tokens":1}}'
 QUESTIONS = {"goal-clarity": {"type": "choice"}}
 
 
 class ResponseTests(unittest.TestCase):
+    def test_incoherent_confidence_cannot_pass(self):
+        data = json.loads(WIRE)
+        data["answers"]["goal-clarity"]["probabilities"] = {
+            "supported": 0.34,
+            "deficient": 0.33,
+            "insufficient_evidence": 0.33,
+        }
+        data["answers"]["goal-clarity"]["confidence"] = 0.95
+        with self.assertRaisesRegex(ReviewUnavailable, "^response-schema$"):
+            validate_response(json.dumps(data).encode(), QUESTIONS)
+
     def test_wire_and_unknown_fields_reduced(self):
         data = json.loads(WIRE)
         data["extra"] = "discard"
@@ -99,6 +111,7 @@ class ResponseTests(unittest.TestCase):
             "deficient": 0.5,
             "insufficient_evidence": 0,
         }
+        data["answers"]["goal-clarity"]["confidence"] = 0.25
         self.assertTrue(validate_response(json.dumps(data).encode(), QUESTIONS))
 
 
@@ -143,6 +156,8 @@ class TransportTests(unittest.TestCase):
             )
         ]
         cases += [
+            (http.client.IncompleteRead(b"synthetic", 1), "connection"),
+            (http.client.BadStatusLine("synthetic"), "connection"),
             (socket.timeout("private"), "timeout"),
             (urllib.error.URLError("private"), "connection"),
             (ssl.SSLError("private"), "connection"),

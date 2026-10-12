@@ -266,6 +266,7 @@ class JevDistributionTests(unittest.TestCase):
             "synthetic",
             "internal",
             "insufficient_evidence",
+            "each worktree",
         ):
             self.assertIn(phrase, guide)
 
