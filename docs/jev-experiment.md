@@ -161,7 +161,15 @@ map. No retries or redirects. Responses require a valid actual model, exactly
 the requested question IDs, Choice type, allowed verdict, full probability map
 and confidence. Numbers are finite in [0,1], with maximum-probability selected
 choice (ties allowed). Confidence must agree with the documented three-option
-Choice formula `(3 * maximum_probability - 1) / 2` within toolkit tolerance `1e-6`.
+Choice formula `(3 * maximum_probability - 1) / 2` within a rounding bound of
+`0.0125` plus numeric tolerance `1e-6`. Two-decimal probability rounding can
+contribute `1.5 * 0.005`, and confidence rounding another `0.005`; discrepancies
+outside that bound remain unavailable. The reported assessment confidence is
+the lower of the returned confidence and the formula applied to the returned
+probabilities (clamped at zero) when they differ beyond numeric tolerance, so
+upward rounding cannot raise it above the configured floor. Numerically coherent
+confidence is retained to avoid floating-point threshold errors. Probability
+sums retain tolerance `1e-6`.
 Unknown envelope/answer fields are discarded. The 256 KiB
 response cap also applies to injected transports. Socket-operation timeout does
 not guarantee a strict total elapsed deadline; no background request continues.

@@ -25,6 +25,62 @@ QUESTIONS = {"goal-clarity": {"type": "choice"}}
 
 
 class ResponseTests(unittest.TestCase):
+    def test_rounded_wire_confidence_is_accepted_conservatively(self):
+        for probabilities, confidence, expected in (
+            (
+                {"supported": 0.88, "deficient": 0.12, "insufficient_evidence": 0},
+                0.81,
+                0.81,
+            ),
+            (
+                {"supported": 0.97, "deficient": 0.03, "insufficient_evidence": 0},
+                0.96,
+                0.955,
+            ),
+            (
+                {"supported": 0.97, "deficient": 0.03, "insufficient_evidence": 0},
+                0.95,
+                0.95,
+            ),
+        ):
+            with self.subTest(confidence=confidence):
+                data = json.loads(WIRE)
+                answer = data["answers"]["goal-clarity"]
+                answer.update(probabilities=probabilities, confidence=confidence)
+                try:
+                    result = validate_response(json.dumps(data).encode(), QUESTIONS)
+                except ReviewUnavailable as error:
+                    self.fail(f"Documented wire rounding was rejected: {error}")
+                self.assertAlmostEqual(
+                    result["answers"]["goal-clarity"]["confidence"], expected
+                )
+
+    def test_near_uniform_normalization_cannot_make_confidence_negative(self):
+        data = json.loads(WIRE)
+        data["answers"]["goal-clarity"].update(
+            probabilities={
+                key: 0.3333332
+                for key in ("supported", "deficient", "insufficient_evidence")
+            },
+            confidence=0,
+        )
+        result = validate_response(json.dumps(data).encode(), QUESTIONS)
+        self.assertEqual(result["answers"]["goal-clarity"]["confidence"], 0)
+
+    def test_confidence_outside_wire_rounding_bound_is_rejected(self):
+        data = json.loads(WIRE)
+        answer = data["answers"]["goal-clarity"]
+        answer.update(
+            probabilities={
+                "supported": 0.88,
+                "deficient": 0.12,
+                "insufficient_evidence": 0,
+            },
+            confidence=0.833,
+        )
+        with self.assertRaisesRegex(ReviewUnavailable, "^response-schema$"):
+            validate_response(json.dumps(data).encode(), QUESTIONS)
+
     def test_incoherent_confidence_cannot_pass(self):
         data = json.loads(WIRE)
         data["answers"]["goal-clarity"]["probabilities"] = {

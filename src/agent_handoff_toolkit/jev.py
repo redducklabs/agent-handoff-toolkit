@@ -3,6 +3,7 @@
 import json
 import http.client
 import math
+from fractions import Fraction
 import socket
 import urllib.error
 import urllib.request
@@ -18,6 +19,9 @@ from .review_rubrics import VERDICTS
 ENDPOINT = "https://api.typesafe.ai/v1/systemone"
 MAX_RESPONSE_BYTES = 256 * 1024
 PROBABILITY_TOLERANCE = 1e-6  # Toolkit policy, not a vendor guarantee.
+# Two-decimal probability rounding contributes 1.5 * 0.005 to the
+# three-option formula; confidence rounding contributes another 0.005.
+CONFIDENCE_ROUNDING_TOLERANCE = 0.0125
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -110,14 +114,26 @@ def validate_response(raw: bytes, questions: dict) -> dict:
             or abs(sum(probabilities.values()) - 1) > PROBABILITY_TOLERANCE
             or probabilities[choice] < max(probabilities.values())
             or not probability(confidence)
-            or abs(confidence - (3 * max(probabilities.values()) - 1) / 2)
-            > PROBABILITY_TOLERANCE
+        ):
+            raise ReviewUnavailable("response-schema")
+        # Evaluate the decimal wire probability exactly before converting back
+        # to float, so e.g. 0.94 produces 0.91 at a configured 0.91 floor.
+        derived_confidence = max(
+            0.0, float((3 * Fraction(str(max(probabilities.values()))) - 1) / 2)
+        )
+        if (
+            abs(confidence - derived_confidence)
+            > CONFIDENCE_ROUNDING_TOLERANCE + PROBABILITY_TOLERANCE
         ):
             raise ReviewUnavailable("response-schema")
         reduced[key] = {
             "type": "choice",
             "choice": choice,
             "probabilities": probabilities,
-            "confidence": confidence,
+            "confidence": (
+                derived_confidence
+                if confidence - derived_confidence > PROBABILITY_TOLERANCE
+                else confidence
+            ),
         }
     return {"model": model, "answers": reduced}
