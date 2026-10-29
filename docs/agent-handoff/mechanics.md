@@ -254,16 +254,16 @@ can error: any failure produces no message.
   first `UserPromptSubmit`: the repository changed while the session was open,
   not necessarily by the session. It asks the user, on `systemMessage`, to
   request a handoff. A declared one-off still receives it.
-- **`AHK-CONTEXT-HIGH`** serves a `TRACKED` or `AWAITING_DECISION` session on
-  Claude Code. `PreToolUse` reads numbers only from the last 512 KiB of
-  `transcript_path`: the newest main-thread usage (`input_tokens`
-  plus both cache counts), against `AHK_CONTEXT_WINDOW_TOKENS`, else 1,000,000
-  when the model id carries `[1m]` or the tail shows a count above 200,000,
-  else 200,000. At 80% it asks once, on `additionalContext`, for the
-  continuation handoff, and re-arms after a reading below 50% or a compaction.
-  An ordinary call opens state for it only while one of the last five readings
-  is below 80%. It is never sent at `Stop`, which has no non-blocking model
-  channel.
+- **`AHK-CONTEXT-HIGH`** serves a `TRACKED` or `AWAITING_DECISION` session.
+  `PreToolUse` reads numbers only from the last 512 KiB of `transcript_path`:
+  the newest main-thread usage, against `AHK_CONTEXT_WINDOW_TOKENS`, else the
+  window the host reports - Codex's `model_context_window`, or the size Claude
+  Code gives the managed `statusLine` relay. It never infers a window from a
+  model id or a count; with none it is silent. At 80% it asks once, on
+  `additionalContext`, for the continuation handoff, naming tokens, window and
+  source, and re-arms after a reading below 50% or a compaction. An ordinary
+  call opens state for it only while one of the last five readings is below
+  80%. It is never sent at `Stop`.
 
 **The guarantee.** The toolkit does not guarantee that work needing a handoff produces one.
 Declared tracked work follows the lifecycle; undeclared unfinished work is reported.

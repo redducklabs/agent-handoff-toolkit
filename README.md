@@ -6,7 +6,17 @@ This repository provides a shared contract, deterministic validation and renderi
 
 ## Status
 
-Version 1.4.0 removes the optional Jev experiment after qualification did not
+Version 1.5.0 stops `AHK-CONTEXT-HIGH` from guessing the context window. 1.4.0
+assumed 200K unless the model id carried `[1m]`, so a session at 170K of a 1M
+window was told it was 80% full. The window now comes only from the host or
+`AHK_CONTEXT_WINDOW_TOKENS`: Codex's `model_context_window` in its rollout, or
+the size Claude Code reports to the newly managed `statusLine`, a relay that
+records it and then runs the user's own status line unchanged. With no
+reported window the advisory is silent, and the skill tells the model to act
+on its own context reporting. The notice names tokens, window and source, and
+now serves Codex as well as Claude Code.
+
+Version 1.4.0 removed the optional Jev experiment after qualification did not
 establish useful implementation assessment. The experimental review command,
 provider runtime and authoring gate are removed for both hosts. Sync retires
 unchanged toolkit-owned assessment files, refusing modified or unowned copies.
@@ -349,16 +359,16 @@ disposable consumer can be installed from a verified local release source.
 
 ## Consumer installation
 
-Check out the public v1.4.0 release, inspect the proposed changes, then apply
+Check out the public v1.5.0 release, inspect the proposed changes, then apply
 them from that checkout:
 
 ```powershell
-git clone --branch v1.4.0 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
+git clone --branch v1.5.0 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
 Set-Location agent-handoff-toolkit
-python distribution/runner.py install --target <consumer-repository> --release v1.4.0 --dry-run
-python distribution/runner.py install --target <consumer-repository> --release v1.4.0 --apply
-python distribution/runner.py sync --target <consumer-repository> --release v1.4.0 --check
-python distribution/runner.py sync --target <consumer-repository> --release v1.4.0 --apply
+python distribution/runner.py install --target <consumer-repository> --release v1.5.0 --dry-run
+python distribution/runner.py install --target <consumer-repository> --release v1.5.0 --apply
+python distribution/runner.py sync --target <consumer-repository> --release v1.5.0 --check
+python distribution/runner.py sync --target <consumer-repository> --release v1.5.0 --apply
 ```
 
 Run install and sync only in an isolated, clean Git worktree with no concurrent

@@ -36,9 +36,13 @@ tracked session, author the record with `render`, `validate`, and `render-tail`
 only.
 
 An `AHK-CONTEXT-HIGH` notice in a tracked session means the context window is
-at least 80% full. Write the continuation now, while there is room to do it
-well, and then keep working; it blocks nothing and is not shown again until
-context falls below half.
+at least 80% full. It names the tokens, the window and where the window came
+from; if that disagrees with what your host reports, trust the host. Otherwise
+write the continuation now, while there is room to do it well, and then keep
+working; it blocks nothing and is not shown again until context falls below
+half. The notice needs a window the host reports, so its absence proves
+nothing: whatever your context reporting says, write the continuation once
+context is about 80% full.
 
 ## Historical records and project overlays
 
