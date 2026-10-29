@@ -21,6 +21,7 @@ import stat
 import time
 import unicodedata
 
+from .context_window import reported_window, valid_window
 from .hooks import HookExecution, _git_common_dir, hook_repository_root
 from .lifecycle import (
     AffirmationResult,
@@ -1194,14 +1195,19 @@ def _write_advisory(event, snapshot, root, storage, raw_id):
         return HookExecution()
 
 
-# Context pressure. Claude Code writes its transcript as JSON lines; a
-# main-thread assistant entry carries the token usage of the context it was
-# answered from. Only numbers are read: the usage counts, a compaction's
-# `preTokens`, and whether the model id carries the 1M marker. Nothing else
-# in an entry is retained, stored or emitted.
+# Context pressure. Both hosts write their transcript as JSON lines. A Claude
+# Code main-thread assistant entry carries the token usage of the context it
+# was answered from; a Codex `token_count` event carries the same and the
+# window the host is running against. Only numbers are read: the usage
+# counts, the reported window, and a compaction marker. Nothing else in an
+# entry is retained, stored or emitted.
+#
+# The window is never inferred - not from a model id, a default, or the size
+# of a reading. It is the one Codex reports in the rollout, the one Claude
+# Code reported to the status-line relay, or `AHK_CONTEXT_WINDOW_TOKENS`.
+# Without one there is no advisory: firing early costs a session's work, and
+# firing late costs a reminder.
 _TRANSCRIPT_TAIL_BYTES = 512 * 1024
-_CONTEXT_WINDOW = 200_000
-_CONTEXT_WINDOW_LARGE = 1_000_000
 _CONTEXT_HIGH = 0.8
 _CONTEXT_REARM = 0.5
 # Main-thread readings an ordinary tool call looks back over. Opening state
@@ -1212,16 +1218,45 @@ _CONTEXT_CROSSING_READINGS = 5
 _CONTEXT_STATE_MODES = frozenset(
     {EnforcementMode.TRACKED, EnforcementMode.AWAITING_DECISION}
 )
+_CONTEXT_MARKERS = (
+    b'"assistant"',
+    b"compact_boundary",
+    b'"token_count"',
+    b'"compacted"',
+)
 
 
 def _count(value):
     return value if type(value) is int and value >= 0 else None
 
 
-def _context_entry(line):
-    """Read one transcript line as `(kind, tokens, large_model)`, or None."""
+def _codex_entry(entry):
+    """Read a Codex rollout entry as `(kind, tokens, window)`, or None."""
 
-    if b'"assistant"' not in line and b"compact_boundary" not in line:
+    if entry.get("type") == "compacted":
+        return ("compact", 0, None)
+    payload = entry.get("payload")
+    if entry.get("type") != "event_msg" or not isinstance(payload, dict):
+        return None
+    if payload.get("type") != "token_count":
+        return None
+    info = payload.get("info")
+    if not isinstance(info, dict):
+        return None
+    last = info.get("last_token_usage")
+    tokens = _count(last.get("total_tokens")) if isinstance(last, dict) else None
+    if tokens is None:
+        return None
+    return ("usage", tokens, valid_window(info.get("model_context_window")))
+
+
+def _context_entry(line):
+    """Read one transcript line as `(kind, tokens, window)`, or None.
+
+    `window` is the window the entry itself reports, or None.
+    """
+
+    if not any(marker in line for marker in _CONTEXT_MARKERS):
         return None
     try:
         entry = json.loads(line)
@@ -1234,8 +1269,10 @@ def _context_entry(line):
         tokens = (
             _count(metadata.get("preTokens")) if isinstance(metadata, dict) else None
         )
-        return None if tokens is None else ("compact", tokens, False)
-    if entry.get("type") != "assistant" or entry.get("isSidechain") is not False:
+        return None if tokens is None else ("compact", tokens, None)
+    if entry.get("type") != "assistant":
+        return _codex_entry(entry)
+    if entry.get("isSidechain") is not False:
         return None
     message = entry.get("message")
     if not isinstance(message, dict):
@@ -1256,7 +1293,7 @@ def _context_entry(line):
     ]
     if "input_tokens" not in usage or None in parts:
         return None
-    return ("usage", sum(parts), "[1m]" in model)
+    return ("usage", sum(parts), None)
 
 
 def _transcript_lines(path, start=0):
@@ -1287,11 +1324,12 @@ def _context_window():
 
 
 def _context_reading(path):
-    """Return `(tokens, window, size, recent)` for the latest main-thread usage.
+    """Return `(tokens, window, basis, size, recent)` for the latest reading.
 
+    `basis` says where the window came from: `environment` or `host`.
     `recent` holds the token counts of up to `_CONTEXT_CROSSING_READINGS`
     latest main-thread readings, newest first. None when there is no
-    transcript, no readable usage, or anything fails.
+    transcript, no readable usage, no known window, or anything fails.
     """
 
     try:
@@ -1305,28 +1343,21 @@ def _context_reading(path):
                     break
         if not readings:
             return None
-        _, tokens, large = readings[0]
-        window = _context_window()
+        _, tokens, reported = readings[0]
+        window, basis = _context_window(), "environment"
         if window is None:
-            if large or tokens > _CONTEXT_WINDOW:
-                window = _CONTEXT_WINDOW_LARGE
-            elif tokens < _CONTEXT_WINDOW * _CONTEXT_HIGH:
-                # Below the threshold under either window: no need to look
-                # for evidence of the larger one.
-                window = _CONTEXT_WINDOW
-            else:
-                entries = (_context_entry(line) for line in lines)
-                window = (
-                    _CONTEXT_WINDOW_LARGE
-                    if any(
-                        entry is not None and (entry[2] or entry[1] > _CONTEXT_WINDOW)
-                        for entry in entries
-                    )
-                    else _CONTEXT_WINDOW
-                )
-        return tokens, window, size, tuple(entry[1] for entry in readings)
+            window, basis = reported or reported_window(path), "host"
+        if window is None:
+            return None
+        return tokens, window, basis, size, tuple(entry[1] for entry in readings)
     except Exception:
         return None
+
+
+def _thousands(count):
+    if count >= 1_000_000 and count % 1_000_000 == 0:
+        return f"{count // 1_000_000}M"
+    return f"{round(count / 1000)}K"
 
 
 def _context_crossing(platform, payload):
@@ -1339,14 +1370,14 @@ def _context_crossing(platform, payload):
 
     try:
         path = payload.get("transcript_path")
-        if platform != "claude" or not isinstance(path, str) or not path.strip():
+        if not isinstance(path, str) or not path.strip():
             return False
         if not Path(path).is_absolute():
             return False
         reading = _context_reading(path)
         if reading is None:
             return False
-        tokens, window, _, recent = reading
+        tokens, window, _, _, recent = reading
         threshold = window * _CONTEXT_HIGH
         return tokens >= threshold and (
             len(recent) < _CONTEXT_CROSSING_READINGS
@@ -1388,16 +1419,12 @@ def _context_advisory(event, snapshot, storage, raw_id):
     try:
         session = snapshot.session
         path = event.transcript_reference
-        if (
-            event.host != "claude"
-            or path is None
-            or session.mode not in _CONTEXT_STATE_MODES
-        ):
+        if path is None or session.mode not in _CONTEXT_STATE_MODES:
             return None
         reading = _context_reading(path)
         if reading is None:
             return None
-        tokens, window, size, _ = reading
+        tokens, window, basis, size, _ = reading
         if tokens < window * _CONTEXT_HIGH:
             return None
         offset = session.context_advisory_offset
@@ -1415,11 +1442,17 @@ def _context_advisory(event, snapshot, storage, raw_id):
                 )
             ),
         )
+        if basis == "environment":
+            source = "set by AHK_CONTEXT_WINDOW_TOKENS"
+        else:
+            source = "reported by the host; AHK_CONTEXT_WINDOW_TOKENS overrides it"
         return _context(
             "PreToolUse",
-            "AHK-CONTEXT-HIGH: Context is at least 80% full. Write the "
-            "continuation handoff now, while there is room, then continue. "
-            "Shown again only after context falls below half.",
+            "AHK-CONTEXT-HIGH: Context is at least 80% full: about "
+            f"{_thousands(tokens)} of a {_thousands(window)}-token window "
+            f"{source}. Write the continuation handoff now, while there is "
+            "room, then continue. Shown again only after context falls below "
+            "half.",
         )
     except Exception:
         return None

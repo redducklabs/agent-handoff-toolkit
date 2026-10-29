@@ -382,7 +382,23 @@ otherwise returns before state is opened, opens it for this advisory only while
 one of the last five main-thread readings is below 80% - the calls around the
 crossing - rather than on every call for the rest of the fill. A writing tool
 opens state anyway and always checks, which covers a session that becomes
-tracked after the crossing. Codex is not read: its transcript format differs.
+tracked after the crossing.
+
+The window is never inferred. Version 1.4.0 assumed 200K unless the model id
+carried `[1m]` or a reading exceeded 200K, and current 1M models carry no
+marker: a session at 170K of 1M (17%) was told it was 80% full and stopped to
+write a handoff it did not need. Firing early costs a session's work; firing
+late costs a reminder. So the window comes only from the host or the
+operator. Codex writes `model_context_window` beside each `token_count` in its
+rollout, so its own transcript is read. Claude Code reports the window only to
+the status line command, never to a hook or the transcript, so the managed
+`statusLine` is a relay: it records that one number per transcript in a
+per-user cache (a file named by a digest of the transcript path) and then runs
+the user's own status line unchanged. The hook reads the cache, which costs a
+file open, not a state load. With no reported window and no
+`AHK_CONTEXT_WINDOW_TOKENS`, the advisory is silent and the skill tells the
+model to act on its own context reporting. The notice names the tokens, the
+window and its source, so a model can check it against what its host shows.
 
 **The guarantee this supports.** The toolkit does not guarantee that work
 needing a handoff produces one. It guarantees that declared tracked work

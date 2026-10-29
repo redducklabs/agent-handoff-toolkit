@@ -52,6 +52,10 @@ def _parser() -> argparse.ArgumentParser:
     hook = subparsers.add_parser("hook", help="run a host lifecycle or advisory hook")
     hook.add_argument("--platform", choices=("claude", "codex"), required=True)
     hook.add_argument("--event", required=True)
+    subparsers.add_parser(
+        "statusline",
+        help="record the window Claude Code reports, then run the user's status line",
+    )
 
     acceptance = subparsers.add_parser(
         "acceptance", help="run an opt-in, content-redacting host smoke check"
@@ -526,6 +530,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             sys.stdout.write(json.dumps(value, separators=(",", ":")))
             sys.stdout.flush()
             return 0
+
+    if args.command == "statusline":
+        # A status line decides nothing, so nothing here may fail loudly: the
+        # worst case is the user's own status line not being shown.
+        try:
+            from .context_window import read_input, relay_status_line
+
+            source = getattr(sys.stdin, "buffer", None)
+            raw = read_input(source) if source is not None else b""
+            sys.stdout.write(relay_status_line(raw).decode("utf-8", "replace"))
+            sys.stdout.flush()
+        except Exception:
+            pass
+        return 0
 
     if args.command == "acceptance":
         try:

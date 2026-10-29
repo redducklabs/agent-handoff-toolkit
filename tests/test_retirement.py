@@ -72,12 +72,12 @@ class RetirementTests(InstallerFixture, unittest.TestCase):
         self.assertTrue(all((consumer / name).is_file() for name in retired))
         config = consumer / ".agent-handoff-toolkit/jev.json"
         config.write_bytes(b'{"enabled":false}\n')
-        plan = build_plan(source, consumer, "v1.4.0", "sync")
+        plan = build_plan(source, consumer, "v1.5.0", "sync")
         self.assertFalse(plan.conflicts)
         apply_plan(plan)
         self.assertTrue(all(not (consumer / name).exists() for name in retired))
         self.assertEqual(config.read_bytes(), b'{"enabled":false}\n')
-        current = build_plan(source, consumer, "v1.4.0", "sync")
+        current = build_plan(source, consumer, "v1.5.0", "sync")
         self.assertFalse(current.conflicts or current.changes)
 
     def setUp(self):
