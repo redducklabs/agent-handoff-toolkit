@@ -401,7 +401,12 @@ relay there. Since 1.5.1, install and sync move a consumer's own value,
 unchanged, to the consumer-owned `.claude/agent-handoff-statusline.json`
 and the relay runs it, falling back to the user's own status line. Nothing
 the consumer wrote is lost or rewritten, and the toolkit never owns that
-file. The hook reads the cache, which costs a
+file. The relay runs that command with input and output in files, not
+pipes: a stalled command's descendants can hold a pipe open long after the
+command is stopped, and waiting to drain it blanked the status bar until
+they exited. Its 15-second budget exceeds the 10 seconds a chained status
+line commonly gives the user's own, so that one's fallback still shows.
+The hook reads the cache, which costs a
 file open, not a state load. With no reported window and no
 `AHK_CONTEXT_WINDOW_TOKENS`, the advisory is silent and the skill tells the
 model to act on its own context reporting. The notice names the tokens, the

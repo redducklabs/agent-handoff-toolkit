@@ -19,7 +19,9 @@ import json
 import os
 from pathlib import Path
 import shutil
+import re
 import subprocess
+import tempfile
 import time
 
 # Set for the user's own status line, so a relay reached again through it
@@ -29,7 +31,9 @@ RELAY_MARKER = "AHK_STATUSLINE_RELAY"
 CHAIN_RELATIVE_PATH = ".claude/agent-handoff-statusline.json"
 MAX_WINDOW = 10**9
 _MAX_INPUT = 1024 * 1024
-_INNER_TIMEOUT_SECONDS = 10
+# Longer than the 10 seconds a chained status line commonly allows the one it
+# delegates to, so that one can still print its own fallback in time.
+_INNER_TIMEOUT_SECONDS = 15
 # Entries are a few bytes each, one per session; old ones are dropped when a
 # new one is written.
 _RETENTION_SECONDS = 30 * 24 * 3600
@@ -134,23 +138,33 @@ def _command_in(path):
         return None
 
 
+def _native(path):
+    """Read a Git Bash `/c/...` path as the Windows path it names."""
+
+    match = re.fullmatch(r"/([A-Za-z])(/.*)?", path) if os.name == "nt" else None
+    return f"{match.group(1)}:{match.group(2) or '/'}" if match else path
+
+
 def _chained_command(payload):
     """Return the project status line chained behind the relay, or None.
 
     Looked for from the project directory and the working directory the host
-    reports, up to the enclosing repository root.
+    reports, then from this process's own, up to the enclosing repository
+    root. The last start serves a payload that could not be read.
     """
 
     starts = []
-    workspace = payload.get("workspace")
-    if isinstance(workspace, dict):
-        starts.append(workspace.get("project_dir"))
-    starts.append(payload.get("cwd"))
+    if isinstance(payload, dict):
+        workspace = payload.get("workspace")
+        if isinstance(workspace, dict):
+            starts.append(workspace.get("project_dir"))
+        starts.append(payload.get("cwd"))
+    starts.append(os.getcwd())
     for start in starts:
         if not isinstance(start, str) or not start.strip():
             continue
         try:
-            directory = Path(start).resolve()
+            directory = Path(_native(start)).resolve()
         except (OSError, ValueError):
             continue
         for candidate in (directory, *directory.parents):
@@ -173,24 +187,58 @@ def _shell(command):
     return [os.environ.get("SHELL") or "/bin/sh", "-c", command]
 
 
+def _stop(process):
+    """Stop a status line that overran, with whatever it started."""
+
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+                check=False,
+            )
+        process.kill()
+    except Exception:
+        pass
+
+
 def _run_user(command, raw, cwd):
+    """Run a status line and return what it wrote, or nothing if it overran.
+
+    Input and output are files, not pipes. A pipe is held open by anything
+    the command started, so waiting to drain one after the command is
+    stopped waits for every such descendant to exit; waiting on the process
+    alone keeps the budget.
+    """
+
     environment = dict(os.environ)
     environment[RELAY_MARKER] = "1"
     argv = _shell(command)
     try:
-        result = subprocess.run(
-            argv,
-            input=raw,
-            capture_output=True,
-            cwd=cwd,
-            env=environment,
-            shell=isinstance(argv, str),
-            timeout=_INNER_TIMEOUT_SECONDS,
-            check=False,
-        )
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as scratch:
+            source = Path(scratch) / "in"
+            target = Path(scratch) / "out"
+            source.write_bytes(raw)
+            with open(source, "rb") as stdin, open(target, "wb") as stdout:
+                process = subprocess.Popen(
+                    argv,
+                    stdin=stdin,
+                    stdout=stdout,
+                    stderr=subprocess.DEVNULL,
+                    cwd=cwd,
+                    env=environment,
+                    shell=isinstance(argv, str),
+                )
+                try:
+                    process.wait(timeout=_INNER_TIMEOUT_SECONDS)
+                except subprocess.TimeoutExpired:
+                    _stop(process)
+                    return b""
+            return target.read_bytes()
     except Exception:
         return b""
-    return result.stdout
 
 
 def relay_status_line(raw):
@@ -199,14 +247,13 @@ def relay_status_line(raw):
     if os.environ.get(RELAY_MARKER):
         return b""
     cwd = None
-    chained = None
+    payload = None
     try:
         payload = json.loads(raw)
         if isinstance(payload, dict):
-            chained = _chained_command(payload)
             directory = payload.get("cwd")
-            if isinstance(directory, str) and Path(directory).is_dir():
-                cwd = directory
+            if isinstance(directory, str) and Path(_native(directory)).is_dir():
+                cwd = _native(directory)
             context = payload.get("context_window")
             size = (
                 context.get("context_window_size")
@@ -217,6 +264,10 @@ def relay_status_line(raw):
                 record_window(payload.get("transcript_path"), size)
     except Exception:
         pass
+    try:
+        chained = _chained_command(payload)
+    except Exception:
+        chained = None
     command = chained or _command_in(_config_directory() / "settings.json")
     return b"" if command is None else _run_user(command, raw, cwd)
 
