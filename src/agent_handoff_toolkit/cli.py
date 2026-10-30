@@ -539,8 +539,20 @@ def main(argv: Sequence[str] | None = None) -> int:
 
             source = getattr(sys.stdin, "buffer", None)
             raw = read_input(source) if source is not None else b""
-            sys.stdout.write(relay_status_line(raw).decode("utf-8", "replace"))
-            sys.stdout.flush()
+            output = relay_status_line(raw)
+            # The status line's bytes go out exactly as it wrote them. A text
+            # stream translates "\n" on Windows, adding a carriage return to
+            # every row, so the process's own binary stream is used - past the
+            # runner's capture, which exists to keep a hook to one response
+            # and has nothing to protect here.
+            real = getattr(sys.__stdout__, "buffer", None)
+            if real is not None:
+                sys.__stdout__.flush()
+                real.write(output)
+                real.flush()
+            else:
+                sys.stdout.write(output.decode("utf-8", "replace"))
+                sys.stdout.flush()
         except Exception:
             pass
         return 0

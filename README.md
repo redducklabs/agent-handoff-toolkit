@@ -6,7 +6,13 @@ This repository provides a shared contract, deterministic validation and renderi
 
 ## Status
 
-Version 1.5.1 lets the context-window relay coexist with a project's own status
+Version 1.5.2 makes the status-line relay's output byte-for-byte what the
+status line it runs wrote. On Windows it went through a text stream, which
+added a carriage return to every row; it is now written to the binary stream.
+The managed `statusLine` also sets `padding: 0`, so the relay adds no
+indentation of its own.
+
+Version 1.5.1 let the context-window relay coexist with a project's own status
 line. Claude Code has one project `statusLine`, and 1.5.0's sync refused to
 install the relay where a consumer already used it. Install and sync now move
 an existing project `statusLine`, unchanged, to the consumer-owned
@@ -367,16 +373,16 @@ disposable consumer can be installed from a verified local release source.
 
 ## Consumer installation
 
-Check out the public v1.5.1 release, inspect the proposed changes, then apply
+Check out the public v1.5.2 release, inspect the proposed changes, then apply
 them from that checkout:
 
 ```powershell
-git clone --branch v1.5.1 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
+git clone --branch v1.5.2 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
 Set-Location agent-handoff-toolkit
-python distribution/runner.py install --target <consumer-repository> --release v1.5.1 --dry-run
-python distribution/runner.py install --target <consumer-repository> --release v1.5.1 --apply
-python distribution/runner.py sync --target <consumer-repository> --release v1.5.1 --check
-python distribution/runner.py sync --target <consumer-repository> --release v1.5.1 --apply
+python distribution/runner.py install --target <consumer-repository> --release v1.5.2 --dry-run
+python distribution/runner.py install --target <consumer-repository> --release v1.5.2 --apply
+python distribution/runner.py sync --target <consumer-repository> --release v1.5.2 --check
+python distribution/runner.py sync --target <consumer-repository> --release v1.5.2 --apply
 ```
 
 Run install and sync only in an isolated, clean Git worktree with no concurrent
