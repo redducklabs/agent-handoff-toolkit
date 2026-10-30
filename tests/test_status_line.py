@@ -148,6 +148,29 @@ class StatusLineRelayTests(unittest.TestCase):
         self.assertEqual(result.stdout, f"inner:{len(raw)}".encode())
         self.assertEqual(reported_window(self.transcript), 1_000_000)
 
+    def test_the_runner_returns_the_status_lines_bytes_exactly(self):
+        """Rows keep their own line endings: no carriage return is added."""
+
+        for ending, escaped in ((b"\r\n", "\\r\\n"), (b"\n", "\\n")):
+            with self.subTest(ending=ending):
+                self.user_status_line(
+                    f'"{Path(sys.executable).as_posix()}" -c "import sys; '
+                    f"sys.stdout.buffer.write(b'one{escaped}two{escaped}')\""
+                )
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        str(ROOT / "distribution" / "runner.py"),
+                        "statusline",
+                    ],
+                    input=self.payload(),
+                    capture_output=True,
+                    check=False,
+                    cwd=self.root,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, b"one" + ending + b"two" + ending)
+
     def test_the_claude_fragment_installs_the_relay(self):
         fragment = json.loads(
             (ROOT / "adapters" / "claude" / "settings.fragment.json").read_text(
@@ -159,6 +182,9 @@ class StatusLineRelayTests(unittest.TestCase):
         hook = fragment["hooks"]["Stop"][0]["hooks"][0]["command"]
         locator = hook.split(" hook --platform")[0]
         self.assertEqual(status_line["command"], locator + " statusline")
+        # The relay draws whatever it stands in front of, so it adds no
+        # padding of its own.
+        self.assertEqual(status_line["padding"], 0)
 
 
 if __name__ == "__main__":
