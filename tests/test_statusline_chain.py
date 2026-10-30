@@ -193,6 +193,26 @@ class StatusLineChainTests(unittest.TestCase):
                 raw = json.dumps({"cwd": str(self.consumer)}).encode()
                 self.assertEqual(relay_status_line(raw), f"user:{len(raw)}".encode())
 
+    def test_an_unreadable_payload_still_finds_the_chain_from_its_directory(self):
+        """Without a readable payload the relay looks from where it runs."""
+
+        self.chain.write_text(json.dumps({"statusLine": self.own}), encoding="utf-8")
+        nested = self.consumer / "app"
+        nested.mkdir()
+        previous = os.getcwd()
+        os.chdir(nested)
+        self.addCleanup(os.chdir, previous)
+        for raw in (b"not json", b"[1]", b"{}"):
+            with self.subTest(raw=raw):
+                self.assertEqual(relay_status_line(raw), f"project:{len(raw)}".encode())
+
+    @unittest.skipUnless(os.name == "nt", "Git Bash paths exist only on Windows")
+    def test_a_git_bash_path_finds_the_chain(self):
+        self.chain.write_text(json.dumps({"statusLine": self.own}), encoding="utf-8")
+        drive, rest = self.consumer.as_posix().split(":", 1)
+        raw = json.dumps({"cwd": f"/{drive.lower()}{rest}"}).encode()
+        self.assertEqual(relay_status_line(raw), f"project:{len(raw)}".encode())
+
 
 if __name__ == "__main__":
     unittest.main()

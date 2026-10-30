@@ -9,12 +9,14 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from agent_handoff_toolkit import context_window  # noqa: E402
 from agent_handoff_toolkit.context_window import (  # noqa: E402
     record_window,
     relay_status_line,
@@ -116,6 +118,38 @@ class StatusLineRelayTests(unittest.TestCase):
         with patch.dict(os.environ, {"AHK_STATUSLINE_RELAY": "1"}):
             self.assertEqual(relay_status_line(self.payload()), b"")
         self.assertIsNone(reported_window(self.transcript))
+
+    def test_a_stalled_status_line_is_abandoned_on_time(self):
+        """A grandchild holding the output open must not hold the relay.
+
+        Killing the shell leaves its children running. Waiting for a pipe
+        they still hold open used to keep the relay - and the status bar -
+        blank until they exited, long after the budget.
+        """
+
+        python = Path(sys.executable).as_posix()
+        self.user_status_line(
+            f'"{python}" -c "import subprocess, sys, time; '
+            "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(8)']); "
+            "sys.stdout.write('partial'); sys.stdout.flush(); time.sleep(8)\""
+        )
+        with patch("agent_handoff_toolkit.context_window._INNER_TIMEOUT_SECONDS", 1):
+            started = time.monotonic()
+            output = relay_status_line(self.payload())
+            elapsed = time.monotonic() - started
+        self.assertEqual(output, b"")
+        self.assertLess(elapsed, 5)
+        # The window is still recorded: that never waits on the status line.
+        self.assertEqual(reported_window(self.transcript), 1_000_000)
+
+    def test_the_budget_leaves_room_for_a_chained_fallback(self):
+        """A chained status line may itself wait 10 seconds on the user's.
+
+        The relay's budget exceeds that, so the chained command can still
+        print its own fallback instead of being cut off first.
+        """
+
+        self.assertGreaterEqual(context_window._INNER_TIMEOUT_SECONDS, 15)
 
     def test_a_failing_user_status_line_yields_its_output_and_no_error(self):
         self.user_status_line("exit 3")
