@@ -2,8 +2,10 @@
 
 Claude Code reports a session's window size to the status line command and to
 nothing a hook receives. The managed status line is this relay: it records the
-reported size for the session's transcript, then runs the user's own status
-line with the same input and returns its output unchanged.
+reported size for the session's transcript, then runs the status line it
+stands in front of with the same input and returns its output unchanged. That
+is the project's own, which install and sync move to `CHAIN_RELATIVE_PATH`
+when they find one, else the user's own from their user settings.
 
 The cache holds one number per transcript, under a file name that is a digest
 of the transcript path. No path, prompt, reply or other payload content is
@@ -23,6 +25,8 @@ import time
 # Set for the user's own status line, so a relay reached again through it
 # neither records nor runs anything a second time.
 RELAY_MARKER = "AHK_STATUSLINE_RELAY"
+# The consumer-owned home of a project status line the relay displaced.
+CHAIN_RELATIVE_PATH = ".claude/agent-handoff-statusline.json"
 MAX_WINDOW = 10**9
 _MAX_INPUT = 1024 * 1024
 _INNER_TIMEOUT_SECONDS = 10
@@ -116,13 +120,11 @@ def _config_directory():
     return Path(configured) if configured else Path.home() / ".claude"
 
 
-def _user_command():
-    """Return the user's own status line command, or None."""
+def _command_in(path):
+    """Return the `statusLine` command a settings-shaped file names, or None."""
 
     try:
-        settings = json.loads(
-            (_config_directory() / "settings.json").read_text(encoding="utf-8")
-        )
+        settings = json.loads(path.read_text(encoding="utf-8"))
         status_line = settings.get("statusLine")
         command = status_line.get("command")
         if status_line.get("type", "command") != "command":
@@ -130,6 +132,34 @@ def _user_command():
         return command if isinstance(command, str) and command.strip() else None
     except Exception:
         return None
+
+
+def _chained_command(payload):
+    """Return the project status line chained behind the relay, or None.
+
+    Looked for from the project directory and the working directory the host
+    reports, up to the enclosing repository root.
+    """
+
+    starts = []
+    workspace = payload.get("workspace")
+    if isinstance(workspace, dict):
+        starts.append(workspace.get("project_dir"))
+    starts.append(payload.get("cwd"))
+    for start in starts:
+        if not isinstance(start, str) or not start.strip():
+            continue
+        try:
+            directory = Path(start).resolve()
+        except (OSError, ValueError):
+            continue
+        for candidate in (directory, *directory.parents):
+            chain = candidate / Path(*CHAIN_RELATIVE_PATH.split("/"))
+            if chain.is_file():
+                return _command_in(chain)
+            if (candidate / ".git").exists():
+                break
+    return None
 
 
 def _shell(command):
@@ -169,9 +199,11 @@ def relay_status_line(raw):
     if os.environ.get(RELAY_MARKER):
         return b""
     cwd = None
+    chained = None
     try:
         payload = json.loads(raw)
         if isinstance(payload, dict):
+            chained = _chained_command(payload)
             directory = payload.get("cwd")
             if isinstance(directory, str) and Path(directory).is_dir():
                 cwd = directory
@@ -185,7 +217,7 @@ def relay_status_line(raw):
                 record_window(payload.get("transcript_path"), size)
     except Exception:
         pass
-    command = _user_command()
+    command = chained or _command_in(_config_directory() / "settings.json")
     return b"" if command is None else _run_user(command, raw, cwd)
 
 

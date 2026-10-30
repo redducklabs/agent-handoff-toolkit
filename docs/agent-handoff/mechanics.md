@@ -258,8 +258,10 @@ can error: any failure produces no message.
   `PreToolUse` reads numbers only from the last 512 KiB of `transcript_path`:
   the newest main-thread usage, against `AHK_CONTEXT_WINDOW_TOKENS`, else the
   window the host reports - Codex's `model_context_window`, or the size Claude
-  Code gives the managed `statusLine` relay. It never infers a window from a
-  model id or a count; with none it is silent. At 80% it asks once, on
+  Code gives the managed `statusLine` relay, which then runs the project's own
+  status line from `.claude/agent-handoff-statusline.json`, else the user's.
+  It never infers a window from a model id or a count; with none it is
+  silent. At 80% it asks once, on
   `additionalContext`, for the continuation handoff, naming tokens, window and
   source, and re-arms after a reading below 50% or a compaction. An ordinary
   call opens state for it only while one of the last five readings is below

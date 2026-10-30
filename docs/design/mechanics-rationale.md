@@ -394,7 +394,14 @@ rollout, so its own transcript is read. Claude Code reports the window only to
 the status line command, never to a hook or the transcript, so the managed
 `statusLine` is a relay: it records that one number per transcript in a
 per-user cache (a file named by a digest of the transcript path) and then runs
-the user's own status line unchanged. The hook reads the cache, which costs a
+the status line it displaced unchanged. Claude Code has one project
+`statusLine`, and three of the first four consumers already used it for
+their own context-health adapter, so 1.5.0's merge refused to install the
+relay there. Since 1.5.1, install and sync move a consumer's own value,
+unchanged, to the consumer-owned `.claude/agent-handoff-statusline.json`
+and the relay runs it, falling back to the user's own status line. Nothing
+the consumer wrote is lost or rewritten, and the toolkit never owns that
+file. The hook reads the cache, which costs a
 file open, not a state load. With no reported window and no
 `AHK_CONTEXT_WINDOW_TOKENS`, the advisory is silent and the skill tells the
 model to act on its own context reporting. The notice names the tokens, the
