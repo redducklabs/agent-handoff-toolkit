@@ -13,6 +13,7 @@ import tempfile
 from typing import Literal
 import uuid
 
+from .context_window import CHAIN_RELATIVE_PATH
 from .manifest import (
     Artifact,
     load_manifest,
@@ -172,6 +173,60 @@ def _precondition_conflict(
         (Conflict(STATE_RELATIVE_PATH.as_posix(), code, message),),
         None,
     )
+
+
+def _chain_status_line(
+    current: dict[str, object],
+    desired: dict[str, object],
+    owned: object | None,
+    target_root: Path,
+) -> tuple[dict[str, object], FileChange | None]:
+    """Move a consumer's own `statusLine` out of the way of the managed relay.
+
+    Claude Code has one project status line. A consumer that already uses it
+    keeps it: the value moves unchanged to a consumer-owned chain file, which
+    the relay runs, and the managed relay takes the slot. A value the toolkit
+    owned is left to the ordinary ownership merge.
+    """
+
+    desired_line = desired.get("statusLine")
+    current_line = current.get("statusLine", _MISSING_KEY)
+    owned_line = owned.get("statusLine") if isinstance(owned, dict) else None
+    if (
+        desired_line is None
+        or current_line is _MISSING_KEY
+        or current_line == desired_line
+        or owned_line is not None
+    ):
+        return current, None
+    if not isinstance(current_line, dict):
+        raise OperationConflict(
+            "statusline-chain-conflict",
+            "existing statusLine is not an object and cannot be chained",
+        )
+    content = {"statusLine": current_line}
+    chain = _target_path(target_root, PurePosixPath(CHAIN_RELATIVE_PATH))
+    before = _read_target(chain)
+    if before is not None:
+        if _parse_json(before, label="status line chain") != content:
+            raise OperationConflict(
+                "statusline-chain-conflict",
+                f"{CHAIN_RELATIVE_PATH} already chains a different status line",
+            )
+        change = None
+    else:
+        change = FileChange(
+            chain,
+            CHAIN_RELATIVE_PATH,
+            None,
+            _render_json(content, b"\n"),
+            "statusline-chain",
+        )
+    remaining = {key: value for key, value in current.items() if key != "statusLine"}
+    return remaining, change
+
+
+_MISSING_KEY = object()
 
 
 def build_plan(
@@ -429,6 +484,12 @@ def build_plan(
                     identity.pointer: identity.fields
                     for identity in artifact.array_identities
                 }
+                current_json, chain_change = _chain_status_line(
+                    current_json,
+                    desired_json,
+                    old.owned_fragment if old is not None else None,
+                    target,
+                )
                 merged = merge_json_fragment(
                     current_json,
                     desired_json,
@@ -437,6 +498,8 @@ def build_plan(
                 )
                 after = _render_json(merged, _newline_for(before or b""))
                 owned_fragment = desired_json
+                if chain_change is not None:
+                    changes.append(chain_change)
             else:
                 raise OperationConflict(
                     "unsupported-mode",

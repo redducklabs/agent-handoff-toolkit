@@ -14,12 +14,12 @@ Run installation from an inspectable checkout of the public release rather than
 from a network downloader:
 
 ```powershell
-git clone --branch v1.5.0 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
+git clone --branch v1.5.1 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
 Set-Location agent-handoff-toolkit
-python distribution/runner.py install --target <consumer-repository> --release v1.5.0 --dry-run
-python distribution/runner.py install --target <consumer-repository> --release v1.5.0 --apply
-python distribution/runner.py sync --target <consumer-repository> --release v1.5.0 --check
-python distribution/runner.py sync --target <consumer-repository> --release v1.5.0 --apply
+python distribution/runner.py install --target <consumer-repository> --release v1.5.1 --dry-run
+python distribution/runner.py install --target <consumer-repository> --release v1.5.1 --apply
+python distribution/runner.py sync --target <consumer-repository> --release v1.5.1 --check
+python distribution/runner.py sync --target <consumer-repository> --release v1.5.1 --apply
 ```
 
 Run install and sync only in an isolated, clean Git worktree. Confirm the
@@ -62,12 +62,16 @@ identity-colliding owned content instead of overwriting it.
 
 The Claude settings include a project `statusLine`: a relay that records the
 context window Claude Code reports for the session (one number per transcript,
-in a per-user cache) and then runs the user's own `statusLine` from their user
-settings with the same input, returning its output unchanged. Claude Code
+in a per-user cache) and then runs the status line it stands in front of with the same
+input, returning its output unchanged. Claude Code
 reports its window to the status line and to no hook, so without the relay
 `AHK-CONTEXT-HIGH` stays silent on Claude Code unless
 `AHK_CONTEXT_WINDOW_TOKENS` is set. A project that already defines its own
-`statusLine` gets an installer conflict; a `statusLine` in
+`statusLine` keeps it: install and sync move that value, unchanged, to the
+consumer-owned `.claude/agent-handoff-statusline.json`, and the relay runs it
+in place of the user's status line. To change it later, edit that file, not
+`.claude/settings.json`. If the file already holds a different status line,
+sync reports `statusline-chain-conflict`. A `statusLine` in
 `.claude/settings.local.json` takes precedence and bypasses the relay.
 
 Every handoff record that existed before the current pinned release was adopted
@@ -252,7 +256,7 @@ Before bulk adoption, select one repository with mature handoffs and one with li
 1. Inventory local instructions, hook and skill configuration, and tracker
    conventions. Count or locate historical handoff storage only if needed to
    protect it; do not open the records.
-2. Run the v1.5.0 installer in dry-run mode from its release checkout.
+2. Run the v1.5.1 installer in dry-run mode from its release checkout.
 3. Review the proposed instruction and hook merges.
 4. Apply on a branch. Treat every record that predates this adoption as
    deprecated by policy without marking, reading, or rewriting individual files.
