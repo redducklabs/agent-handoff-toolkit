@@ -6,6 +6,7 @@ import errno
 import hashlib
 import json
 import os
+import shlex
 import shutil
 from pathlib import Path
 import subprocess
@@ -2052,6 +2053,181 @@ class EnforcementTests(unittest.TestCase):
                     self.invoke(last_assistant_message=message), "AHK-STOP-WORK"
                 )
                 self.invoke("UserPromptSubmit", turn_id="reset-" + str(len(message)))
+
+    def test_waiting_on_the_user_ends_a_host_started_turn(self):
+        """The only remaining step can be the user's, outside the session.
+
+        A session waiting on the user's staging testing had every CI notice
+        and side-session report blocked: `reply` is refused after a host turn,
+        so its only honest-looking endings were a false "Waiting on
+        background work" line or a handoff written at low context.
+        """
+
+        self.register()
+        line = self.progress_line("user")
+        self.assertTrue(line.startswith('Waiting on you for "'))
+        for index, origin in enumerate(("host", "user")):
+            with self.subTest(origin=origin):
+                if origin == "host":
+                    self.host_prompt("host-" + str(index))
+                else:
+                    self.invoke("UserPromptSubmit", turn_id="user-" + str(index))
+                self.assertEqual(
+                    self.storage.load_snapshot("session-1").session.turn_origin,
+                    origin,
+                )
+                self.assertEqual(
+                    self.invoke(host="claude", last_assistant_message=line),
+                    HookExecution(),
+                )
+                session = self.storage.load_snapshot("session-1").session
+                self.assertIs(session.mode, EnforcementMode.TRACKED)
+                self.assertTrue(session.last_stop_was_progress)
+
+    def test_a_turn_may_explain_itself_before_ending_on_a_progress_line(self):
+        """Requiring the whole message to be the line forbade any explanation.
+
+        The line still has to stand alone as the final line, byte-exact, so
+        what ended the turn and why is checked exactly as before.
+        """
+
+        self.register()
+        preamble = "Deployed to staging.\n\nThe smoke test passed; the rest is yours.\n"
+        for index, reason in enumerate(("user", "ci", "background-work")):
+            with self.subTest(reason=reason):
+                self.host_prompt("host-" + str(index))
+                message = preamble + "\n" + self.progress_line(reason)
+                self.assertEqual(
+                    self.invoke(host="claude", last_assistant_message=message),
+                    HookExecution(),
+                )
+                self.assertEqual(
+                    self.invoke(
+                        host="claude",
+                        last_assistant_message=message.replace("\n", "\r\n") + "\r\n",
+                    ),
+                    HookExecution(),
+                )
+        self.invoke("UserPromptSubmit", turn_id="user-2", prompt="Status?")
+        self.assertEqual(
+            self.invoke(
+                host="claude", last_assistant_message=preamble + self.progress_line()
+            ),
+            HookExecution(),
+        )
+
+    def test_a_trailing_line_may_carry_a_root_title_that_spans_lines(self):
+        self.register()
+        state = self.storage.load_snapshot("session-1")
+        self.storage.compare_and_swap(
+            "session-1",
+            state.chain.targeted_revision,
+            state.session.targeted_revision,
+            LifecycleMutation(
+                replace(
+                    state.session,
+                    targeted_revision=state.session.targeted_revision + 1,
+                    chain_revision=state.chain.targeted_revision + 1,
+                ),
+                replace(
+                    state.chain,
+                    root_title="Ship it\nsafely",
+                    targeted_revision=state.chain.targeted_revision + 1,
+                ),
+            ),
+        )
+        line = self.progress_line("user")
+        self.assertIn("Ship it\nsafely", line)
+        self.host_prompt()
+        self.assertEqual(
+            self.invoke(host="claude", last_assistant_message="Over to you.\n" + line),
+            HookExecution(),
+        )
+
+    def test_a_trailing_line_keeps_every_other_check(self):
+        self.register()
+        self.host_prompt()
+        result = self.invoke(
+            host="claude",
+            last_assistant_message="Answered.\n" + self.progress_line(),
+        )
+        self.assert_block(result, "AHK-STOP-WORK")
+        self.assertIn("failed=reply-host-turn", json.loads(result.stdout)["reason"])
+        for index, message in enumerate(
+            (
+                self.progress_line("user") + "\nOne more thing.",
+                "Done. " + self.progress_line("user"),
+                "Note:\n  " + self.progress_line("user"),
+                "Note:\n" + self.progress_line("user") + " Soon.",
+                "Note:\n" + self.progress_line("user").replace("you", "them"),
+            )
+        ):
+            with self.subTest(message=message[:40]):
+                self.invoke("UserPromptSubmit", turn_id="reset-" + str(index))
+                self.assert_block(
+                    self.invoke(host="claude", last_assistant_message=message),
+                    "AHK-STOP-WORK",
+                )
+
+    def test_a_decision_registers_from_a_claude_bash_call_with_no_stdin(self):
+        """The Claude Code Bash tool provides no stdin.
+
+        `request-decision` read its question only from stdin, and the binding
+        hook rejects the `<` or `|` that would supply one, so a decision could
+        not be registered from Claude Code at all. The question is now an
+        argument the binding admits, and the response still verifies at Stop.
+        """
+
+        self.register()
+        self.service.inspect()
+        state = self.storage.load_snapshot("session-1")
+        session = state.session
+        runner = (self.root / ".agent-handoff-toolkit" / "runner.py").as_posix()
+        question = "Did the staging test of the café flow pass, or what failed?"
+        command = (
+            f"python {runner} lifecycle request-decision"
+            f" --session-key {session.session_key}"
+            f" --challenge {self.storage.control_capability(session)}"
+            " --category missing-input --blocked-action-field target"
+            " --blocked-action-value release"
+            " --reason 'Only you can test staging.'"
+            f" --question '{question}'"
+            f" --expected-chain-revision {state.chain.targeted_revision}"
+            f" --expected-session-revision {session.targeted_revision}"
+        )
+        self.assertEqual(
+            self.invoke("PreToolUse", host="claude", tool_input={"command": command}),
+            HookExecution(),
+        )
+        arguments = shlex.split(command)
+        self.assertEqual(arguments[:3], ["python", runner, "lifecycle"])
+        result = subprocess.run(
+            [sys.executable, "-m", "agent_handoff_toolkit", *arguments[2:]],
+            cwd=ROOT,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            check=False,
+            env={
+                **os.environ,
+                "PYTHONPATH": str(ROOT / "src"),
+                "PYTHONIOENCODING": "cp1252",
+                "AHK_STATE_ROOT": str(self.root / "state"),
+            },
+        )
+        self.assertEqual((result.returncode, result.stderr), (0, b""))
+        response = result.stdout.decode("utf-8").replace("\r\n", "\n")
+        self.assertIn(f"Decision needed: {question}\n", response)
+        self.assertNotIn(
+            question.encode("utf-8"), self.storage.registry_path.read_bytes()
+        )
+        self.assertIs(
+            self.storage.load_snapshot("session-1").session.mode,
+            EnforcementMode.AWAITING_DECISION,
+        )
+        self.assertEqual(
+            self.invoke(host="claude", last_assistant_message=response),
+            HookExecution(),
+        )
 
     def test_the_progress_line_names_the_last_handoff(self):
         self.register()

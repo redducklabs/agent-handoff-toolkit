@@ -1768,7 +1768,7 @@ def render_tail(record_path: str | os.PathLike[str], text: str) -> str:
     return _audit_tail(data, absolute_path)
 
 
-PROGRESS_REASONS = ("background-work", "ci", "other-session", "reply")
+PROGRESS_REASONS = ("background-work", "ci", "other-session", "user", "reply")
 
 
 def render_progress_responses(
@@ -1784,6 +1784,9 @@ def render_progress_responses(
     and only `reply` - an answer to the user's own message - asks the user to
     say "continue". A single reasonless line invited exactly that prompt on
     every wait, and served as an idle pause while executable work remained.
+    `user` is the wait on something only the user can do outside the session,
+    such as testing on staging; unlike `reply` it is true after a turn the
+    host started.
     """
 
     title = str(root_title).strip() or "this work"
@@ -1796,6 +1799,8 @@ def render_progress_responses(
         f"reports. {last}",
         "other-session": f'Waiting on another session for "{title}". '
         f"This session resumes when it replies. {last}",
+        "user": f'Waiting on you for "{title}". '
+        f"This session resumes when you reply. {last}",
         "reply": f'Replied to your message about "{title}". {last} '
         'Say "continue" to keep going, or ask for a handoff.',
     }

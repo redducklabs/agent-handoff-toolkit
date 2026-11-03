@@ -149,7 +149,7 @@ def _configure_output_encoding() -> None:
             reconfigure(encoding="utf-8", errors="strict")
 
 
-def _read_stdin(limit: int, *, strict: bool = False) -> str:
+def _read_stdin(limit: int) -> str:
     """Read at most `limit` bytes of stdin as the UTF-8 the hosts write.
 
     The text layer of a piped stdin decodes with the console code page - cp1252
@@ -157,18 +157,18 @@ def _read_stdin(limit: int, *, strict: bool = False) -> str:
     such as the 0x8F in `●`, into an error or a lone surrogate and garbles every
     other non-ASCII character. The bytes are read below that layer instead.
 
-    With `strict`, bytes that are not UTF-8 raise here. Otherwise they are
-    carried as lone surrogates, so a hook's own input reader - which encodes
-    the text strictly to bound it - rejects them and reports that under its
-    stage and failure policy instead of this boundary's. A stream with no byte
-    layer, such as an in-memory test double, is read as text.
+    Bytes that are not UTF-8 are carried as lone surrogates, so a hook's own
+    input reader - which encodes the text strictly to bound it - rejects them
+    and reports that under its stage and failure policy instead of this
+    boundary's. A stream with no byte layer, such as an in-memory test double,
+    is read as text.
     """
 
     buffer = getattr(sys.stdin, "buffer", None)
     if buffer is None:
         return sys.stdin.read(limit)
     data = buffer.read(limit)
-    return data.decode("utf-8", errors="strict" if strict else "surrogateescape")
+    return data.decode("utf-8", errors="surrogateescape")
 
 
 class _LifecycleParser(argparse.ArgumentParser):
@@ -230,8 +230,11 @@ def _lifecycle_parser():
     proposal.add_argument("--record-sha256")
     decision = commands.add_parser(
         "request-decision",
-        help="render a decision using only the model-authored question on stdin",
+        help="render a decision from the model-authored --question",
     )
+    # An argument, not stdin: the Claude Code Bash tool provides no stdin, and
+    # the binding interception denies the `<` or `|` that would supply one.
+    decision.add_argument("--question", required=True)
     decision.add_argument("--category", required=True)
     decision.add_argument("--blocked-action-field", required=True)
     decision.add_argument("--blocked-action-value", required=True)
@@ -386,12 +389,8 @@ def _lifecycle_main(argv):
         elif operation == "one-off":
             result = service.one_off(**args)
         elif operation == "request-decision":
-            # The question is bounded to 400 UTF-8 bytes, so 401 bytes is
-            # enough to see an overrun; bytes that are not UTF-8 are input
-            # errors.
-            response = service.request_decision(
-                question=_read_stdin(401, strict=True), **args
-            )
+            # The service bounds the question to 400 UTF-8 bytes.
+            response = service.request_decision(**args)
             sys.stdout.write(response + "\n")
             return 0
         else:

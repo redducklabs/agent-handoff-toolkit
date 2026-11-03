@@ -120,14 +120,17 @@ While executable work remains, keep working; a turn never ends as an idle
 pause. A tracked turn that cannot continue yet does not need a record. One
 that waits on background work, CI or another session ends on the exact
 `background-work`, `ci` or `other-session` line from `progress_responses` in
-`lifecycle inspect`, and the session resumes when that work reports. One that
-answers the user's own message may end on the `reply` line, which is refused
-after a turn the host started, such as a task notification or another
-session's message. Any other record-less message is blocked. A session that
-ends on one of these lines is reported to the user, so use them to wait, not
-to conclude.
+`lifecycle inspect`, and the session resumes when that work reports. One whose
+only remaining step is the user's own, such as testing on staging, ends on the
+`user` line, after any turn, including one the host started; never write a
+handoff or claim a background wait for that. One that answers the user's own
+message may end on the `reply` line, which is refused after a turn the host
+started, such as a task notification or another session's message. The line
+is the message's last line, exact and on its own; explain what you need before
+it. Any other record-less message is blocked. A session that ends on one of
+these lines is reported to the user, so use them to wait, not to conclude.
 
-If progress genuinely requires user authority, register a legitimate decision request rather than asking whether to continue or stop. A decision request must name the blocked exact action and recognized authority category; it does not change the authorized root.
+If progress genuinely requires user authority, register a legitimate decision request rather than asking whether to continue or stop. A decision request must name the blocked exact action and recognized authority category; it does not change the authorized root. Pass the question as one quoted argument, `--question '<at most 400 bytes>'`; the command reads no stdin, and the hook denies a pipe or redirection into it.
 
 Comply with corrective Stop feedback. Blocking feedback names the failed checks after `failed=`. The attempted message may already be displayed before correction, but that display is not a compliant terminal outcome. Make the minimal correction, then send only the renderer-only terminal response required by the current tracked state.
 

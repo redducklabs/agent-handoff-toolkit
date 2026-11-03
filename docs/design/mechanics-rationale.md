@@ -160,6 +160,32 @@ Only `reply` asks the user to say "continue", and it is accepted only after a
 turn the user started: a task notification or a peer's message is nobody to
 reply to. `AHK-STOP-WORK` says so: executable work remains, so keep working.
 
+Those four lines left one honest wait without a line. A session whose only
+remaining step was the user's own testing on staging saw every CI notice and
+side-session report blocked: `reply` is refused after a host turn, so it could
+end only on a false "Waiting on background work" or with a handoff, and one
+turn wrote a handoff at 20% context to satisfy the hook. Since 1.6.0 the
+`user` line, `Waiting on you`, ends any turn. A decision request was the
+alternative and was not chosen: there is nothing to decide, a pending
+decision makes every later turn re-render the same question, and a host turn
+can never answer it. The line widens nothing: a false wait line was already
+accepted after any turn, so this only gives the true one a name.
+
+The line was also the whole message, which left a waiting session unable to
+say what it was waiting for. Since 1.6.0 it need only be the last line,
+exact and alone. The check is the same - the reason is read from that line,
+and `reply` after a host turn is still refused - and record responses keep
+their byte-exact rule, because their HMAC and lineage checks read the whole
+message.
+
+`lifecycle request-decision` read its question only from stdin. The Claude
+Code Bash tool provides none, and the control interception denies the `<` or
+`|` that would supply it as a compound command, so no decision could be
+registered from Claude Code. The question is now a `--question` argument,
+bounded to 400 UTF-8 bytes as before and stored only as its HMAC. The
+interception masks quoted text, so prose in a quoted argument does not make
+the command compound.
+
 The host marks none of its own turns. `UserPromptSubmit` fires for a task
 notification or a cross-session message exactly as for the user, so the turn
 origin is read from the prompt's opening, by exact prefixes on the stripped

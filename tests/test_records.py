@@ -1869,7 +1869,8 @@ class ProgressResponseTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            PROGRESS_REASONS, ("background-work", "ci", "other-session", "reply")
+            PROGRESS_REASONS,
+            ("background-work", "ci", "other-session", "user", "reply"),
         )
         lines = render_progress_responses("Ship it", "/repo/handoffs/a.md")
         self.assertEqual(
@@ -1882,6 +1883,9 @@ class ProgressResponseTests(unittest.TestCase):
                 "reports. Last handoff: /repo/handoffs/a.md.",
                 "other-session": 'Waiting on another session for "Ship it". '
                 "This session resumes when it replies. "
+                "Last handoff: /repo/handoffs/a.md.",
+                "user": 'Waiting on you for "Ship it". '
+                "This session resumes when you reply. "
                 "Last handoff: /repo/handoffs/a.md.",
                 "reply": 'Replied to your message about "Ship it". '
                 "Last handoff: /repo/handoffs/a.md. "
