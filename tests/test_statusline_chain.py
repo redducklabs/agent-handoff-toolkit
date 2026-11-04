@@ -8,6 +8,7 @@ the relay runs in place of the user's own status line.
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -18,6 +19,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from agent_handoff_toolkit.context_window import (  # noqa: E402
     CHAIN_RELATIVE_PATH,
+    RUNNER_RELATIVE_PATH,
     relay_status_line,
     reported_window,
 )
@@ -81,6 +83,35 @@ class StatusLineChainTests(unittest.TestCase):
 
     def settings_json(self):
         return json.loads(self.settings.read_text(encoding="utf-8"))
+
+    def place_runner(self, root):
+        """Mark `root` as an install: the runner the managed command walks to."""
+
+        runner = root / Path(*RUNNER_RELATIVE_PATH.split("/"))
+        runner.parent.mkdir(parents=True, exist_ok=True)
+        runner.write_text("", encoding="utf-8")
+
+    def user_status_line(self):
+        (self.root / "config" / "settings.json").write_text(
+            json.dumps({"statusLine": {"type": "command", "command": echo("user")}}),
+            encoding="utf-8",
+        )
+
+    def hostile_chain(self, directory):
+        """Ship a chain file in `directory`; return the file its command makes."""
+
+        proof = self.root / f"ran-{directory.name}"
+        command = (
+            f'"{PYTHON}" -c "import pathlib; '
+            f"pathlib.Path('{proof.as_posix()}').write_text('ran')\""
+        )
+        chain = directory / Path(*CHAIN_RELATIVE_PATH.split("/"))
+        chain.parent.mkdir(parents=True, exist_ok=True)
+        chain.write_text(
+            json.dumps({"statusLine": {"type": "command", "command": command}}),
+            encoding="utf-8",
+        )
+        return proof
 
     def test_an_existing_project_status_line_is_chained_not_a_conflict(self):
         self.write_settings({"statusLine": self.own, "model": "opus"})
@@ -157,10 +188,8 @@ class StatusLineChainTests(unittest.TestCase):
         )
 
     def test_the_relay_runs_the_chained_command_before_the_users(self):
-        (self.root / "config" / "settings.json").write_text(
-            json.dumps({"statusLine": {"type": "command", "command": echo("user")}}),
-            encoding="utf-8",
-        )
+        self.user_status_line()
+        self.place_runner(self.consumer)
         self.chain.write_text(json.dumps({"statusLine": self.own}), encoding="utf-8")
         transcript = str(self.root / "transcript.jsonl")
         nested = self.consumer / "app" / "src"
@@ -175,27 +204,28 @@ class StatusLineChainTests(unittest.TestCase):
         ).encode()
         self.assertEqual(relay_status_line(raw), f"project:{len(raw)}".encode())
         self.assertEqual(reported_window(transcript), 1_000_000)
-        # Found from the working directory when no project directory is given.
-        raw = json.dumps({"cwd": str(nested)}).encode()
+        # Found from a project directory beneath the install.
+        raw = json.dumps({"workspace": {"project_dir": str(nested)}}).encode()
         self.assertEqual(relay_status_line(raw), f"project:{len(raw)}".encode())
         # Without a chain file the user's own status line runs.
         self.chain.unlink()
         self.assertEqual(relay_status_line(raw), f"user:{len(raw)}".encode())
 
     def test_a_malformed_chain_file_falls_back_to_the_users(self):
-        (self.root / "config" / "settings.json").write_text(
-            json.dumps({"statusLine": {"type": "command", "command": echo("user")}}),
-            encoding="utf-8",
-        )
+        self.user_status_line()
+        self.place_runner(self.consumer)
         for content in ("not json", "[]", '{"statusLine": {"command": ""}}'):
             with self.subTest(content=content):
                 self.chain.write_text(content, encoding="utf-8")
-                raw = json.dumps({"cwd": str(self.consumer)}).encode()
+                raw = json.dumps(
+                    {"workspace": {"project_dir": str(self.consumer)}}
+                ).encode()
                 self.assertEqual(relay_status_line(raw), f"user:{len(raw)}".encode())
 
     def test_an_unreadable_payload_still_finds_the_chain_from_its_directory(self):
         """Without a readable payload the relay looks from where it runs."""
 
+        self.place_runner(self.consumer)
         self.chain.write_text(json.dumps({"statusLine": self.own}), encoding="utf-8")
         nested = self.consumer / "app"
         nested.mkdir()
@@ -206,11 +236,163 @@ class StatusLineChainTests(unittest.TestCase):
             with self.subTest(raw=raw):
                 self.assertEqual(relay_status_line(raw), f"project:{len(raw)}".encode())
 
+    def test_an_install_puts_the_chain_file_where_the_relay_reads_it(self):
+        self.write_settings({"statusLine": self.own})
+        self.install()
+        raw = json.dumps({"workspace": {"project_dir": str(self.consumer)}}).encode()
+        self.assertEqual(relay_status_line(raw), f"project:{len(raw)}".encode())
+
+    def test_a_chain_file_where_the_session_moved_never_runs(self):
+        """Only the launch directory was trusted; `cwd` follows the session."""
+
+        self.place_runner(self.consumer)
+        self.user_status_line()
+        clone = self.root / "clone"
+        (clone / ".git").mkdir(parents=True)
+        proof = self.hostile_chain(clone)
+        raw = json.dumps(
+            {
+                "cwd": str(clone),
+                "workspace": {
+                    "current_dir": str(clone),
+                    "project_dir": str(self.consumer),
+                },
+            }
+        ).encode()
+        output = relay_status_line(raw)
+        self.assertFalse(proof.exists())
+        self.assertEqual(output, f"user:{len(raw)}".encode())
+
+    def test_the_process_directory_does_not_stand_in_for_the_project(self):
+        """A project with no chain file looks no further than itself."""
+
+        self.place_runner(self.consumer)
+        self.user_status_line()
+        clone = self.consumer / "vendor" / "clone"
+        (clone / ".git").mkdir(parents=True)
+        proof = self.hostile_chain(clone)
+        previous = os.getcwd()
+        os.chdir(clone)
+        self.addCleanup(os.chdir, previous)
+        raw = json.dumps({"workspace": {"project_dir": str(self.consumer)}}).encode()
+        output = relay_status_line(raw)
+        self.assertFalse(proof.exists())
+        self.assertEqual(output, f"user:{len(raw)}".encode())
+
+    def test_an_unreadable_payload_trusts_only_the_runners_directory(self):
+        """A clone inside the project holds no runner, so the walk passes it.
+
+        The managed command runs the first runner above the process's
+        directory. A chain file beside that runner gives nothing it does not
+        already have; one anywhere below it is not the install's.
+        """
+
+        self.place_runner(self.consumer)
+        self.user_status_line()
+        clone = self.consumer / "vendor" / "clone"
+        (clone / ".git").mkdir(parents=True)
+        proof = self.hostile_chain(clone)
+        previous = os.getcwd()
+        os.chdir(clone)
+        self.addCleanup(os.chdir, previous)
+        for raw in (b"not json", b"[1]", b"{}", b'{"cwd": "."}'):
+            with self.subTest(raw=raw):
+                output = relay_status_line(raw)
+                self.assertFalse(proof.exists())
+                self.assertEqual(output, f"user:{len(raw)}".encode())
+
+    def test_a_directory_above_a_project_outside_git_is_not_searched(self):
+        """No `.git` stops the walk here, and the runner must."""
+
+        self.user_status_line()
+        shared = self.root / "shared"
+        project = shared / "project"
+        project.mkdir(parents=True)
+        self.place_runner(project)
+        self.place_runner(shared)
+        proof = self.hostile_chain(shared)
+        raw = json.dumps({"workspace": {"project_dir": str(project)}}).encode()
+        output = relay_status_line(raw)
+        self.assertFalse(proof.exists())
+        self.assertEqual(output, f"user:{len(raw)}".encode())
+
+    def test_a_repository_root_stops_the_walk_to_an_outer_install(self):
+        """Trusting a repository does not extend to the install around it."""
+
+        self.user_status_line()
+        outer = self.root / "outer"
+        repository = outer / "repository"
+        (repository / ".git").mkdir(parents=True)
+        self.place_runner(outer)
+        proof = self.hostile_chain(outer)
+        raw = json.dumps({"workspace": {"project_dir": str(repository)}}).encode()
+        output = relay_status_line(raw)
+        self.assertFalse(proof.exists())
+        self.assertEqual(output, f"user:{len(raw)}".encode())
+
+    def test_the_nearest_install_answers_for_a_nested_one(self):
+        """The chain file belongs to the runner the walk reaches first."""
+
+        self.user_status_line()
+        self.place_runner(self.consumer)
+        proof = self.hostile_chain(self.consumer)
+        package = self.consumer / "package"
+        package.mkdir()
+        self.place_runner(package)
+        raw = json.dumps({"workspace": {"project_dir": str(package)}}).encode()
+        output = relay_status_line(raw)
+        self.assertFalse(proof.exists())
+        self.assertEqual(output, f"user:{len(raw)}".encode())
+
+    @unittest.skipUnless(os.name == "nt", "Only Windows keeps a link in the cwd")
+    def test_the_fallback_walks_the_same_path_as_the_managed_command(self):
+        """A junction must not lead the relay past the runner that ran."""
+
+        self.user_status_line()
+        self.place_runner(self.consumer)
+        hostile = self.root / "hostile"
+        (hostile / "sub").mkdir(parents=True)
+        self.place_runner(hostile)
+        proof = self.hostile_chain(hostile)
+        link = self.consumer / "link"
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(hostile / "sub")],
+            check=True,
+            capture_output=True,
+        )
+        self.addCleanup(os.rmdir, link)
+        previous = os.getcwd()
+        os.chdir(link)
+        self.addCleanup(os.chdir, previous)
+        raw = b"not json"
+        output = relay_status_line(raw)
+        self.assertFalse(proof.exists())
+        self.assertEqual(output, f"user:{len(raw)}".encode())
+
+    def test_a_project_directory_that_cannot_be_used_is_not_replaced(self):
+        """A named project is not swapped for `cwd` or the process's directory."""
+
+        self.user_status_line()
+        proof = self.hostile_chain(self.consumer)
+        self.place_runner(self.consumer)
+        previous = os.getcwd()
+        os.chdir(self.consumer)
+        self.addCleanup(os.chdir, previous)
+        missing = str(self.root / "gone")
+        raw = json.dumps(
+            {"cwd": str(self.consumer), "workspace": {"project_dir": missing}}
+        ).encode()
+        output = relay_status_line(raw)
+        self.assertFalse(proof.exists())
+        self.assertEqual(output, f"user:{len(raw)}".encode())
+
     @unittest.skipUnless(os.name == "nt", "Git Bash paths exist only on Windows")
     def test_a_git_bash_path_finds_the_chain(self):
+        self.place_runner(self.consumer)
         self.chain.write_text(json.dumps({"statusLine": self.own}), encoding="utf-8")
         drive, rest = self.consumer.as_posix().split(":", 1)
-        raw = json.dumps({"cwd": f"/{drive.lower()}{rest}"}).encode()
+        project = f"/{drive.lower()}{rest}"
+        raw = json.dumps({"workspace": {"project_dir": project}}).encode()
         self.assertEqual(relay_status_line(raw), f"project:{len(raw)}".encode())
 
 
