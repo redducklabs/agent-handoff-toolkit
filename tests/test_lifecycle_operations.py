@@ -310,7 +310,7 @@ class OperationsTests(unittest.TestCase):
         self.assertNotIn("progress_response", report)
         self.assertEqual(
             set(report["progress_responses"]),
-            {"background-work", "ci", "other-session", "reply"},
+            {"background-work", "ci", "other-session", "user", "reply"},
         )
 
         # The same command has to work once that chain is finished, and must
@@ -776,7 +776,7 @@ class OperationsTests(unittest.TestCase):
         self.assertEqual(output.count(result["session_key"]), 1)
         self.assertEqual(output.count(result["challenge"]), 1)
 
-    def test_cli_registration_inspect_and_stdin_decision(self):
+    def test_cli_registration_inspect_and_argument_decision(self):
         args = command("register-root").split(" lifecycle ")[1].split()
         args[-1] = "1"
         status, output, errors = self.call_cli(args)
@@ -803,12 +803,13 @@ class OperationsTests(unittest.TestCase):
                 "destination",
                 "--reason",
                 reason,
+                "--question",
+                question,
                 "--expected-chain-revision",
                 "1",
                 "--expected-session-revision",
                 "2",
             ],
-            question,
         )
         self.assertEqual((status, errors), (0, ""))
         self.assertIn(f"Decision needed: {question}", output)
@@ -836,7 +837,7 @@ class OperationsTests(unittest.TestCase):
         self.assertEqual(status, 2)
         self.assertNotIn("private-marker", output + errors)
 
-    def test_cli_decision_rejects_oversized_utf8_stdin_without_persisting(self):
+    def test_cli_decision_rejects_an_oversized_utf8_question_without_persisting(self):
         self.register()
         before = self.storage.registry_path.read_bytes()
         status, output, errors = self.call_cli(
@@ -850,16 +851,45 @@ class OperationsTests(unittest.TestCase):
                 "destination",
                 "--reason",
                 "Target required",
+                "--question",
+                "é" * 201,
                 "--expected-chain-revision",
                 "1",
                 "--expected-session-revision",
                 "2",
             ],
-            "é" * 201,
         )
         self.assertEqual(status, 1)
         self.assertNotIn("é", output + errors)
         self.assertEqual(self.storage.registry_path.read_bytes(), before)
+
+    def test_cli_decision_reads_no_stdin_and_requires_the_question_argument(self):
+        self.register()
+        before = self.storage.registry_path.read_bytes()
+        arguments = [
+            "request-decision",
+            "--category",
+            "missing-input",
+            "--blocked-action-field",
+            "target",
+            "--blocked-action-value",
+            "destination",
+            "--reason",
+            "Target required",
+            "--expected-chain-revision",
+            "1",
+            "--expected-session-revision",
+            "2",
+        ]
+        status, output, _ = self.call_cli(arguments, "Which destination?")
+        self.assertEqual(status, 1)
+        self.assertNotIn("Which destination", output)
+        self.assertEqual(self.storage.registry_path.read_bytes(), before)
+        status, output, errors = self.call_cli(
+            [*arguments[:9], "--question", "é" * 200, *arguments[9:]]
+        )
+        self.assertEqual((status, errors), (0, ""))
+        self.assertIn("Decision needed: " + "é" * 200 + "\n", output)
 
     def test_replayed_external_turn_cannot_renew_consumed_challenge(self):
         before = self.storage.registry_path.read_bytes()
@@ -1028,7 +1058,7 @@ class OperationsTests(unittest.TestCase):
             private_content.encode(), self.storage.registry_path.read_bytes()
         )
 
-    def test_real_cli_forces_utf8_for_decision_stdin_and_stdout(self):
+    def test_real_cli_reads_a_utf8_question_argument_with_no_stdin(self):
         self.register()
         snapshot = self.storage.load_snapshot("session-1")
         question = "Which café ● " + secrets.token_hex(8) + "?"
@@ -1051,13 +1081,15 @@ class OperationsTests(unittest.TestCase):
                 "destination",
                 "--reason",
                 "Target required",
+                "--question",
+                question,
                 "--expected-chain-revision",
                 "1",
                 "--expected-session-revision",
                 "2",
             ],
             cwd=ROOT,
-            input=question.encode("utf-8"),
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             check=False,
             env={

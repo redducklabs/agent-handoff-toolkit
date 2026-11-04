@@ -1310,13 +1310,26 @@ def evaluate_stop(
         # line is accepted after any turn; the reply line only after a turn
         # the user started, because a task notification or a peer's message
         # is nobody to reply to. An unknown origin is treated as the user's.
+        # The line must end the message, exact and starting on a line of its
+        # own; any explanation goes on the lines before it. Requiring the
+        # whole message to be the line bought no check - the reason is read
+        # from the line either way - and left a waiting session unable to say
+        # why. A suffix, not the last line: a root title may span lines.
         lines = progress_responses(chain)
         message = event.latest_assistant_message
-        reply = message == lines["reply"]
+        if message is not None:
+            message = message.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
+
+        def ends_on(line):
+            return message is not None and (
+                message == line or message.endswith("\n" + line)
+            )
+
+        reply = ends_on(lines["reply"])
         host_turn = session.turn_origin == "host"
-        if (reply and not host_turn) or message in {
-            line for reason, line in lines.items() if reason != "reply"
-        }:
+        if (reply and not host_turn) or any(
+            ends_on(line) for reason, line in lines.items() if reason != "reply"
+        ):
             return _allow_stop(
                 snapshot, chain=chain, mode=EnforcementMode.TRACKED, progress=True
             )
@@ -1324,8 +1337,8 @@ def evaluate_stop(
             "AHK-STOP-WORK",
             "Authorized executable work remains without a valid terminal record.",
             "keep working on the existing authorized exact action: executable "
-            "work remains. End a turn only on a line from lifecycle inspect, a "
-            "decision request, or a valid record.",
+            "work remains. End a turn only on a line from lifecycle inspect, "
+            "as the last line, or on a decision request or a valid record.",
             detail_codes=("reply-host-turn",) if reply else (),
         )
         return _blocked_stop(snapshot, (issue,))

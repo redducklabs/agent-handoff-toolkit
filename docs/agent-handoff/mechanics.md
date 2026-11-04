@@ -80,11 +80,10 @@ The complete generated tail, including its fence and link, is limited to 300 wor
 
 A schema-v2 terminal response is entirely generated: the renderer is the only
 source, there is no handwritten preamble, and the normalized terminal message
-must have byte-exact equality with the rendered response. For a continuation, the
-response is the canonical generated continuation response; for an audit it is the
-canonical audit response above. A no-action statement such as `None`, `Nothing to do`,
-or `No action required` is valid only when the highest authorized scope is complete
-and the response links an audit rather than a continuation.
+must have byte-exact equality with the rendered response. A no-action
+statement such as `None`, `Nothing to do`, or `No action required` is valid
+only when the highest authorized scope is complete and the response links an
+audit rather than a continuation.
 
 ## Lifecycle enforcement
 
@@ -97,12 +96,14 @@ inspect` publishes as `progress_responses`, keyed by reason:
 background-work: Waiting on background work for "<root title>". This session resumes when it reports. Last handoff: <path or none yet>.
 ci: Waiting on CI for "<root title>". This session resumes when it reports. Last handoff: <...>.
 other-session: Waiting on another session for "<root title>". This session resumes when it replies. Last handoff: <...>.
+user: Waiting on you for "<root title>". This session resumes when you reply. Last handoff: <...>.
 reply: Replied to your message about "<root title>". Last handoff: <...>. Say "continue" to keep going, or ask for a handoff.
 ```
 
-Nothing else record-less is accepted and the comparison is exact. A wait line
-ends any turn; `reply` ends only a turn the user started, else `AHK-STOP-WORK`
-names `failed=reply-host-turn`. `UserPromptSubmit`
+The line must be the message's last line, exact and alone; explanation may
+precede it. Nothing else record-less is accepted. A wait line ends any turn;
+`user` waits on the user's own work, such as staging tests. `reply` ends only
+a turn the user started, else `AHK-STOP-WORK` names `failed=reply-host-turn`. `UserPromptSubmit`
 records the turn's origin: a prompt is host-started when, stripped, it begins
 with `<task-notification>`, `Another Claude session sent a message:`, or a
 `<cross-session-message` or `<agent-message` element. State recorded before
@@ -113,9 +114,11 @@ replies that resolve a decision. A session that *ends* on any of these lines is
 reported at `SessionEnd`, an informational hook that fails open. The lines are
 never in blocking feedback.
 
-Executable work remaining is not a decision request. A decision request names
-one bounded question, blocked action, and recognized authority category; it
-cannot change the root or scope definition.
+Neither remaining executable work nor waiting on the user's own work is a
+decision request. A decision request names one bounded question, blocked
+action, and recognized authority category; it cannot change the root or scope
+definition. `lifecycle request-decision` takes the question, at most 400 UTF-8
+bytes, as a quoted `--question` argument: Claude Code's Bash tool has no stdin.
 
 A user turn whose **first line** is `Track: <goal>` registers that goal as the
 tracked root, when the session is still `OPEN` or `ONE_OFF`. The root's
@@ -139,8 +142,7 @@ checkout holding the record. Silence is not a permitted outcome for a prompt
 that carried a pointer.
 
 `AHK-RESUMED` and `AHK-TRACKED` both carry the bound `inspect` command after
-`Command:`, so a newly tracked session needs no denial to learn its
-credentials.
+`Command:`.
 
 A stored record path is a locator, not identity. Where one is read, the
 record's basename under this checkout's `handoffs/` is used, or the path itself
@@ -359,10 +361,9 @@ Authoring a record outside a tracked session uses `render`, `validate`, and
 ## Registering the first root
 
 A session chooses whether to register a root; no tool is denied to force the
-decision. `register-root` is a control command, so it needs the session key,
-challenge and expected revision bound into it, and the definition it carries
-must be canonicalized and encoded in the fixed form the parser accepts. A
-pre-root session attempts the command with the semantic slots as plain text:
+decision. `register-root` is a control command: the hook binds its
+credentials and encodes its definition in the fixed form the parser accepts.
+A pre-root session attempts it with the semantic slots as plain text:
 
 ```
 python <runner> lifecycle register-root --scope-id <id> --scope-kind <kind> \

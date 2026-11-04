@@ -6,7 +6,20 @@ This repository provides a shared contract, deterministic validation and renderi
 
 ## Status
 
-Version 1.5.3 keeps a stalled status line from blanking the bar. The relay
+Version 1.6.0 gives a tracked session an honest way to wait for the user. A
+new `user` progress line, `Waiting on you for "<root title>". This session
+resumes when you reply.`, ends any turn, including one a task notification or
+another session's report started, where `reply` is refused: a session waiting
+on the user's staging testing no longer has to claim a background wait or
+write a handoff at low context. Any progress line may now follow an
+explanation, as long as it is the message's last line, exact and alone.
+`lifecycle request-decision` takes its question as a `--question` argument
+instead of stdin, which the Claude Code Bash tool does not provide and the
+binding hook would deny a pipe or redirection to supply; a decision request
+could not be registered from Claude Code before. This changes the command's
+interface: stdin is no longer read.
+
+Version 1.5.3 kept a stalled status line from blanking the bar. The relay
 gives the status line it runs 15 seconds, enough for a chained status line
 that waits 10 seconds on the user's to print its own fallback, and stops it
 on time even when processes it started still hold its output open. The relay
@@ -133,7 +146,7 @@ transition or the correction circuit, and never reenters a completed session.
 
 A turn that ends without a record now carries a reason. `lifecycle inspect`
 reports `progress_responses`, keyed `background-work`, `ci`, `other-session`
-and `reply`; the three waits are accepted after any turn, and `reply` only
+and `reply` (1.6.0 adds `user`); the waits are accepted after any turn, and `reply` only
 after a turn the user started. This is a breaking change: `progress_response`,
 `render_progress_response` and the old `In progress: … Say continue` line are
 gone, and a session or tool relying on them must use the new lines.
@@ -340,10 +353,10 @@ items.
   and the complete generated tail to 300 words. The response must not reproduce
   the handoff document. The absolute clickable link remains the final line.
 - A tracked session may also end a turn without a record on one exact line
-  from `lifecycle inspect`'s `progress_responses`: a wait on background work,
-  CI or another session, or a `reply` to the user's own message, which is
-  refused after a turn the host started. A session that ends on one is
-  reported at `SessionEnd`.
+  from `lifecycle inspect`'s `progress_responses`, as its last line: a wait
+  on background work, CI, another session or the user, or a `reply` to the
+  user's own message, which is refused after a turn the host started. A
+  session that ends on one is reported at `SessionEnd`.
 
 See [the contract](docs/agent-handoff/contract.md) for what an author must write, and [the mechanics reference](docs/agent-handoff/mechanics.md) for the exact formats and enforcement the toolkit applies.
 
@@ -380,16 +393,16 @@ disposable consumer can be installed from a verified local release source.
 
 ## Consumer installation
 
-Check out the public v1.5.3 release, inspect the proposed changes, then apply
+Check out the public v1.6.0 release, inspect the proposed changes, then apply
 them from that checkout:
 
 ```powershell
-git clone --branch v1.5.3 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
+git clone --branch v1.6.0 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
 Set-Location agent-handoff-toolkit
-python distribution/runner.py install --target <consumer-repository> --release v1.5.3 --dry-run
-python distribution/runner.py install --target <consumer-repository> --release v1.5.3 --apply
-python distribution/runner.py sync --target <consumer-repository> --release v1.5.3 --check
-python distribution/runner.py sync --target <consumer-repository> --release v1.5.3 --apply
+python distribution/runner.py install --target <consumer-repository> --release v1.6.0 --dry-run
+python distribution/runner.py install --target <consumer-repository> --release v1.6.0 --apply
+python distribution/runner.py sync --target <consumer-repository> --release v1.6.0 --check
+python distribution/runner.py sync --target <consumer-repository> --release v1.6.0 --apply
 ```
 
 Run install and sync only in an isolated, clean Git worktree with no concurrent

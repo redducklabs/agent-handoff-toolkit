@@ -129,7 +129,7 @@ _ALIASES = {
 _ACTIONS = {
     "AHK-PRE-ROOT": "Register, resume, join, or adopt using the current bootstrap challenge.",
     "AHK-CONTROL-BINDING": "Use the current derived session capability and revision.",
-    "AHK-STOP-WORK": "Executable work remains, so keep working. End a turn only on a `Waiting on` line or the reply line from lifecycle inspect, a decision request, a continuation, or an audit.",
+    "AHK-STOP-WORK": "Executable work remains, so keep working. End a turn only on a `Waiting on` line or the reply line from lifecycle inspect, as the last line, or on a decision request, a continuation, or an audit.",
     "AHK-STOP-ROOT": "Render the locked root and registered authorization evidence.",
     "AHK-STOP-SCOPE": "Restore the inherited ordered scope definitions.",
     "AHK-STOP-PREDECESSOR": "Render a successor of the live record with its exact source digest.",

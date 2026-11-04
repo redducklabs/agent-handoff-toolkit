@@ -12,9 +12,9 @@ until a root is registered.
 - A tracked session ends with a continuation or a completion audit, authored
   through the `agent-handoff` skill. The renderer is the only source of the
   final response: send the `render-tail` output as your entire final message.
-  A turn waiting on background work, CI or another session, or replying to
-  the user, may instead end on its exact `lifecycle inspect`
-  `progress_responses` line; nothing else record-less is accepted.
+  A turn that waits, or replies to the user, may instead end with its exact
+  `lifecycle inspect` `progress_responses` line as the last line; nothing
+  else record-less is accepted.
 - `AHK-DECLARE` and `AHK-NO-HANDOFF` are notices, not errors, and each fires
   once. `lifecycle one-off` records that a session needs no handoff.
 - If a hook looks broken, run
