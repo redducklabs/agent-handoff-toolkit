@@ -29,6 +29,7 @@ import time
 RELAY_MARKER = "AHK_STATUSLINE_RELAY"
 # The consumer-owned home of a project status line the relay displaced.
 CHAIN_RELATIVE_PATH = ".claude/agent-handoff-statusline.json"
+RUNNER_RELATIVE_PATH = ".agent-handoff-toolkit/runner.py"
 MAX_WINDOW = 10**9
 _MAX_INPUT = 1024 * 1024
 # Longer than the 10 seconds a chained status line commonly allows the one it
@@ -148,31 +149,28 @@ def _native(path):
 def _chained_command(payload):
     """Return the project status line chained behind the relay, or None.
 
-    Looked for from the project directory and the working directory the host
-    reports, then from this process's own, up to the enclosing repository
-    root. The last start serves a payload that could not be read.
+    The chain file runs through a shell, so where it is read from is a trust
+    decision. The host's trust covers the directory Claude Code was launched
+    in, which it reports as `workspace.project_dir`; `cwd` follows the session
+    into any directory and is never searched. A payload that names no project
+    falls back to this process's directory.
+
+    Either way the file is read only beside the nearest install's runner,
+    where install and sync write it, and the walk stops at the enclosing
+    repository root. From the process's directory that is the runner the
+    managed command itself walks up to, unresolved like its walk, so a chain
+    file there grants nothing that runner does not already have.
     """
 
-    starts = []
-    if isinstance(payload, dict):
-        workspace = payload.get("workspace")
-        if isinstance(workspace, dict):
-            starts.append(workspace.get("project_dir"))
-        starts.append(payload.get("cwd"))
-    starts.append(os.getcwd())
-    for start in starts:
-        if not isinstance(start, str) or not start.strip():
-            continue
-        try:
-            directory = Path(_native(start)).resolve()
-        except (OSError, ValueError):
-            continue
-        for candidate in (directory, *directory.parents):
-            chain = candidate / Path(*CHAIN_RELATIVE_PATH.split("/"))
-            if chain.is_file():
-                return _command_in(chain)
-            if (candidate / ".git").exists():
-                break
+    workspace = payload.get("workspace") if isinstance(payload, dict) else None
+    project = workspace.get("project_dir") if isinstance(workspace, dict) else None
+    named = isinstance(project, str) and project.strip()
+    directory = Path(_native(project)).resolve() if named else Path.cwd()
+    for candidate in (directory, *directory.parents):
+        if (candidate / Path(*RUNNER_RELATIVE_PATH.split("/"))).is_file():
+            return _command_in(candidate / Path(*CHAIN_RELATIVE_PATH.split("/")))
+        if (candidate / ".git").exists():
+            break
     return None
 
 

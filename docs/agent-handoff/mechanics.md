@@ -261,7 +261,8 @@ can error: any failure produces no message.
   the newest main-thread usage, against `AHK_CONTEXT_WINDOW_TOKENS`, else the
   window the host reports - Codex's `model_context_window`, or the size Claude
   Code gives the managed `statusLine` relay, which then runs the project's own
-  status line from `.claude/agent-handoff-statusline.json`, else the user's.
+  status line from `.claude/agent-handoff-statusline.json` beside the runner
+  above `workspace.project_dir`, never payload `cwd`, else the user's.
   It never infers a window from a model id or a count; with none it is
   silent. At 80% it asks once, on
   `additionalContext`, for the continuation handoff, naming tokens, window and

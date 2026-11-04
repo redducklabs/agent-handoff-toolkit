@@ -432,6 +432,19 @@ pipes: a stalled command's descendants can hold a pipe open long after the
 command is stopped, and waiting to drain it blanked the status bar until
 they exited. Its 15-second budget exceeds the 10 seconds a chained status
 line commonly gives the user's own, so that one's fallback still shows.
+That file's command runs through a shell, so where it is read from is a trust
+decision. The host's trust prompt covers the launch directory, which it reports
+as `workspace.project_dir`, and `cwd` follows the session anywhere, so before
+1.6.1 a session that moved into a clone shipping the file ran its command
+unprompted. The relay now reads the file only beside the runner nearest above
+the project directory, within its repository, and the payload's `cwd` is never
+searched. A payload naming no project falls back to the process's directory
+under the same rule: the managed command has already run the runner found
+there, so a chain file beside it adds nothing to what that runner can do, and
+one in a runnerless clone nested below it is passed by. That reasoning leans on
+the managed walk rather than making it safe. The walk has no trust anchor of
+its own, so a clone shipping a runner is exposed wherever the host starts the
+process in it, a separate matter this rule cannot close from inside the relay.
 The hook reads the cache, which costs a
 file open, not a state load. With no reported window and no
 `AHK_CONTEXT_WINDOW_TOKENS`, the advisory is silent and the skill tells the
