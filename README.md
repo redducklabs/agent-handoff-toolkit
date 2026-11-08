@@ -19,6 +19,15 @@ uses the runner above the relay's own directory. This covers the chain file
 only. The managed commands still run the first runner above their process's
 directory, and a chained command still runs in the session's directory.
 
+It also fixes two faults found in consumer sessions. Accepting a successor
+record, or approving a transition, rebuilt the chain without its declared
+goal, so every later progress line and the `SessionEnd` note said "this work"
+instead of the goal. A chain written before this release keeps the empty
+title until it is declared again. An `AHK-STOP-PREDECESSOR` block named only
+the candidate's own predecessor after `actual=`; it now also names the record
+the candidate must succeed, as `expected=<record id>` and
+`current=<file name>`.
+
 Version 1.6.0 gave a tracked session an honest way to wait for the user. A
 new `user` progress line, `Waiting on you for "<root title>". This session
 resumes when you reply.`, ends any turn, including one a task notification or

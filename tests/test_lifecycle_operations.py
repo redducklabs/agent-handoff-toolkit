@@ -1119,6 +1119,12 @@ class OperationsTests(unittest.TestCase):
         self.proposal()
         snapshot = self.user_event("yes")
         proposal = snapshot.chain.publication_evidence
+        # The successor chain names its own goal, not "this work".
+        self.assertEqual(
+            snapshot.chain.root_title,
+            proposal.new_scopes[0]["scope_definition"]["title"],
+        )
+        self.assertTrue(snapshot.chain.root_title)
         before = self.storage.registry_path.read_bytes()
         for changed_proof in (None, replace(proposal, proposal_id="other-proposal")):
             with self.assertRaisesRegex(LifecycleStorageError, "publication evidence"):

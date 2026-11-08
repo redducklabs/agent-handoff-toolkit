@@ -1112,6 +1112,7 @@ def _stop_issue(
     actual: object = None,
     candidate_path: str | None = None,
     detail_codes: tuple[str, ...] = (),
+    current_record: str | None = None,
 ) -> LifecycleIssue:
     def evidence(value: object) -> str | None:
         if value is None:
@@ -1126,6 +1127,7 @@ def _stop_issue(
         actual=evidence(actual),
         candidate_path=candidate_path,
         detail_codes=detail_codes,
+        current_record=current_record,
     )
 
 
@@ -1457,9 +1459,13 @@ def evaluate_stop(
                 "AHK-STOP-PREDECESSOR",
                 "The predecessor is not the chain's current record.",
                 "Rebuild the candidate from the current chain record.",
-                expected=chain.current_record_reference,
+                # The record id and basename the candidate must succeed. The
+                # whole reference is not an identifier, so the feedback used
+                # to drop it and name only the candidate's own predecessor.
+                expected=chain.current_record_reference.record_id,
                 actual=predecessor_record_id,
                 candidate_path=candidate.path,
+                current_record=_record_name(chain.current_record_reference.path),
             )
         )
     predecessor_authorization_id = predecessor_data.get("authorization_id")
@@ -1573,6 +1579,7 @@ def evaluate_stop(
         ),
         authorization_user_turn_reference=chain.authorization_user_turn_reference,
         authorization_evidence_hmac=chain.authorization_evidence_hmac,
+        root_title=chain.root_title,
     )
     return _allow_stop(
         snapshot,
