@@ -764,6 +764,7 @@ class LifecycleService:
                         authorization_user_turn_reference=turn,
                         authorization_evidence_hmac=signature,
                         publication_evidence=proposal,
+                        root_title=proposal.new_scopes[0]["scope_definition"]["title"],
                     )
                     proposal = None
         session = replace(

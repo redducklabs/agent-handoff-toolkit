@@ -14,12 +14,12 @@ Run installation from an inspectable checkout of the public release rather than
 from a network downloader:
 
 ```powershell
-git clone --branch v1.6.0 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
+git clone --branch v1.6.1 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
 Set-Location agent-handoff-toolkit
-python distribution/runner.py install --target <consumer-repository> --release v1.6.0 --dry-run
-python distribution/runner.py install --target <consumer-repository> --release v1.6.0 --apply
-python distribution/runner.py sync --target <consumer-repository> --release v1.6.0 --check
-python distribution/runner.py sync --target <consumer-repository> --release v1.6.0 --apply
+python distribution/runner.py install --target <consumer-repository> --release v1.6.1 --dry-run
+python distribution/runner.py install --target <consumer-repository> --release v1.6.1 --apply
+python distribution/runner.py sync --target <consumer-repository> --release v1.6.1 --check
+python distribution/runner.py sync --target <consumer-repository> --release v1.6.1 --apply
 ```
 
 Run install and sync only in an isolated, clean Git worktree. Confirm the
@@ -73,6 +73,11 @@ in place of the user's status line. To change it later, edit that file, not
 `.claude/settings.json`. If the file already holds a different status line,
 sync reports `statusline-chain-conflict`. A `statusLine` in
 `.claude/settings.local.json` takes precedence and bypasses the relay.
+The relay reads that file only beside the installed runner nearest above the
+directory Claude Code was launched in, because it runs the command through a
+shell. It does not follow the session's `cwd` into another directory, so keep
+the file where sync wrote it. A payload that names no project is read from the
+relay's own directory instead.
 
 Every handoff record that existed before the current pinned release was adopted
 in the consumer is a deprecated historical artifact by policy. Installation and
@@ -256,7 +261,7 @@ Before bulk adoption, select one repository with mature handoffs and one with li
 1. Inventory local instructions, hook and skill configuration, and tracker
    conventions. Count or locate historical handoff storage only if needed to
    protect it; do not open the records.
-2. Run the v1.6.0 installer in dry-run mode from its release checkout.
+2. Run the v1.6.1 installer in dry-run mode from its release checkout.
 3. Review the proposed instruction and hook merges.
 4. Apply on a branch. Treat every record that predates this adoption as
    deprecated by policy without marking, reading, or rewriting individual files.

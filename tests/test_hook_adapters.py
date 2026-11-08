@@ -1253,6 +1253,46 @@ class EnforcementTests(unittest.TestCase):
         self.assertEqual(final.chain.status, "complete")
         self.assertEqual(final.session.mode, EnforcementMode.COMPLETE)
 
+    def test_a_successor_record_keeps_the_declared_goal(self):
+        """Every later progress line names the goal, not "this work"."""
+
+        self.register()
+        title = self.storage.load_snapshot("session-1").chain.root_title
+        path, text, message = self.record()
+        self.assertEqual(self.invoke(last_assistant_message=message), HookExecution())
+        predecessor = {
+            "record_id": "first",
+            "path": path.as_posix(),
+            "sha256": record_digest(text),
+        }
+        _, _, successor = self.record("continuation", "second", predecessor)
+        self.assertEqual(self.invoke(last_assistant_message=successor), HookExecution())
+        chain = self.storage.load_snapshot("session-1").chain
+        self.assertEqual(chain.targeted_revision, 3)
+        self.assertEqual(chain.root_title, title)
+        self.assertIn(f'"{title}"', progress_responses(chain)["reply"])
+
+    def test_a_wrong_predecessor_names_the_chain_s_current_record(self):
+        """The author must learn which record to succeed, not only its own."""
+
+        self.register()
+        path, text, message = self.record()
+        self.invoke(last_assistant_message=message)
+        first = {
+            "record_id": "first",
+            "path": path.as_posix(),
+            "sha256": record_digest(text),
+        }
+        _, _, second = self.record("continuation", "second", first)
+        self.invoke(last_assistant_message=second)
+        _, _, sibling = self.record("continuation", "third", first)
+        result = self.invoke(last_assistant_message=sibling)
+        self.assert_block(result, "AHK-STOP-PREDECESSOR")
+        reason = json.loads(result.stdout)["reason"]
+        self.assertIn("expected=second", reason)
+        self.assertIn("actual=first", reason)
+        self.assertIn("current=second.md", reason)
+
     def test_block_cycle_deduplication_cosmetic_changes_and_external_reset(self):
         self.register()
         first = self.invoke(last_assistant_message="No record.")

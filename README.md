@@ -6,7 +6,29 @@ This repository provides a shared contract, deterministic validation and renderi
 
 ## Status
 
-Version 1.6.0 gives a tracked session an honest way to wait for the user. A
+Version 1.6.1 stops the status-line relay running a chain file from the
+session's `cwd`. Since
+1.5.1 the relay searched for `.claude/agent-handoff-statusline.json` from the
+session's `cwd` when the project had none, and ran what it found through a
+shell, so a session that moved into an untrusted clone shipping that file ran
+its command on the next refresh with no trust prompt for that clone. The file
+is now read only beside the install's runner above `workspace.project_dir`,
+the directory the host's trust covers, and the search stops at the repository
+root. The payload's `cwd` is no longer searched; a payload naming no project
+uses the runner above the relay's own directory. This covers the chain file
+only. The managed commands still run the first runner above their process's
+directory, and a chained command still runs in the session's directory.
+
+It also fixes two faults found in consumer sessions. Accepting a successor
+record, or approving a transition, rebuilt the chain without its declared
+goal, so every later progress line and the `SessionEnd` note said "this work"
+instead of the goal. A chain written before this release keeps the empty
+title until it is declared again. An `AHK-STOP-PREDECESSOR` block named only
+the candidate's own predecessor after `actual=`; it now also names the record
+the candidate must succeed, as `expected=<record id>` and
+`current=<file name>`.
+
+Version 1.6.0 gave a tracked session an honest way to wait for the user. A
 new `user` progress line, `Waiting on you for "<root title>". This session
 resumes when you reply.`, ends any turn, including one a task notification or
 another session's report started, where `reply` is refused: a session waiting
@@ -393,16 +415,16 @@ disposable consumer can be installed from a verified local release source.
 
 ## Consumer installation
 
-Check out the public v1.6.0 release, inspect the proposed changes, then apply
+Check out the public v1.6.1 release, inspect the proposed changes, then apply
 them from that checkout:
 
 ```powershell
-git clone --branch v1.6.0 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
+git clone --branch v1.6.1 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
 Set-Location agent-handoff-toolkit
-python distribution/runner.py install --target <consumer-repository> --release v1.6.0 --dry-run
-python distribution/runner.py install --target <consumer-repository> --release v1.6.0 --apply
-python distribution/runner.py sync --target <consumer-repository> --release v1.6.0 --check
-python distribution/runner.py sync --target <consumer-repository> --release v1.6.0 --apply
+python distribution/runner.py install --target <consumer-repository> --release v1.6.1 --dry-run
+python distribution/runner.py install --target <consumer-repository> --release v1.6.1 --apply
+python distribution/runner.py sync --target <consumer-repository> --release v1.6.1 --check
+python distribution/runner.py sync --target <consumer-repository> --release v1.6.1 --apply
 ```
 
 Run install and sync only in an isolated, clean Git worktree with no concurrent
