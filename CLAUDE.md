@@ -28,9 +28,12 @@ Read `docs/agent-handoff/contract.md` and `docs/agent-handoff/mechanics.md` befo
   process's working directory. Never reintroduce a path relative to it: a
   missing script file exits 2, which every gated event reads as a block.
   Hosts do not reliably run hooks in the session's directory, so a hook roots
-  at the checkout named by the payload `cwd`, and the located runner hands
-  the invocation off to the runner of that checkout - only when it is a
-  worktree of the same repository (same git common directory).
+  at the checkout named by the payload `cwd`, and the managed command itself
+  then runs the runner of that checkout instead - only when it is a worktree
+  git registered for the same repository (same git common directory, and its
+  `gitdir` leads back). The choice is made before any runner runs, because a
+  main checkout pinned before the runner hand-off cannot make it. The located
+  runner repeats the hand-off for settings that still carry the old command.
 - Never claim semantic truth is mechanically verified. Validation proves structure and internal consistency only.
 - Add or update tests before implementation changes and run the full verification commands in `README.md` before reporting success.
 - Cut releases and re-pin consumers by `docs/releasing.md`: manifest hashes

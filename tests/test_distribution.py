@@ -19,10 +19,53 @@ MANIFEST_PATH = ROOT / "distribution" / "manifest.json"
 # The hook command locates its runner by walking up from the hook process's
 # working directory. A cwd-relative path made every session in a subdirectory
 # fail to start Python at all, and a missing script file exits 2, which every
-# host reads as a deliberate block. The walk is also the only form that is
-# correct in a worktree: it finds the runner pinned by the checkout the agent
-# is actually working in.
+# host reads as a deliberate block.
+#
+# The host does not promise the hook process starts in the session's checkout:
+# desktop worktree sessions ran the main checkout's runner, and a main
+# checkout pinned to a release older than the runner hand-off then served the
+# worktree's session with its own, older rules. So the command reads the
+# payload `cwd` and runs the runner of the checkout holding it instead - only
+# when that checkout is a worktree git registered for the repository of the
+# checkout the walk found (its `.git` file names `<common>/worktrees/<name>`,
+# whose `commondir` leads to that common directory and whose `gitdir` leads
+# back), or is that repository's main checkout, whose `.git` is the common
+# directory. Any other checkout, and any failure reading the payload or git's
+# files, leaves the walk's runner in place. The stdin bytes it read are put
+# back for the runner. The program is joined from lines so it can hold a
+# `try`, and it holds no double quote, backslash, `$`, `%` or `!`, so every
+# host shell passes it through unchanged.
 RUNNER_LOCATOR = (
+    "A='.agent-handoff-toolkit';R='runner.py';G='.git';C='cwd';D='gitdir';"
+    "O='commondir';W='worktrees';U='utf-8';M='__main__';"
+    "exec(chr(10).join(["
+    "'import io,json,pathlib,runpy,sys',"
+    "'f=lambda w:next((p for p in ((d/A/R) for d in (w,*w.parents)) if p.is_file()),None)',"
+    "'t=lambda p:p.read_text(U).strip()',"
+    "'r=f(pathlib.Path.cwd())',"
+    "'try:',"
+    "' b=sys.stdin.buffer.read()',"
+    "' sys.stdin=io.TextIOWrapper(io.BytesIO(b),encoding=U)',"
+    "' w=pathlib.Path(json.loads(b)[C])',"
+    "' q=f(w.resolve()) if w.is_absolute() else None',"
+    "' k=r.parent.parent/G',"
+    "' g=k.resolve() if k.is_dir() else "
+    "(lambda y:(y/t(y/O)).resolve())((k.parent/t(k)[7:].strip()).resolve())',"
+    "' e=q.parent.parent/G',"
+    "' r=q if e.is_dir() and e.resolve()==g else r',"
+    "' c=e.parent',"
+    "' l=t(e)',"
+    "' x=(c/l[7:].strip()).resolve()',"
+    "' r=q if l[:7]==D+chr(58) and x.parent==g/W and (x/t(x/O)).resolve()==g "
+    "and (x/t(x/D)).resolve()==(c/G).resolve() else r',"
+    "'except Exception:',"
+    "' pass',"
+    "'r and runpy.run_path(str(r),run_name=M)']))"
+)
+
+# The locator releases before this one installed. Settings a consumer has not
+# re-synced still run it, and the runner's own hand-off is what serves them.
+LEGACY_RUNNER_LOCATOR = (
     "import pathlib,runpy;"
     "w=pathlib.Path.cwd();"
     "r=next((p for p in ((d/'.agent-handoff-toolkit'/'runner.py') "
@@ -48,13 +91,12 @@ DISPATCH_REASON = (
 )
 
 
-def hook_command(python_command: str, platform: str, event: str) -> str:
+def hook_command(
+    python_command: str, platform: str, event: str, locator: str = RUNNER_LOCATOR
+) -> str:
     """Return the managed hook command string for one host event."""
 
-    return (
-        f'{python_command} -c "{RUNNER_LOCATOR}" '
-        f"hook --platform {platform} --event {event}"
-    )
+    return f'{python_command} -c "{locator}" hook --platform {platform} --event {event}'
 
 
 # Schema v2 keeps one copy of every structured fact, so a v2 template carries
@@ -313,16 +355,16 @@ class DistributionTests(unittest.TestCase):
         manifest = load_manifest()
 
         self.assertEqual(manifest["manifest_version"], 2)
-        self.assertEqual(manifest["toolkit_version"], "1.6.1")
+        self.assertEqual(manifest["toolkit_version"], "1.6.2")
         self.assertEqual(manifest["text_hash"], "utf8-lf-sha256-v1")
         self.assertIn(
-            '__version__ = "1.6.1"',
+            '__version__ = "1.6.2"',
             (ROOT / "src/agent_handoff_toolkit/__init__.py").read_text(
                 encoding="utf-8"
             ),
         )
         self.assertIn(
-            'version = "1.6.1"',
+            'version = "1.6.2"',
             (ROOT / "pyproject.toml").read_text(encoding="utf-8"),
         )
         self.assertEqual(manifest["record_schema_version"], 2)
@@ -1472,18 +1514,18 @@ class DistributionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             consumer = Path(directory)
             result = run_source_cli(
-                "install", "--apply", target=consumer, release="v1.6.1"
+                "install", "--apply", target=consumer, release="v1.6.2"
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            check = run_source_cli("sync", "--check", target=consumer, release="v1.6.1")
+            check = run_source_cli("sync", "--check", target=consumer, release="v1.6.2")
             self.assertEqual(check.returncode, 0, check.stderr)
             state = json.loads(
                 (consumer / ".agent-handoff-toolkit/install-state.json").read_text(
                     encoding="utf-8"
                 )
             )
-            self.assertEqual(state["release"], "v1.6.1")
-            self.assertEqual(state["toolkit_version"], "1.6.1")
+            self.assertEqual(state["release"], "v1.6.2")
+            self.assertEqual(state["toolkit_version"], "1.6.2")
             self.assertEqual(state["state_version"], 1)
             self.assertEqual(state["record_schema_version"], 2)
             self.assertEqual(
@@ -1672,11 +1714,11 @@ class DistributionTests(unittest.TestCase):
             legacy_record.write_bytes(legacy_bytes)
 
             upgraded = run_source_cli(
-                "sync", "--apply", target=consumer, release="v1.6.1"
+                "sync", "--apply", target=consumer, release="v1.6.2"
             )
             self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
             current = run_source_cli(
-                "sync", "--check", target=consumer, release="v1.6.1"
+                "sync", "--check", target=consumer, release="v1.6.2"
             )
 
             self.assertEqual(current.returncode, 0, current.stderr)
@@ -1703,8 +1745,8 @@ class DistributionTests(unittest.TestCase):
                     encoding="utf-8"
                 )
             )
-            self.assertEqual(state["release"], "v1.6.1")
-            self.assertEqual(state["toolkit_version"], "1.6.1")
+            self.assertEqual(state["release"], "v1.6.2")
+            self.assertEqual(state["toolkit_version"], "1.6.2")
             self.assertEqual(state["record_schema_version"], 2)
             installed_source = (
                 consumer / ".agent-handoff-toolkit" / "src" / "agent_handoff_toolkit"
@@ -1747,7 +1789,7 @@ class DistributionTests(unittest.TestCase):
                 json.dumps(modified), encoding="utf-8", newline="\n"
             )
             conflict = run_source_cli(
-                "sync", "--check", target=conflicted, release="v1.6.1"
+                "sync", "--check", target=conflicted, release="v1.6.2"
             )
             self.assertEqual(conflict.returncode, 2)
             self.assertIn("managed-json-modified", conflict.stdout)
@@ -1774,7 +1816,7 @@ class DistributionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             consumer = Path(directory)
             installed = run_source_cli(
-                "install", "--apply", target=consumer, release="v1.6.1"
+                "install", "--apply", target=consumer, release="v1.6.2"
             )
             self.assertEqual(installed.returncode, 0, installed.stderr)
             installed_configs = {
@@ -1864,7 +1906,9 @@ class DistributionTests(unittest.TestCase):
         """
 
         python_command = load_manifest()["runtime"]["python_command"]
-        command = hook_command(python_command, "claude", "session-start")
+        command = hook_command(
+            python_command, "claude", "session-start", LEGACY_RUNNER_LOCATOR
+        )
         with tempfile.TemporaryDirectory() as directory:
             scratch = Path(directory).resolve()
             main = scratch / "main"
@@ -2004,6 +2048,159 @@ class DistributionTests(unittest.TestCase):
                     result = run()
                     reminder(result)
                     self.assertEqual(result.stderr, b"")
+
+    def test_hook_command_runs_the_session_worktree_runner_not_a_stale_one(
+        self,
+    ) -> None:
+        """A main checkout's older runner never serves a worktree's session.
+
+        Field report: a desktop worktree session pinned to 1.6.1 had its hooks
+        run by the main checkout's 1.1.0 runner, which predates the runner
+        hand-off, so the session was blocked under rules its release had
+        removed. The command itself now picks the runner of the checkout the
+        payload `cwd` is in, when git registered that checkout as a worktree
+        of the walked-to checkout's repository, and otherwise changes nothing.
+        """
+
+        python_command = load_manifest()["runtime"]["python_command"]
+        command = hook_command(python_command, "claude", "stop")
+        with tempfile.TemporaryDirectory() as directory:
+            scratch = Path(directory).resolve()
+            main = scratch / "main"
+            main.mkdir()
+
+            def git(*arguments, cwd):
+                subprocess.run(
+                    [
+                        "git",
+                        "-c",
+                        "user.name=Synthetic",
+                        "-c",
+                        "user.email=synthetic@example.invalid",
+                        "-c",
+                        "commit.gpgsign=false",
+                        *arguments,
+                    ],
+                    cwd=cwd,
+                    env={**os.environ, "GIT_CEILING_DIRECTORIES": scratch.as_posix()},
+                    capture_output=True,
+                    check=True,
+                )
+
+            def pin(checkout, who):
+                runner = checkout / ".agent-handoff-toolkit" / "runner.py"
+                runner.parent.mkdir(parents=True, exist_ok=True)
+                runner.write_text(
+                    "import json, sys\n"
+                    "data = sys.stdin.buffer.read()\n"
+                    f"sys.stdout.write(json.dumps({{'who': {who!r}, "
+                    "'argv': sys.argv[1:], 'stdin': data.decode('utf-8')}))\n",
+                    encoding="utf-8",
+                    newline="\n",
+                )
+
+            git("init", "-q", cwd=main)
+            git("commit", "-q", "--allow-empty", "-m", "synthetic", cwd=main)
+            git("worktree", "add", "-q", ".claude/worktrees/x", cwd=main)
+            git("worktree", "add", "-q", "../side", cwd=main)
+            worktree = main / ".claude" / "worktrees" / "x"
+            side = scratch / "side"
+            pin(main, "stale")
+            pin(worktree, "worktree")
+            pin(side, "side")
+            nested = main / "vendor" / "clone"
+            nested.mkdir(parents=True)
+            git("init", "-q", cwd=nested)
+            pin(nested, "nested")
+            clone = scratch / "clone"
+            clone.mkdir()
+            git("init", "-q", cwd=clone)
+            pin(clone, "clone")
+            spoof = main / "spoof"
+            spoof.mkdir()
+            (spoof / ".git").write_text("gitdir: ../.git\n", encoding="utf-8")
+            pin(spoof, "spoof")
+            # Names a real worktree's private directory, whose `gitdir` leads
+            # back to that worktree, not here.
+            borrowed = main / "borrowed"
+            borrowed.mkdir()
+            (borrowed / ".git").write_text(
+                f"gitdir: {(main / '.git' / 'worktrees' / 'x').as_posix()}\n",
+                encoding="utf-8",
+            )
+            pin(borrowed, "borrowed")
+
+            def run(payload, cwd=main):
+                arguments = shlex.split(command, posix=os.name != "nt")
+                if os.name == "nt":
+                    arguments = [
+                        value[1:-1] if value[:1] == value[-1:] == '"' else value
+                        for value in arguments
+                    ]
+                result = subprocess.run(
+                    [sys.executable, *arguments[1:]],
+                    cwd=cwd,
+                    input=payload.encode("utf-8"),
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stderr, b"")
+                return result.stdout.decode("utf-8")
+
+            def served(payload, cwd=main):
+                output = json.loads(run(payload, cwd))
+                self.assertEqual(
+                    output["argv"], ["hook", "--platform", "claude", "--event", "stop"]
+                )
+                self.assertEqual(output["stdin"], payload)
+                return output["who"]
+
+            def session(at):
+                return json.dumps(
+                    {"session_id": "s", "cwd": str(at), "note": "● café"},
+                    ensure_ascii=False,
+                )
+
+            for at, who in (
+                (worktree, "worktree"),
+                (worktree / ".agent-handoff-toolkit", "worktree"),
+                (side, "side"),
+                (main, "stale"),
+                (main / "vendor", "stale"),
+            ):
+                with self.subTest("a registered worktree's runner serves it", at=at):
+                    self.assertEqual(served(session(at)), who)
+
+            for at in (nested, clone, spoof, borrowed, scratch):
+                with self.subTest("any other checkout changes nothing", at=at):
+                    self.assertEqual(served(session(at)), "stale")
+
+            for label, payload in (
+                ("malformed", "{"),
+                ("not an object", "[1]"),
+                ("no cwd", json.dumps({"session_id": "s"})),
+                ("relative cwd", json.dumps({"cwd": ".claude/worktrees/x"})),
+                ("cwd not a string", json.dumps({"cwd": 7})),
+                ("cwd with a NUL", json.dumps({"cwd": str(worktree) + "\x00"})),
+                ("empty", ""),
+            ):
+                with self.subTest("unreadable input changes nothing", input=label):
+                    self.assertEqual(served(payload), "stale")
+
+            for at, who in ((worktree, "worktree"), (main, "stale"), (clone, "side")):
+                with self.subTest("a walk that lands in a linked worktree", at=at):
+                    self.assertEqual(served(session(at), cwd=side), who)
+
+            with self.subTest("a walk that finds no runner still runs nothing"):
+                self.assertEqual(run(session(worktree), cwd=scratch), "")
+
+    def test_runner_locator_holds_nothing_a_host_shell_rewrites(self) -> None:
+        """sh, cmd and PowerShell all pass the program through unchanged."""
+
+        for character in '"\\$%!`^\n':
+            with self.subTest(character=character):
+                self.assertNotIn(character, RUNNER_LOCATOR)
 
     def test_hook_commands_fail_open_when_no_install_is_reachable(self) -> None:
         """An unlocatable runner is not a policy decision and must not block.

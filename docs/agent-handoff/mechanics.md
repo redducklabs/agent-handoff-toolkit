@@ -211,9 +211,10 @@ input that is not UTF-8 is `AHK-HOOK-RUNTIME` at stage `decode-input`.
 
 A hook's repository root is the checkout holding the payload `cwd` (its nearest
 ancestor with `.git`) when that is a worktree git registered for the same
-repository; otherwise it is the hook process's directory. The located runner
-hands a hook, once, to that worktree's `.agent-handoff-toolkit/runner.py`, and
-serves the hook itself if that runner gives no single response.
+repository; otherwise, the hook process's directory. The managed command runs
+that worktree's `.agent-handoff-toolkit/runner.py`, else the runner above the
+hook process's directory, which hands off once, serving the hook itself when
+that gives no single response.
 
 ## Recovering a broken hook runtime
 
@@ -263,8 +264,8 @@ can error: any failure produces no message.
   Code gives the managed `statusLine` relay, which then runs the project's own
   status line from `.claude/agent-handoff-statusline.json` beside the runner
   above `workspace.project_dir`, never payload `cwd`, else the user's.
-  It never infers a window from a model id or a count; with none it is
-  silent. At 80% it asks once, on
+  It never infers a window from a model id or a count; with none it measures
+  against 1M. At 80% it asks once, on
   `additionalContext`, for the continuation handoff, naming tokens, window and
   source, and re-arms after a reading below 50% or a compaction. An ordinary
   call opens state for it only while one of the last five readings is below
