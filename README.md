@@ -6,7 +6,27 @@ This repository provides a shared contract, deterministic validation and renderi
 
 ## Status
 
-Version 1.6.1 stops the status-line relay running a chain file from the
+Version 1.6.2 makes the managed hook command run the runner of the session's
+own worktree. The command used to run the first runner above the hook
+process's directory, so when a host started hooks in the main checkout, a main
+checkout pinned to an old release evaluated worktree sessions with that
+release's rules: in consumer sessions a main checkout on 1.1.0 blocked turns on
+runtime faults and armed the correction circuit. The command now reads the
+payload `cwd` and, before any runner runs, switches to the runner of the
+checkout holding it, but only when git registered that checkout as a worktree
+of the same repository, or it is that repository's main checkout. A separate
+or nested clone, a hand-written or borrowed `.git` file, and an unreadable
+payload keep the runner the walk found. Runners still hand off for settings
+that carry the old command.
+
+It also lets `AHK-CONTEXT-HIGH` fire when the host reports no context window,
+as in the desktop app, which runs no status line. Sessions there reached 850K
+to 966K tokens with no notice. With no reported window the advisory now
+measures against 1M, so it fires at 800K and re-arms below 500K; a smaller
+window is not covered. A reported window, or `AHK_CONTEXT_WINDOW_TOKENS`,
+still wins.
+
+Version 1.6.1 stopped the status-line relay running a chain file from the
 session's `cwd`. Since
 1.5.1 the relay searched for `.claude/agent-handoff-statusline.json` from the
 session's `cwd` when the project had none, and ran what it found through a
@@ -415,16 +435,16 @@ disposable consumer can be installed from a verified local release source.
 
 ## Consumer installation
 
-Check out the public v1.6.1 release, inspect the proposed changes, then apply
+Check out the public v1.6.2 release, inspect the proposed changes, then apply
 them from that checkout:
 
 ```powershell
-git clone --branch v1.6.1 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
+git clone --branch v1.6.2 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
 Set-Location agent-handoff-toolkit
-python distribution/runner.py install --target <consumer-repository> --release v1.6.1 --dry-run
-python distribution/runner.py install --target <consumer-repository> --release v1.6.1 --apply
-python distribution/runner.py sync --target <consumer-repository> --release v1.6.1 --check
-python distribution/runner.py sync --target <consumer-repository> --release v1.6.1 --apply
+python distribution/runner.py install --target <consumer-repository> --release v1.6.2 --dry-run
+python distribution/runner.py install --target <consumer-repository> --release v1.6.2 --apply
+python distribution/runner.py sync --target <consumer-repository> --release v1.6.2 --check
+python distribution/runner.py sync --target <consumer-repository> --release v1.6.2 --apply
 ```
 
 Run install and sync only in an isolated, clean Git worktree with no concurrent

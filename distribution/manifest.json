@@ -1,6 +1,6 @@
 {
   "manifest_version": 2,
-  "toolkit_version": "1.6.1",
+  "toolkit_version": "1.6.2",
   "record_schema_version": 2,
   "runtime": {
     "python_command": "python",
@@ -53,7 +53,7 @@
     },
     {
       "source": "docs/agent-handoff/mechanics.md",
-      "sha256": "9fdba9748cfc4469cdd66a790aca7e2dcd7233bdfc0fd249eb3fb95f5dc7520b",
+      "sha256": "e87a10db61fe41a0f31e06363d06f137cdd91555832f2a48891cf9f3956efaf2",
       "install": {
         "mode": "copy",
         "transform": "none",
@@ -64,7 +64,7 @@
     },
     {
       "source": "docs/consumer-integration.md",
-      "sha256": "d5b9c673e8c20cb2ef7c6170f7b2277106a92d78c89687006a843230e736eced",
+      "sha256": "bfaecf826cfbb9ab8b3843523d2127eac87007c90e7952fdc9a79a38dcf441f1",
       "install": {
         "mode": "copy",
         "transform": "none",
@@ -75,7 +75,7 @@
     },
     {
       "source": "skills/agent-handoff/SKILL.md",
-      "sha256": "4b1ae8e4421112f258ec4917bce22fb96280a9010fcf61651bba4070ed5f25bd",
+      "sha256": "b81ed9f517abe53e089ee8c21095beac364f27c8b1a22665b8359ae62d3d062d",
       "install": {
         "mode": "copy",
         "transform": "none",
@@ -109,7 +109,7 @@
     },
     {
       "source": "adapters/claude/settings.fragment.json",
-      "sha256": "c0343e700681a58710f0279956f75067c10ff1935ec2f2f157d577c42cf1ccb4",
+      "sha256": "890d3afe30285b325a66cab63abb65dd723405e254407b83ba2bcfd35e9db9d6",
       "array_identities": [
         {
           "pointer": "/hooks/SessionStart",
@@ -140,7 +140,7 @@
     },
     {
       "source": "adapters/codex/hooks.fragment.json",
-      "sha256": "a7ec1584b5b6a6ece4493acef4230d89ab9c30f53cff247b73a478ae5a482a3c",
+      "sha256": "14cac361ce92a5c1932ebd79f7ffafab488651849950eac8890a4951f4d0b543",
       "array_identities": [
         {
           "pointer": "/hooks/PreToolUse",
@@ -176,7 +176,7 @@
     },
     {
       "source": "src/agent_handoff_toolkit/__init__.py",
-      "sha256": "ebc4b4472038c0be85a3841a39e1da85078b62bb1e9769cd1a9d593dff5b1382",
+      "sha256": "e7b2bd3490e44286728590e5f95ee56a4e8f86582fd57791664818533432ee92",
       "install": {
         "mode": "copy",
         "transform": "none",
@@ -209,7 +209,7 @@
     },
     {
       "source": "src/agent_handoff_toolkit/acceptance.py",
-      "sha256": "43568918b8166fc6c5cc11e2a1dd6ca548fbc30ee335168ce4c52ba2881524db",
+      "sha256": "a0246348ab2f6c0e8e7db061dd0e2270e835ac4830c6cccaecef8773508229f2",
       "install": {
         "mode": "copy",
         "transform": "none",
@@ -308,7 +308,7 @@
     },
     {
       "source": "src/agent_handoff_toolkit/hook_adapters.py",
-      "sha256": "13267dabd8013a3a80a0409b52d6a686e4bbc5826a3b2f99f7bbbb757fd6b2cb",
+      "sha256": "746e4fd9886a9f98c41d669d48b29c240c0b6e7084be9e34385aaecc7fc517ba",
       "install": {
         "mode": "copy",
         "transform": "none",

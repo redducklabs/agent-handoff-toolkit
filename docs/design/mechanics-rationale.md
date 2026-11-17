@@ -447,9 +447,29 @@ its own, so a clone shipping a runner is exposed wherever the host starts the
 process in it, a separate matter this rule cannot close from inside the relay.
 The hook reads the cache, which costs a
 file open, not a state load. With no reported window and no
-`AHK_CONTEXT_WINDOW_TOKENS`, the advisory is silent and the skill tells the
-model to act on its own context reporting. The notice names the tokens, the
+`AHK_CONTEXT_WINDOW_TOKENS`, the advisory measures against 1M, the largest
+window a host offers, and the notice says no window was reported. The Claude
+Code desktop app runs no status line, so its sessions never report one: in
+consumer sessions reviewed in November 2026 they filled to 850K-966K of 1M with
+no notice at all. 80% of the largest window is never early for any window up
+to it, which keeps the rule that firing early costs more than firing late; a
+smaller window is told late or not at all, and the skill still tells the model
+to act on its own context reporting. The notice names the tokens, the
 window and its source, so a model can check it against what its host shows.
+
+The managed command reads the payload `cwd` to choose the runner before any
+runner runs. A main checkout pinned to 1.1.0 served 1.6.1 desktop worktree
+sessions with its own rules: the host started their hooks in the main checkout,
+and that release predates the runner hand-off, so only the command, which every
+checkout's settings carry, can make the choice. It moves from the walked-to
+checkout to the worktree holding the session only when git registered that
+worktree for the same common directory, and its `gitdir` leads back: the
+runner's own test, so the trust is the same - a registered worktree runs
+whatever branch is checked out in it, as it already did when the host started
+the hook there. The status line uses the same command and so the same runner.
+Unlike the hand-off, the command does not fall back when the chosen runner
+fails: a broken worktree runner fails as it would have with the hook started in
+that worktree.
 
 **The guarantee this supports.** The toolkit does not guarantee that work
 needing a handoff produces one. It guarantees that declared tracked work

@@ -1204,10 +1204,14 @@ def _write_advisory(event, snapshot, root, storage, raw_id):
 #
 # The window is never inferred - not from a model id, a default, or the size
 # of a reading. It is the one Codex reports in the rollout, the one Claude
-# Code reported to the status-line relay, or `AHK_CONTEXT_WINDOW_TOKENS`.
-# Without one there is no advisory: firing early costs a session's work, and
-# firing late costs a reminder.
+# Code reported to the status-line relay, or `AHK_CONTEXT_WINDOW_TOKENS`:
+# firing early costs a session's work, and firing late costs a reminder.
+# Without one, the advisory measures against the largest window a host
+# offers, which is never early for any window up to it. The Claude Code
+# desktop app runs no status line, so its sessions report no window, and they
+# filled to 966K of 1M without a notice.
 _TRANSCRIPT_TAIL_BYTES = 512 * 1024
+_LARGEST_WINDOW = 1_000_000
 _CONTEXT_HIGH = 0.8
 _CONTEXT_REARM = 0.5
 # Main-thread readings an ordinary tool call looks back over. Opening state
@@ -1326,10 +1330,11 @@ def _context_window():
 def _context_reading(path):
     """Return `(tokens, window, basis, size, recent)` for the latest reading.
 
-    `basis` says where the window came from: `environment` or `host`.
+    `basis` says where the window came from: `environment`, `host`, or
+    `unreported`, when neither gave one and `_LARGEST_WINDOW` stands in.
     `recent` holds the token counts of up to `_CONTEXT_CROSSING_READINGS`
     latest main-thread readings, newest first. None when there is no
-    transcript, no readable usage, no known window, or anything fails.
+    transcript, no readable usage, or anything fails.
     """
 
     try:
@@ -1348,7 +1353,7 @@ def _context_reading(path):
         if window is None:
             window, basis = reported or reported_window(path), "host"
         if window is None:
-            return None
+            window, basis = _LARGEST_WINDOW, "unreported"
         return tokens, window, basis, size, tuple(entry[1] for entry in readings)
     except Exception:
         return None
@@ -1442,17 +1447,29 @@ def _context_advisory(event, snapshot, storage, raw_id):
                 )
             ),
         )
-        if basis == "environment":
-            source = "set by AHK_CONTEXT_WINDOW_TOKENS"
+        if basis == "unreported":
+            reading = (
+                f"Context is about {_thousands(tokens)} tokens, at least 80% of "
+                f"any window up to {_thousands(window)}; the host reported no "
+                "window, and AHK_CONTEXT_WINDOW_TOKENS sets one."
+            )
+            rearm = _thousands(int(window * _CONTEXT_REARM))
         else:
-            source = "reported by the host; AHK_CONTEXT_WINDOW_TOKENS overrides it"
+            if basis == "environment":
+                source = "set by AHK_CONTEXT_WINDOW_TOKENS"
+            else:
+                source = "reported by the host; AHK_CONTEXT_WINDOW_TOKENS overrides it"
+            reading = (
+                "Context is at least 80% full: about "
+                f"{_thousands(tokens)} of a {_thousands(window)}-token window "
+                f"{source}."
+            )
+            rearm = "half"
         return _context(
             "PreToolUse",
-            "AHK-CONTEXT-HIGH: Context is at least 80% full: about "
-            f"{_thousands(tokens)} of a {_thousands(window)}-token window "
-            f"{source}. Write the continuation handoff now, while there is "
-            "room, then continue. Shown again only after context falls below "
-            "half.",
+            f"AHK-CONTEXT-HIGH: {reading} Write the continuation handoff now, "
+            "while there is room, then continue. Shown again only after "
+            f"context falls below {rearm}.",
         )
     except Exception:
         return None

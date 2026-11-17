@@ -217,7 +217,9 @@ class ContextAdvisoryTests(unittest.TestCase):
         self.write(usage(810_000, model="claude-opus-5-5"))
         self.assertIn("AHK-CONTEXT-HIGH", self.advisory(self.invoke()))
 
-    def test_no_reported_window_is_silent_whatever_the_model_id_or_count(self):
+    def test_no_reported_window_is_silent_below_the_floor_whatever_the_model_id(
+        self,
+    ):
         """A window is never inferred: not from a default, an id or a count."""
 
         self.register()
@@ -225,12 +227,46 @@ class ContextAdvisoryTests(unittest.TestCase):
         for entries in (
             (usage(170_000),),
             (usage(170_000, model="claude-opus-5-5[1m]"),),
-            (usage(850_000, model="claude-opus-5-5[1m]"),),
-            (usage(250_000), usage(950_000)),
+            (usage(799_000, model="claude-opus-5-5[1m]"),),
+            (usage(950_000), usage(250_000)),
         ):
             with self.subTest(entries=entries[-1]["message"]["model"]):
                 self.write(*entries)
                 self.assertEqual(self.invoke(), HookExecution())
+
+    def test_no_reported_window_advises_at_the_largest_windows_threshold(self):
+        """Field report: desktop sessions reached 966K with no notice.
+
+        The desktop app runs no status line, so Claude Code reports its window
+        to nothing. 800K is 80% of the largest window a host offers, so it is
+        never early for any window up to 1M; a smaller window is told late or
+        not at all, as before.
+        """
+
+        self.register()
+        self.report(None)
+        self.write(usage(850_000))
+        message = self.advisory(self.invoke())
+        self.assertTrue(message.startswith("AHK-CONTEXT-HIGH:"), message)
+        self.assertIn("about 850K tokens", message)
+        self.assertIn("the host reported no window", message)
+        self.assertIn("AHK_CONTEXT_WINDOW_TOKENS", message)
+        self.assertIn("handoff", message)
+        self.assertEqual(self.invoke(), HookExecution())
+        # It re-arms below half of the 1M it stands for.
+        self.write(usage(600_000), usage(820_000), append=True)
+        self.assertEqual(self.invoke(), HookExecution())
+        self.write(usage(450_000), usage(830_000), append=True)
+        self.assertIn("AHK-CONTEXT-HIGH", self.advisory(self.invoke()))
+
+    def test_a_reported_window_is_not_overridden_by_the_floor(self):
+        self.register()
+        self.report(2_000_000)
+        self.write(usage(850_000))
+        self.assertEqual(self.invoke(), HookExecution())
+        with patch.dict(os.environ, {"AHK_CONTEXT_WINDOW_TOKENS": "2000000"}):
+            self.report(None)
+            self.assertEqual(self.invoke(), HookExecution())
 
     def test_the_window_is_reported_per_transcript(self):
         self.register()
@@ -406,13 +442,16 @@ class ContextAdvisoryTests(unittest.TestCase):
         self.write(codex_usage(None), codex_usage(400_000), append=True)
         self.assertIn("AHK-CONTEXT-HIGH", self.advisory(self.invoke(host="codex")))
 
-    def test_codex_entries_without_a_window_are_silent(self):
+    def test_codex_entries_without_a_window_use_the_floor(self):
         self.register()
         self.report(None)
         self.write(codex_usage(None), codex_usage(400_000, window=None))
         self.assertEqual(self.invoke(host="codex"), HookExecution())
         self.write(codex_usage(400_000, window="475000"))
         self.assertEqual(self.invoke(host="codex"), HookExecution())
+        self.write(codex_usage(850_000, window=None))
+        message = self.advisory(self.invoke(host="codex"))
+        self.assertIn("the host reported no window", message)
 
     def test_the_read_is_bounded_to_the_tail(self):
         """A reading older than the bounded tail is not seen."""

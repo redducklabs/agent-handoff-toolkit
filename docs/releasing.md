@@ -40,6 +40,7 @@ A release bump is part of the release commit. It touches:
   installs)
 - `tests/test_acceptance.py`
 - `tests/test_distribution.py`
+- `tests/test_retirement.py`
 - `docs/consumer-integration.md`
 - `README.md`
 
