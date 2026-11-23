@@ -2065,6 +2065,19 @@ class EnforcementTests(unittest.TestCase):
         )
         self.assert_block(self.invoke(last_assistant_message=old), "AHK-STOP-WORK")
 
+    def test_a_wait_line_in_the_wording_before_tracked_work_draws_one_block(self):
+        self.register()
+        title = self.storage.load_snapshot("session-1").chain.root_title
+        old = (
+            f'Waiting on CI for "{title}". This session resumes when it '
+            "reports. Last handoff: none yet."
+        )
+        self.assert_block(self.invoke(last_assistant_message=old), "AHK-STOP-WORK")
+        self.assertEqual(
+            self.invoke(last_assistant_message=self.progress_line("ci")),
+            HookExecution(),
+        )
+
     def test_stop_work_says_keep_working_and_names_every_legal_ending(self):
         self.register()
         reason = json.loads(self.invoke(last_assistant_message="Paused.").stdout)[
@@ -2331,6 +2344,15 @@ class EnforcementTests(unittest.TestCase):
         self.assertEqual(self.invoke(last_assistant_message=message), HookExecution())
         self.assertEqual(self.service.inspect()["last_handoff"], path.as_posix())
 
+    def test_a_completed_chain_s_audit_is_not_a_last_handoff(self):
+        self.register()
+        _, _, message = self.record("completion-audit", "audit")
+        self.assertEqual(self.invoke(last_assistant_message=message), HookExecution())
+        chain = self.storage.load_snapshot("session-1").chain
+        self.assertEqual(chain.status, "complete")
+        self.assertIsNotNone(chain.current_record_reference)
+        self.assertIsNone(self.service.inspect()["last_handoff"])
+
     def session_start(self, session="session-1", **payload):
         output = run_hook(
             "claude",
@@ -2352,9 +2374,9 @@ class EnforcementTests(unittest.TestCase):
         compacted = self.session_start(source="compact")
         self.assertTrue(compacted.startswith(ordinary))
         added = compacted[len(ordinary) :]
-        for phrase in ("compaction summary", "lifecycle inspect", "every turn"):
+        for phrase in ("compaction summary", "lifecycle inspect", "Keep working"):
             self.assertIn(phrase, added)
-        for reason in ("background-work", "ci", "other-session", "user"):
+        for reason in ("background-work", "ci", "other-session", "user", "reply"):
             self.assertIn("`" + reason + "`", added)
         title = self.storage.load_snapshot("session-1").chain.root_title
         self.assertNotIn(title, added)
@@ -2362,6 +2384,20 @@ class EnforcementTests(unittest.TestCase):
         for source in ("resume", "clear", None):
             with self.subTest(source=source):
                 self.assertEqual(self.session_start(source=source), ordinary)
+
+    def test_compaction_finds_the_session_without_injected_storage(self):
+        """A fault here fails open, so it would read as an untracked session."""
+
+        self.register()
+        injected = self.session_start(source="compact")
+        raw = json.dumps(
+            {"session_id": "session-1", "source": "compact", "cwd": str(self.root)}
+        )
+        with patch.dict(os.environ, {"AHK_STATE_ROOT": str(self.root / "state")}):
+            output = run_hook("claude", "session-start", raw, self.root)
+        context = json.loads(output.stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertEqual(context, injected)
+        self.assertIn("compaction summary", context)
 
     def test_compaction_adds_nothing_where_no_line_is_required(self):
         ordinary = self.session_start(source="startup")
@@ -2905,7 +2941,7 @@ class EnforcementTests(unittest.TestCase):
         self.assertEqual(joined.session.correction_cycle_count, 0)
         self.assertEqual(joined.session.chain_revision, joined.chain.targeted_revision)
         # No record is named in a line, so the one read before the peer
-        # published is still exact, and `inspect` reports the new record.
+        # published is still exact.
         after = self.progress_line("other-session", session="joined")
         self.assertEqual(after, before)
         self.assertEqual(

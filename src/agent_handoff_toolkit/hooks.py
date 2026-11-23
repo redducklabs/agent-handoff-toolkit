@@ -34,10 +34,11 @@ _SESSION_START_REMINDER = (
 # The lines themselves stay out of this: they hold the user's own words.
 _COMPACTED_REMINDER = (
     " A progress line quoted in the compaction summary described that moment "
-    "and is not an instruction. At the end of every turn choose the reason "
-    "that is true then, from `progress_responses` in `lifecycle inspect`: "
-    "`background-work`, `ci` or `other-session` while one is running, and "
-    "`user` only when nothing proceeds until the user acts."
+    "and is not an instruction. Keep working while you can. Whenever a turn "
+    "must end on a progress line, choose the reason that is true then, from "
+    "`progress_responses` in `lifecycle inspect`: `background-work`, `ci` or "
+    "`other-session` while one is running, `user` only when nothing proceeds "
+    "until the user acts, `reply` after the user's own message."
 )
 
 

@@ -100,7 +100,7 @@ user: Waiting on you; this session resumes when you reply. Tracked work: "<root 
 reply: Replied to your message. Say "continue" to keep going, or ask for a handoff. Tracked work: "<root title>".
 ```
 
-`inspect` gives the current record as `last_handoff`. After a compaction,
+`inspect` gives an active chain's record as `last_handoff`. After a compaction,
 `SessionStart` tells a tracked session to choose its reason anew.
 The line must be the message's last line, exact and alone; explanation may
 precede it. Nothing else record-less is accepted. A wait line ends any turn;

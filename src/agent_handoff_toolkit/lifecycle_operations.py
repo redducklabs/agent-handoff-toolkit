@@ -419,10 +419,13 @@ class LifecycleService:
                 else None
             ),
             # The path is here rather than in those lines, which are read by
-            # the user and would name a record long out of date.
+            # the user and would name a record long out of date. A completed
+            # chain's current record is its audit, which is not a handoff.
             "last_handoff": (
                 chain.current_record_reference.path
-                if chain is not None and chain.current_record_reference is not None
+                if chain is not None
+                and chain.status == "active"
+                and chain.current_record_reference is not None
                 else None
             ),
             "issue_codes": (
