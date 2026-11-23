@@ -1771,9 +1771,7 @@ def render_tail(record_path: str | os.PathLike[str], text: str) -> str:
 PROGRESS_REASONS = ("background-work", "ci", "other-session", "user", "reply")
 
 
-def render_progress_responses(
-    root_title: str, last_record_path: str | None
-) -> dict[str, str]:
+def render_progress_responses(root_title: str) -> dict[str, str]:
     """Render the messages a tracked session may end a turn on without a record.
 
     A `Stop` fires at every turn end, not at the end of a session, so a
@@ -1786,23 +1784,22 @@ def render_progress_responses(
     every wait, and served as an idle pause while executable work remained.
     `user` is the wait on something only the user can do outside the session,
     such as testing on staging; unlike `reply` it is true after a turn the
-    host started.
+    host started. The title comes last, labelled as work: beside the reason it
+    read as the name of a session. No record is named, because the last one is
+    out of date for most of a long session.
     """
 
     title = str(root_title).strip() or "this work"
-    where = str(last_record_path).strip() if last_record_path else ""
-    last = f"Last handoff: {where or 'none yet'}."
+    tracked = f'Tracked work: "{title}".'
     return {
-        "background-work": f'Waiting on background work for "{title}". '
-        f"This session resumes when it reports. {last}",
-        "ci": f'Waiting on CI for "{title}". This session resumes when it '
-        f"reports. {last}",
-        "other-session": f'Waiting on another session for "{title}". '
-        f"This session resumes when it replies. {last}",
-        "user": f'Waiting on you for "{title}". '
-        f"This session resumes when you reply. {last}",
-        "reply": f'Replied to your message about "{title}". {last} '
-        'Say "continue" to keep going, or ask for a handoff.',
+        "background-work": "Waiting on background work; this session resumes "
+        f"when it reports. {tracked}",
+        "ci": f"Waiting on CI; this session resumes when it reports. {tracked}",
+        "other-session": "Waiting on another session; this session resumes "
+        f"when it replies. {tracked}",
+        "user": f"Waiting on you; this session resumes when you reply. {tracked}",
+        "reply": 'Replied to your message. Say "continue" to keep going, or ask '
+        f"for a handoff. {tracked}",
     }
 
 

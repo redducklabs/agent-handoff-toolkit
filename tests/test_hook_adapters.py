@@ -2105,7 +2105,7 @@ class EnforcementTests(unittest.TestCase):
 
         self.register()
         line = self.progress_line("user")
-        self.assertTrue(line.startswith('Waiting on you for "'))
+        self.assertTrue(line.startswith("Waiting on you; "))
         for index, origin in enumerate(("host", "user")):
             with self.subTest(origin=origin):
                 if origin == "host":
@@ -2269,12 +2269,12 @@ class EnforcementTests(unittest.TestCase):
             HookExecution(),
         )
 
-    def test_the_progress_line_names_the_last_handoff(self):
+    def test_a_published_record_leaves_the_progress_line_unchanged(self):
         self.register()
-        self.assertIn("none yet", self.progress_line())
-        path, _, message = self.record()
+        before = self.progress_line()
+        _, _, message = self.record()
         self.assertEqual(self.invoke(last_assistant_message=message), HookExecution())
-        self.assertIn(path.as_posix(), self.progress_line())
+        self.assertEqual(self.progress_line(), before)
         self.assertFalse(
             self.storage.load_snapshot("session-1").session.last_stop_was_progress
         )
@@ -2323,6 +2323,57 @@ class EnforcementTests(unittest.TestCase):
         message = json.loads(output.stdout)["systemMessage"]
         self.assertIn("ended without a final handoff", message)
         self.assertIn("Track: ", message)
+
+    def test_inspect_names_the_last_handoff_the_lines_no_longer_carry(self):
+        self.register()
+        self.assertIsNone(self.service.inspect()["last_handoff"])
+        path, _, message = self.record()
+        self.assertEqual(self.invoke(last_assistant_message=message), HookExecution())
+        self.assertEqual(self.service.inspect()["last_handoff"], path.as_posix())
+
+    def session_start(self, session="session-1", **payload):
+        output = run_hook(
+            "claude",
+            "session-start",
+            json.dumps({"session_id": session, **payload}),
+            self.root,
+            self.storage,
+        )
+        return json.loads(output.stdout)["hookSpecificOutput"]["additionalContext"]
+
+    def test_compaction_tells_a_tracked_session_to_choose_its_line_again(self):
+        """A summary turned one true wait line into a rule for every turn.
+
+        Thirteen turns ended on `Waiting on you` with work still running.
+        """
+
+        self.register()
+        ordinary = self.session_start(source="startup")
+        compacted = self.session_start(source="compact")
+        self.assertTrue(compacted.startswith(ordinary))
+        added = compacted[len(ordinary) :]
+        for phrase in ("compaction summary", "lifecycle inspect", "every turn"):
+            self.assertIn(phrase, added)
+        for reason in ("background-work", "ci", "other-session", "user"):
+            self.assertIn("`" + reason + "`", added)
+        title = self.storage.load_snapshot("session-1").chain.root_title
+        self.assertNotIn(title, added)
+        self.assertLessEqual(len(added), 500)
+        for source in ("resume", "clear", None):
+            with self.subTest(source=source):
+                self.assertEqual(self.session_start(source=source), ordinary)
+
+    def test_compaction_adds_nothing_where_no_line_is_required(self):
+        ordinary = self.session_start(source="startup")
+        self.assertEqual(self.session_start(source="compact"), ordinary)
+        self.assertEqual(self.session_start("never", source="compact"), ordinary)
+        self.assertEqual(self.session_start(None, source="compact"), ordinary)
+
+    def test_compaction_with_unreadable_state_keeps_the_ordinary_reminder(self):
+        self.register()
+        ordinary = self.session_start(source="startup")
+        with patch.object(self.storage, "load_snapshot", side_effect=OSError):
+            self.assertEqual(self.session_start(source="compact"), ordinary)
 
     def test_session_end_is_silent_after_a_record_stop(self):
         self.register()
@@ -2816,8 +2867,7 @@ class EnforcementTests(unittest.TestCase):
     def peer_publishes(self):
         """Join a second session, then let the first publish past it.
 
-        Returns the joined session's wait line from before the publication,
-        when its last handoff was still the first record.
+        Returns the joined session's wait line from before the publication.
         """
 
         self.register()
@@ -2841,25 +2891,23 @@ class EnforcementTests(unittest.TestCase):
     def test_a_stop_after_a_peer_publishes_names_the_new_record_uncounted(self):
         """A peer's publication is not this session's mistake.
 
-        `Stop` used to count it: one `AHK-STOP-STALE`, then the old wait line
-        drew `AHK-STOP-WORK` because it named the old record, and a third
-        attempt tripped the circuit. The chain is reconciled first, the block
-        names the record that is now current, and nothing is counted.
+        `Stop` used to count it, and a third attempt tripped the circuit. The
+        chain is reconciled first, the block names the record that is now
+        current, and nothing is counted.
         """
 
         before = self.peer_publishes()
-        result = self.invoke(session_id="joined", last_assistant_message=before)
+        result = self.invoke(session_id="joined", last_assistant_message="Paused.")
         self.assert_block(result, "AHK-STOP-STALE")
         reason = json.loads(result.stdout)["reason"]
         self.assertIn("current=second.md", reason)
         joined = self.storage.load_snapshot("joined")
         self.assertEqual(joined.session.correction_cycle_count, 0)
         self.assertEqual(joined.session.chain_revision, joined.chain.targeted_revision)
-        # The accepted lines are the reconciled chain's: they name the new
-        # record, and the next ending on one is accepted.
+        # No record is named in a line, so the one read before the peer
+        # published is still exact, and `inspect` reports the new record.
         after = self.progress_line("other-session", session="joined")
-        self.assertIn("second.md", after)
-        self.assertNotEqual(after, before)
+        self.assertEqual(after, before)
         self.assertEqual(
             self.invoke(session_id="joined", last_assistant_message=after),
             HookExecution(),

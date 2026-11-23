@@ -1872,32 +1872,35 @@ class ProgressResponseTests(unittest.TestCase):
             PROGRESS_REASONS,
             ("background-work", "ci", "other-session", "user", "reply"),
         )
-        lines = render_progress_responses("Ship it", "/repo/handoffs/a.md")
+        tracked = ' Tracked work: "Ship it".'
         self.assertEqual(
-            lines,
+            render_progress_responses("Ship it"),
             {
-                "background-work": 'Waiting on background work for "Ship it". '
-                "This session resumes when it reports. "
-                "Last handoff: /repo/handoffs/a.md.",
-                "ci": 'Waiting on CI for "Ship it". This session resumes when it '
-                "reports. Last handoff: /repo/handoffs/a.md.",
-                "other-session": 'Waiting on another session for "Ship it". '
-                "This session resumes when it replies. "
-                "Last handoff: /repo/handoffs/a.md.",
-                "user": 'Waiting on you for "Ship it". '
-                "This session resumes when you reply. "
-                "Last handoff: /repo/handoffs/a.md.",
-                "reply": 'Replied to your message about "Ship it". '
-                "Last handoff: /repo/handoffs/a.md. "
-                'Say "continue" to keep going, or ask for a handoff.',
+                "background-work": "Waiting on background work; this session "
+                "resumes when it reports." + tracked,
+                "ci": "Waiting on CI; this session resumes when it reports." + tracked,
+                "other-session": "Waiting on another session; this session "
+                "resumes when it replies." + tracked,
+                "user": "Waiting on you; this session resumes when you reply."
+                + tracked,
+                "reply": 'Replied to your message. Say "continue" to keep going, '
+                "or ask for a handoff." + tracked,
             },
         )
 
-    def test_a_chain_with_no_record_says_none_yet(self):
+    def test_the_title_is_labelled_as_work_and_no_record_is_named(self):
+        """`Waiting on you for "<title>"` was read as the name of a session.
+
+        The record path was stale for most of a long session, so it pointed
+        the user at a next action finished days earlier.
+        """
+
         from agent_handoff_toolkit.records import render_progress_responses
 
-        for line in render_progress_responses("Ship it", None).values():
-            self.assertIn("Last handoff: none yet.", line)
+        for line in render_progress_responses("Ship it").values():
+            self.assertTrue(line.endswith(' Tracked work: "Ship it".'))
+            self.assertNotIn("handoffs/", line)
+            self.assertNotIn("Last handoff", line)
 
 
 class PlainResponseTests(unittest.TestCase):

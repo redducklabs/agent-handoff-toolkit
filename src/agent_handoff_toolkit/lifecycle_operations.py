@@ -418,6 +418,13 @@ class LifecycleService:
                 if chain is not None and chain.status == "active"
                 else None
             ),
+            # The path is here rather than in those lines, which are read by
+            # the user and would name a record long out of date.
+            "last_handoff": (
+                chain.current_record_reference.path
+                if chain is not None and chain.current_record_reference is not None
+                else None
+            ),
             "issue_codes": (
                 ["AHK-STATE-STALE"]
                 if chain and session.chain_revision != chain.targeted_revision

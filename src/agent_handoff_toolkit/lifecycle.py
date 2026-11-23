@@ -1218,10 +1218,7 @@ def _mapped_successor_issues(
 def progress_responses(chain: ChainState) -> dict[str, str]:
     """The record-less messages a tracked stop accepts, keyed by reason."""
 
-    reference = chain.current_record_reference
-    return render_progress_responses(
-        chain.root_title, reference.path if reference is not None else None
-    )
+    return render_progress_responses(chain.root_title)
 
 
 def _record_name(path: object) -> str:

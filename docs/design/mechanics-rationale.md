@@ -171,6 +171,23 @@ decision makes every later turn re-render the same question, and a host turn
 can never answer it. The line widens nothing: a false wait line was already
 accepted after any turn, so this only gives the true one a name.
 
+Each line used to open `Waiting on you for "<root title>". This session
+resumes ...` and close on the last handoff's path. A user read the title as
+the name of another session, and the path pointed at a record eight days out
+of date. The title is now last and labelled `Tracked work`, and the path is
+`last_handoff` in `inspect`. The old wording is not accepted, so a session
+that holds it draws one `AHK-STOP-WORK` after the upgrade and reads the new
+lines from `inspect`. Because a line names no record, one read before a peer
+published stays exact and ends the turn; a block for any other message still
+names the peer's record.
+
+In the same session a compaction summary quoted the `user` line as how the
+next turn must end. Thirteen later turns ended on it while CI, tests or a
+review were running. `Stop` cannot tell whether a reason is true, so
+`SessionStart` with source `compact` tells a tracked session that a quoted
+line is not an instruction. It carries no line, because the lines hold the
+user's words, and any fault reading state leaves the ordinary reminder.
+
 The line was also the whole message, which left a waiting session unable to
 say what it was waiting for. Since 1.6.0 it need only be the last line,
 exact and alone. The check is the same - the reason is read from that line,

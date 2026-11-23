@@ -128,8 +128,11 @@ handoff or claim a background wait for that. One that answers the user's own
 message may end on the `reply` line, which is refused after a turn the host
 started, such as a task notification or another session's message. The line
 is the message's last line, exact and on its own; explain what you need before
-it. Any other record-less message is blocked. A session that ends on one of
-these lines is reported to the user, so use them to wait, not to conclude.
+it. Choose the reason that is true at the end of each turn: never copy the
+line from an earlier turn or a compaction summary, and use `user` only when
+nothing proceeds until the user acts. Any other record-less message is
+blocked. A session that ends on one of these lines is reported to the user, so
+use them to wait, not to conclude.
 
 If progress genuinely requires user authority, register a legitimate decision request rather than asking whether to continue or stop. A decision request must name the blocked exact action and recognized authority category; it does not change the authorized root. Pass the question as one quoted argument, `--question '<at most 400 bytes>'`; the command reads no stdin, and the hook denies a pipe or redirection into it.
 
