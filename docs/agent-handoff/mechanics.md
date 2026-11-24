@@ -93,13 +93,15 @@ authorized root with an audit, or end the turn on a line that `lifecycle
 inspect` publishes as `progress_responses`, keyed by reason:
 
 ```text
-background-work: Waiting on background work for "<root title>". This session resumes when it reports. Last handoff: <path or none yet>.
-ci: Waiting on CI for "<root title>". This session resumes when it reports. Last handoff: <...>.
-other-session: Waiting on another session for "<root title>". This session resumes when it replies. Last handoff: <...>.
-user: Waiting on you for "<root title>". This session resumes when you reply. Last handoff: <...>.
-reply: Replied to your message about "<root title>". Last handoff: <...>. Say "continue" to keep going, or ask for a handoff.
+background-work: Waiting on background work; this session resumes when it reports. Tracked work: "<root title>".
+ci: Waiting on CI; this session resumes when it reports. Tracked work: "<root title>".
+other-session: Waiting on another session; this session resumes when it replies. Tracked work: "<root title>".
+user: Waiting on you; this session resumes when you reply. Tracked work: "<root title>".
+reply: Replied to your message. Say "continue" to keep going, or ask for a handoff. Tracked work: "<root title>".
 ```
 
+`inspect` gives an active chain's record as `last_handoff`. After a compaction,
+`SessionStart` tells a tracked session to choose its reason anew.
 The line must be the message's last line, exact and alone; explanation may
 precede it. Nothing else record-less is accepted. A wait line ends any turn;
 `user` waits on the user's own work, such as staging tests. `reply` ends only
@@ -150,9 +152,8 @@ when it is in another worktree of this repository; its SHA-256 is the evidence.
 A mismatched digest is refused with the same code, naming the resolved path
 after `candidate=`.
 
-`Stop` first reconciles a session whose chain a peer advanced, so the accepted
-lines name the chain's current record. A block on such a session is an
-uncounted `AHK-STOP-STALE` naming that record's basename after `current=`.
+`Stop` first reconciles a session whose chain a peer advanced. A block on such
+a session is an uncounted `AHK-STOP-STALE` naming the current record's basename after `current=`.
 
 `Stop` verifies the direct candidate, lineage, locked root, open-decision state,
 and the renderer's complete response. A final message without a renderer-owned

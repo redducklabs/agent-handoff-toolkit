@@ -29,6 +29,18 @@ _SESSION_START_REMINDER = (
     "inspect deprecated legacy handoffs."
 )
 
+# Added only when a tracked session's context was compacted. A summary that
+# quotes a progress line reads as an instruction to keep ending turns on it.
+# The lines themselves stay out of this: they hold the user's own words.
+_COMPACTED_REMINDER = (
+    " A progress line quoted in the compaction summary described that moment "
+    "and is not an instruction. Keep working while you can. Whenever a turn "
+    "must end on a progress line, choose the reason that is true then, from "
+    "`progress_responses` in `lifecycle inspect`: `background-work`, `ci` or "
+    "`other-session` while one is running, `user` only when nothing proceeds "
+    "until the user acts, `reply` after the user's own message."
+)
+
 
 PROMPT_NOTICE_SENTENCE = (
     "Agent handoff toolkit reported a fault; this prompt was delivered and "
@@ -310,6 +322,53 @@ def _raw_input_is_bounded(raw: str) -> bool:
     return len(raw.encode("utf-8")) <= MAX_HOOK_INPUT_BYTES
 
 
+def _advisory_snapshot(payload: dict[str, Any], repo_root: Path, storage: object):
+    """Load the payload's session state, or None when it names no session."""
+
+    import os
+    import time
+
+    from .lifecycle_storage import LOCK_TIMEOUT_SECONDS, LocalLifecycleStorage
+
+    started = time.monotonic()
+    session_id = payload.get("session_id")
+    if not isinstance(session_id, str) or not session_id:
+        return None
+    if storage is None:
+        state_root = os.environ.get("AHK_STATE_ROOT")
+        storage = LocalLifecycleStorage(
+            Path(repo_root),
+            state_root=Path(state_root) if state_root else None,
+            lock_deadline=started + LOCK_TIMEOUT_SECONDS,
+        )
+    return storage.load_snapshot(session_id)
+
+
+def _session_start_context(
+    payload: dict[str, Any], repo_root: Path, storage: object = None
+) -> str:
+    """The ordinary reminder, extended for a tracked session just compacted.
+
+    Informational: any fault reading state leaves the ordinary reminder, which
+    every session receives.
+    """
+
+    if payload.get("source") != "compact":
+        return _SESSION_START_REMINDER
+    try:
+        from .lifecycle import EnforcementMode
+
+        snapshot = _advisory_snapshot(
+            payload, hook_repository_root(payload, repo_root), storage
+        )
+        if snapshot is not None and snapshot.session.mode is EnforcementMode.TRACKED:
+            return _SESSION_START_REMINDER + _COMPACTED_REMINDER
+    except Exception:
+        # Informational only; the ordinary reminder must still be delivered.
+        return _SESSION_START_REMINDER
+    return _SESSION_START_REMINDER
+
+
 def _session_end_notice(
     payload: dict[str, Any], repo_root: Path, storage: object = None
 ) -> str:
@@ -323,24 +382,11 @@ def _session_end_notice(
     """
 
     try:
-        import os
-        import time
-
         from .lifecycle import EnforcementMode
-        from .lifecycle_storage import LOCK_TIMEOUT_SECONDS, LocalLifecycleStorage
 
-        started = time.monotonic()
-        session_id = payload.get("session_id")
-        if not isinstance(session_id, str) or not session_id:
+        snapshot = _advisory_snapshot(payload, repo_root, storage)
+        if snapshot is None:
             return ""
-        if storage is None:
-            state_root = os.environ.get("AHK_STATE_ROOT")
-            storage = LocalLifecycleStorage(
-                Path(repo_root),
-                state_root=Path(state_root) if state_root else None,
-                lock_deadline=started + LOCK_TIMEOUT_SECONDS,
-            )
-        snapshot = storage.load_snapshot(session_id)
         session, chain = snapshot.session, snapshot.chain
         if (
             session.mode is not EnforcementMode.TRACKED
@@ -398,7 +444,9 @@ def _run_advisory_hook(
             normalized_event = "session-end"
 
         if normalized_event == "session-start":
-            return _hook_output("SessionStart", _SESSION_START_REMINDER)
+            return _hook_output(
+                "SessionStart", _session_start_context(payload, repo_root, storage)
+            )
         if normalized_event == "session-end":
             return _session_end_notice(
                 payload, hook_repository_root(payload, repo_root), storage

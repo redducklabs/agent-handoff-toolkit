@@ -6,7 +6,23 @@ This repository provides a shared contract, deterministic validation and renderi
 
 ## Status
 
-Version 1.6.2 makes the managed hook command run the runner of the session's
+Version 1.7.0 rewords the lines that end a tracked turn without a record and
+tells a compacted session to choose its reason again. The root title sat beside "This
+session" and was read as the name of another session, and the line closed on
+a handoff path that could be days out of date. The title now comes last, as
+`Tracked work: "<root title>"`, and `lifecycle inspect` reports the path as
+`last_handoff` while the chain is active. A compaction summary that quoted one
+`Waiting on you` line was followed by thirteen turns ending on it while CI, tests or
+a review were running; after a compaction, `SessionStart` now tells a tracked
+session that a quoted line is not an instruction and to choose the reason that
+is true. `Stop` still cannot judge whether a reason is true. This is a
+breaking change: the old lines are not accepted, so a live session that holds
+one draws one `AHK-STOP-WORK` after the upgrade and reads the new lines from
+`inspect`, and `render_progress_responses` no longer takes a record path. A
+line no longer changes when a peer publishes, so one read earlier still ends
+the turn, where it used to be blocked once with the peer's record.
+
+Version 1.6.2 made the managed hook command run the runner of the session's
 own worktree. The command used to run the first runner above the hook
 process's directory, so when a host started hooks in the main checkout, a main
 checkout pinned to an old release evaluated worktree sessions with that
@@ -435,16 +451,16 @@ disposable consumer can be installed from a verified local release source.
 
 ## Consumer installation
 
-Check out the public v1.6.2 release, inspect the proposed changes, then apply
+Check out the public v1.7.0 release, inspect the proposed changes, then apply
 them from that checkout:
 
 ```powershell
-git clone --branch v1.6.2 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
+git clone --branch v1.7.0 --depth 1 https://github.com/redducklabs/agent-handoff-toolkit.git agent-handoff-toolkit
 Set-Location agent-handoff-toolkit
-python distribution/runner.py install --target <consumer-repository> --release v1.6.2 --dry-run
-python distribution/runner.py install --target <consumer-repository> --release v1.6.2 --apply
-python distribution/runner.py sync --target <consumer-repository> --release v1.6.2 --check
-python distribution/runner.py sync --target <consumer-repository> --release v1.6.2 --apply
+python distribution/runner.py install --target <consumer-repository> --release v1.7.0 --dry-run
+python distribution/runner.py install --target <consumer-repository> --release v1.7.0 --apply
+python distribution/runner.py sync --target <consumer-repository> --release v1.7.0 --check
+python distribution/runner.py sync --target <consumer-repository> --release v1.7.0 --apply
 ```
 
 Run install and sync only in an isolated, clean Git worktree with no concurrent
